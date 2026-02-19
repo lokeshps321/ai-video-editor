@@ -1,0 +1,16 @@
+.DS_Store
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+.venv/
+venv/
+.env
+backend/app.db
+backend/uploads/
+backend/renders/
+backend/tmp/
