@@ -152,3 +152,71 @@ def test_build_ffmpeg_command_karaoke_style_uses_compatible_drawtext_options() -
     assert "style=karaoke" not in joined
     assert "fontcolor_expr=" not in joined
     assert "alpha='if(lt(mod(t-" in joined
+
+
+def test_build_ffmpeg_command_composites_broll_overlay_with_opacity() -> None:
+    state = _timeline()
+    overlay_clip = Clip(
+        id="clip-b1",
+        asset_id="asset-b1",
+        start_sec=0,
+        end_sec=2,
+        timeline_start_sec=0.5,
+        speed=1.0,
+        broll_opacity=0.5,
+    )
+    command = build_ffmpeg_command(
+        timeline=state,
+        clip_inputs=[(state.tracks[0].clips[0], "/tmp/video.mp4")],
+        clip_has_audio_flags=[False],
+        bg_audio_inputs=[],
+        bg_has_audio_flags=[],
+        output_path="/tmp/out.mp4",
+        export_settings=ExportSettings(format="mp4", resolution="1080p", fps=30, quality="high"),
+        overlay_inputs=[(overlay_clip, "/tmp/broll.mp4")],
+        overlay_has_video_flags=[True],
+    )
+    joined = " ".join(command)
+    assert "/tmp/broll.mp4" in joined
+    assert "colorchannelmixer=aa=0.500" in joined
+    assert "overlay=(W-w)/2:(H-h)/2" in joined
+
+
+def test_build_ffmpeg_command_applies_text_after_broll_overlay() -> None:
+    state = _timeline()
+    video_clip = state.tracks[0].clips[0]
+    video_clip.text_overlays = [
+        TextOverlay(
+            id="ov-2",
+            text="hello world",
+            start_sec=0.0,
+            duration_sec=1.0,
+            style="static",
+        )
+    ]
+    overlay_clip = Clip(
+        id="clip-b2",
+        asset_id="asset-b2",
+        start_sec=0,
+        end_sec=2,
+        timeline_start_sec=0.2,
+        speed=1.0,
+        broll_opacity=1.0,
+    )
+    command = build_ffmpeg_command(
+        timeline=state,
+        clip_inputs=[(video_clip, "/tmp/video.mp4")],
+        clip_has_audio_flags=[False],
+        bg_audio_inputs=[],
+        bg_has_audio_flags=[],
+        output_path="/tmp/out.mp4",
+        export_settings=ExportSettings(format="mp4", resolution="1080p", fps=30, quality="high"),
+        overlay_inputs=[(overlay_clip, "/tmp/broll.mp4")],
+        overlay_has_video_flags=[True],
+    )
+    joined = " ".join(command)
+    overlay_idx = joined.find("overlay=(W-w)/2:(H-h)/2")
+    drawtext_idx = joined.find("drawtext=text='hello world'")
+    assert overlay_idx != -1
+    assert drawtext_idx != -1
+    assert overlay_idx < drawtext_idx

@@ -25,6 +25,7 @@ def test_project_create_and_prompt_apply() -> None:
         assert create_res.status_code == 200
         project = create_res.json()
         project_id = project["id"]
+        assert any(track["kind"] == "overlay" for track in project["timeline"]["tracks"])
 
         parse_res = client.post("/api/v1/prompt/parse", json={"prompt": "set aspect 16:9"})
         assert parse_res.status_code == 200

@@ -96,15 +96,35 @@ def _store_transcript(
     return row
 
 
-def _keep_ranges_from_deleted_words(words: list[TranscriptWord], duration_sec: float, kept_ids: set[str]) -> list[dict[str, float]]:
+def _keep_ranges_from_deleted_words(
+    words: list[TranscriptWord],
+    duration_sec: float,
+    kept_ids: set[str],
+    *,
+    context_sec_override: float | None = None,
+    merge_gap_sec_override: float | None = None,
+    min_removed_sec_override: float | None = None,
+) -> list[dict[str, float]]:
     all_ids = {word.id for word in words}
     deleted_ids = all_ids - kept_ids
     if not deleted_ids:
         return [{"start_sec": 0.0, "end_sec": round(duration_sec, 3)}]
 
-    context_sec = _env_float("TRANSCRIPT_CUT_CONTEXT_SEC", 0.0, 0.0)
-    merge_gap_sec = _env_float("TRANSCRIPT_CUT_MERGE_GAP_SEC", 0.08, 0.0)
-    min_removed_sec = _env_float("TRANSCRIPT_CUT_MIN_REMOVAL_SEC", 0.0, 0.0)
+    context_sec = (
+        max(0.0, float(context_sec_override))
+        if context_sec_override is not None
+        else _env_float("TRANSCRIPT_CUT_CONTEXT_SEC", 0.0, 0.0)
+    )
+    merge_gap_sec = (
+        max(0.0, float(merge_gap_sec_override))
+        if merge_gap_sec_override is not None
+        else _env_float("TRANSCRIPT_CUT_MERGE_GAP_SEC", 0.08, 0.0)
+    )
+    min_removed_sec = (
+        max(0.0, float(min_removed_sec_override))
+        if min_removed_sec_override is not None
+        else _env_float("TRANSCRIPT_CUT_MIN_REMOVAL_SEC", 0.0, 0.0)
+    )
 
     ordered_words = sorted(words, key=lambda item: (float(item.start_sec), float(item.end_sec)))
     kept_words = [word for word in ordered_words if word.id in kept_ids]
@@ -339,7 +359,14 @@ def apply_text_cut(
     if not kept_ids:
         raise HTTPException(status_code=400, detail="No valid words were kept; cannot render an empty timeline")
 
-    keep_ranges = _keep_ranges_from_deleted_words(words, row.duration_sec, kept_ids)
+    keep_ranges = _keep_ranges_from_deleted_words(
+        words,
+        row.duration_sec,
+        kept_ids,
+        context_sec_override=payload.context_sec,
+        merge_gap_sec_override=payload.merge_gap_sec,
+        min_removed_sec_override=payload.min_removed_sec,
+    )
     _ranges, timeline_state = _apply_video_ranges(
         session,
         project_id=project_id,

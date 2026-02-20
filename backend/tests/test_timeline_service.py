@@ -2,8 +2,9 @@ import pytest
 
 pytest.importorskip("sqlmodel")
 
+from app.models import Project
 from app.schemas import Clip, OperationPayload, TimelineState, Track
-from app.timeline_service import apply_operation
+from app.timeline_service import apply_operation, make_default_timeline
 
 
 def make_timeline() -> TimelineState:
@@ -165,3 +166,104 @@ def test_set_subtitles_operation() -> None:
     assert len(clip.text_overlays) == 2
     assert clip.text_overlays[0].text == "hello world"
     assert clip.text_overlays[0].style == "karaoke"
+
+
+def test_default_timeline_includes_overlay_track() -> None:
+    project = Project(name="Overlay Track Default", fps=30, width=1080, height=1920)
+    state = make_default_timeline(project)
+    assert any(track.kind == "overlay" for track in state.tracks)
+
+
+def test_broll_clip_lifecycle_operations() -> None:
+    state = make_timeline()
+
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="add_broll_clip",
+            params={
+                "asset_id": "asset-broll",
+                "start_sec": 0.4,
+                "end_sec": 1.9,
+                "timeline_start_sec": 2.0,
+                "opacity": 0.45,
+            },
+        ),
+    )
+    overlay_track = next(track for track in state.tracks if track.kind == "overlay")
+    assert len(overlay_track.clips) == 1
+    clip_id = overlay_track.clips[0].id
+    assert overlay_track.clips[0].broll_opacity == 0.45
+    assert overlay_track.clips[0].audio.mute is True
+
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="move_broll_clip",
+            params={"clip": clip_id, "timeline_start_sec": 3.25},
+        ),
+    )
+    assert overlay_track.clips[0].timeline_start_sec == 3.25
+
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="trim_broll_clip",
+            params={"clip": clip_id, "start_sec": 0.5, "end_sec": 1.4},
+        ),
+    )
+    assert overlay_track.clips[0].start_sec == 0.5
+    assert overlay_track.clips[0].end_sec == 1.4
+
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="set_broll_opacity",
+            params={"clip": clip_id, "opacity": 0.9},
+        ),
+    )
+    assert overlay_track.clips[0].broll_opacity == 0.9
+
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="delete_broll_clip",
+            params={"clip": clip_id},
+        ),
+    )
+    assert len(overlay_track.clips) == 0
+
+
+def test_replace_video_track_keeps_overlay_clips() -> None:
+    state = make_timeline()
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="add_broll_clip",
+            params={
+                "asset_id": "asset-broll",
+                "start_sec": 0.0,
+                "end_sec": 1.0,
+                "timeline_start_sec": 0.2,
+                "opacity": 0.7,
+            },
+        ),
+    )
+    overlay_track = next(track for track in state.tracks if track.kind == "overlay")
+    overlay_clip_id = overlay_track.clips[0].id
+
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="replace_video_track_clips",
+            params={
+                "asset_id": "asset-a",
+                "ranges": [
+                    {"start_sec": 0.0, "end_sec": 2.0},
+                    {"start_sec": 3.0, "end_sec": 4.0},
+                ],
+            },
+        ),
+    )
+    assert len(overlay_track.clips) == 1
+    assert overlay_track.clips[0].id == overlay_clip_id

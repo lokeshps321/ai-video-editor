@@ -20,6 +20,7 @@ from .routers.ingest import router as ingest_router
 from .routers.media import router as media_router
 from .routers.projects import router as projects_router
 from .routers.prompt import router as prompt_router
+from .routers.broll import router as broll_router
 from .routers.render import router as render_router
 from .routers.timeline import router as timeline_router
 from .routers.transcript import router as transcript_router
@@ -60,6 +61,7 @@ app.include_router(projects_router)
 app.include_router(media_router)
 app.include_router(ingest_router)
 app.include_router(prompt_router)
+app.include_router(broll_router)
 app.include_router(timeline_router)
 app.include_router(render_router)
 app.include_router(transcript_router)

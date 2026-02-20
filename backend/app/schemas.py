@@ -70,6 +70,7 @@ class Clip(BaseModel):
     end_sec: float
     timeline_start_sec: float
     speed: float = 1.0
+    broll_opacity: float = 1.0
     transform: ClipTransform = Field(default_factory=ClipTransform)
     adjustments: ClipAdjustments = Field(default_factory=ClipAdjustments)
     audio: ClipAudio = Field(default_factory=ClipAudio)
@@ -82,6 +83,8 @@ class Clip(BaseModel):
             raise ValueError("clip end_sec must be greater than start_sec")
         if self.speed <= 0:
             raise ValueError("clip speed must be greater than 0")
+        if self.broll_opacity < 0 or self.broll_opacity > 1:
+            raise ValueError("clip broll_opacity must be between 0 and 1")
         return self
 
 
@@ -187,6 +190,9 @@ class TranscriptGenerateRequest(BaseModel):
 class TranscriptCutRequest(BaseModel):
     transcript_id: str
     kept_word_ids: list[str] = Field(default_factory=list)
+    context_sec: Optional[float] = Field(default=None, ge=0.0)
+    merge_gap_sec: Optional[float] = Field(default=None, ge=0.0)
+    min_removed_sec: Optional[float] = Field(default=None, ge=0.0)
 
 
 class TranscriptResponse(BaseModel):
@@ -213,7 +219,99 @@ class TranscriptCutResponse(BaseModel):
     kept_word_count: int
     removed_word_count: int
     timeline: TimelineState
-    preview_job: JobResponse
+    preview_job: Optional[JobResponse] = None
+
+
+class BrollSuggestRequest(BaseModel):
+    transcript_id: Optional[str] = None
+    max_slots: int = Field(default=8, ge=1, le=40)
+    candidates_per_slot: int = Field(default=3, ge=1, le=10)
+    min_chunk_words: int = Field(default=4, ge=1, le=30)
+    replace_existing: bool = True
+    include_project_assets: bool = True
+    include_external_sources: bool = True
+    ai_rerank: bool = True
+
+
+class BrollRerollRequest(BaseModel):
+    candidates_per_slot: int = Field(default=3, ge=1, le=10)
+    include_project_assets: bool = True
+    include_external_sources: bool = True
+    ai_rerank: bool = True
+
+
+class BrollChooseRequest(BaseModel):
+    candidate_id: str
+
+
+class BrollRejectRequest(BaseModel):
+    reason: Optional[str] = None
+
+
+class BrollCandidateResponse(BaseModel):
+    id: str
+    project_id: str
+    slot_id: str
+    asset_id: Optional[str]
+    source_type: str
+    source_url: Optional[str]
+    source_label: Optional[str]
+    score: float
+    confidence: Optional[float] = None
+    score_breakdown: dict[str, float] = Field(default_factory=dict)
+    entities: list[str] = Field(default_factory=list)
+    reason: dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+
+
+class BrollSlotResponse(BaseModel):
+    id: str
+    project_id: str
+    transcript_id: Optional[str]
+    start_sec: float
+    end_sec: float
+    anchor_word_ids: list[str] = Field(default_factory=list)
+    concept_text: str
+    locked: bool
+    status: str
+    chosen_candidate_id: Optional[str]
+    created_at: str
+    updated_at: str
+    candidates: list[BrollCandidateResponse] = Field(default_factory=list)
+
+
+class BrollSuggestResponse(BaseModel):
+    project_id: str
+    transcript_id: Optional[str]
+    created_slots: int
+    slots: list[BrollSlotResponse]
+
+
+class BrollAutoApplyRequest(BaseModel):
+    transcript_id: Optional[str] = None
+    max_slots: int = Field(default=8, ge=1, le=40)
+    candidates_per_slot: int = Field(default=3, ge=1, le=10)
+    min_chunk_words: int = Field(default=4, ge=1, le=30)
+    replace_existing: bool = True
+    include_project_assets: bool = True
+    include_external_sources: bool = True
+    ai_rerank: bool = True
+    clear_existing_overlay: bool = True
+    fallback_to_top_candidate: bool = True
+    min_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    overlay_opacity: float = Field(default=0.85, ge=0.0, le=1.0)
+
+
+class BrollAutoApplyResponse(BaseModel):
+    project_id: str
+    transcript_id: Optional[str]
+    created_slots: int
+    auto_chosen_slots: int
+    synced_clip_count: int
+    skipped_slots: int
+    confidence_threshold: float
+    timeline: TimelineState
+    slots: list[BrollSlotResponse]
 
 
 class JobResponse(BaseModel):

@@ -63,6 +63,44 @@ class Transcript(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=_utcnow, nullable=False)
 
 
+class BrollSlot(SQLModel, table=True):
+    id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    project_id: str = Field(index=True)
+    transcript_id: Optional[str] = Field(default=None, index=True)
+    start_sec: float = 0.0
+    end_sec: float = 0.0
+    anchor_word_ids_json: str = "[]"
+    concept_text: str = ""
+    locked: bool = False
+    status: str = "pending"
+    chosen_candidate_id: Optional[str] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=_utcnow, nullable=False)
+    updated_at: datetime = Field(default_factory=_utcnow, nullable=False)
+
+
+class BrollCandidate(SQLModel, table=True):
+    id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    project_id: str = Field(index=True)
+    slot_id: str = Field(index=True)
+    asset_id: Optional[str] = Field(default=None, index=True)
+    source_type: str = "project_asset"
+    source_url: Optional[str] = None
+    source_label: Optional[str] = None
+    score: float = 0.0
+    reason_json: str = "{}"
+    created_at: datetime = Field(default_factory=_utcnow, nullable=False)
+
+
+class BrollChoice(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: str = Field(index=True)
+    slot_id: str = Field(index=True)
+    candidate_id: Optional[str] = Field(default=None, index=True)
+    action: str
+    payload_json: str = "{}"
+    created_at: datetime = Field(default_factory=_utcnow, nullable=False)
+
+
 class OperationRecord(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     project_id: str = Field(index=True)

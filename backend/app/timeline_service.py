@@ -37,6 +37,7 @@ def make_default_timeline(project: Project) -> TimelineState:
         tracks=[
             Track(id=str(uuid4()), kind="video", clips=[]),
             Track(id=str(uuid4()), kind="audio", clips=[]),
+            Track(id=str(uuid4()), kind="overlay", clips=[]),
         ],
     )
 
@@ -183,6 +184,10 @@ def _ensure_time_window(start_sec: float, end_sec: float) -> tuple[float, float]
     return (round(start_sec, 3), round(end_sec, 3))
 
 
+def _clamp_unit_interval(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
 def _apply_trim(state: TimelineState, params: dict[str, Any]) -> None:
     track, idx = _clip_index_by_ref(state, _normalize_clip_ref(params["clip"]))
     clip = track.clips[idx]
@@ -315,6 +320,66 @@ def _apply_add_clip(state: TimelineState, params: dict[str, Any]) -> None:
 def _apply_add_audio_track(state: TimelineState, params: dict[str, Any]) -> None:
     params = {**params, "track_kind": "audio"}
     _apply_add_clip(state, params)
+
+
+def _apply_add_broll_clip(state: TimelineState, params: dict[str, Any]) -> None:
+    track = _primary_track(state, "overlay")
+    start_sec = float(params.get("start_sec", 0.0))
+    end_sec = params.get("end_sec")
+    if end_sec is None:
+        duration = float(params.get("duration_sec", 0.0))
+        if duration <= 0:
+            raise ValueError("add_broll_clip requires end_sec or positive duration_sec")
+        end_sec = start_sec + duration
+    end_sec = float(end_sec)
+    _ensure_time_window(start_sec, end_sec)
+
+    timeline_start = float(params.get("timeline_start_sec", max(0.0, start_sec)))
+    opacity = _clamp_unit_interval(float(params.get("opacity", params.get("broll_opacity", 1.0))))
+    clip = Clip(
+        id=str(uuid4()),
+        asset_id=str(params["asset_id"]),
+        start_sec=round(start_sec, 3),
+        end_sec=round(end_sec, 3),
+        timeline_start_sec=round(timeline_start, 3),
+        broll_opacity=round(opacity, 3),
+    )
+    # B-roll defaults to visual overlay semantics; keep overlay audio muted.
+    clip.audio.mute = True
+    track.clips.append(clip)
+    track.clips = sorted(track.clips, key=lambda item: item.timeline_start_sec)
+
+
+def _apply_move_broll_clip(state: TimelineState, params: dict[str, Any]) -> None:
+    track, idx = _clip_index_by_ref(state, _normalize_clip_ref(params["clip"]), "overlay")
+    clip = track.clips[idx]
+    clip.timeline_start_sec = round(float(params.get("timeline_start_sec", clip.timeline_start_sec)), 3)
+    track.clips = sorted(track.clips, key=lambda item: item.timeline_start_sec)
+
+
+def _apply_trim_broll_clip(state: TimelineState, params: dict[str, Any]) -> None:
+    track, idx = _clip_index_by_ref(state, _normalize_clip_ref(params["clip"]), "overlay")
+    clip = track.clips[idx]
+    start_sec = float(params.get("start_sec", clip.start_sec))
+    end_sec = float(params.get("end_sec", clip.end_sec))
+    start_sec, end_sec = _ensure_time_window(start_sec, end_sec)
+    clip.start_sec = start_sec
+    clip.end_sec = end_sec
+
+
+def _apply_delete_broll_clip(state: TimelineState, params: dict[str, Any]) -> None:
+    track, idx = _clip_index_by_ref(state, _normalize_clip_ref(params["clip"]), "overlay")
+    del track.clips[idx]
+    if bool(params.get("ripple", False)):
+        _ripple_track(track)
+
+
+def _apply_set_broll_opacity(state: TimelineState, params: dict[str, Any]) -> None:
+    track, idx = _clip_index_by_ref(state, _normalize_clip_ref(params["clip"]), "overlay")
+    if "opacity" not in params and "broll_opacity" not in params:
+        raise ValueError("set_broll_opacity requires opacity")
+    value = params.get("opacity", params.get("broll_opacity"))
+    track.clips[idx].broll_opacity = round(_clamp_unit_interval(float(value)), 3)
 
 
 def _apply_volume(state: TimelineState, params: dict[str, Any]) -> None:
@@ -637,6 +702,11 @@ def apply_operation(state: TimelineState, operation: OperationPayload) -> Timeli
         "set_transition": _apply_transition,
         "add_text_overlay": _apply_add_text_overlay,
         "add_audio_track": _apply_add_audio_track,
+        "add_broll_clip": _apply_add_broll_clip,
+        "move_broll_clip": _apply_move_broll_clip,
+        "trim_broll_clip": _apply_trim_broll_clip,
+        "delete_broll_clip": _apply_delete_broll_clip,
+        "set_broll_opacity": _apply_set_broll_opacity,
         "set_volume": _apply_volume,
         "set_speed": _apply_speed,
         "set_aspect_ratio": _apply_aspect_ratio,

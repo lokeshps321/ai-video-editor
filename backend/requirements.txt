@@ -10,3 +10,6 @@ nvidia-cuda-runtime-cu12==12.9.79
 pytest==8.4.1
 httpx==0.28.1
 python-dotenv==1.0.1
+numpy>=1.26,<3
+sentence-transformers>=3.0.0,<4
+spacy>=3.7,<4
