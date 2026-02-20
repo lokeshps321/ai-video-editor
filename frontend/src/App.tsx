@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./lib/api";
-import type { Job, MediaAsset, Project, Transcript, TranscriptWord, VibeAction } from "./types";
+import type { BrollSlot, Clip, Job, MediaAsset, Project, Transcript, TranscriptWord, VibeAction } from "./types";
 import Timeline from "./components/Timeline";
 
 type TextBlock = {
@@ -28,6 +28,93 @@ function formatSeconds(value: number): string {
   const mins = Math.floor(value / 60);
   const secs = Math.floor(value % 60);
   return `${mins}:${secs.toString().padStart(2, "0")}`;
+}
+
+function formatFixedSec(value: number): string {
+  if (!Number.isFinite(value)) return "0.00";
+  return value.toFixed(2);
+}
+
+function clipTimelineDurationSec(clip: Clip): number {
+  return Math.max((clip.end_sec - clip.start_sec) / Math.max(clip.speed, 0.01), 0.1);
+}
+
+function mapEditedTimeToSourceTime(editedSec: number, timelineSortedClips: Clip[]): number {
+  if (!Number.isFinite(editedSec)) return 0;
+  if (!timelineSortedClips.length) return Math.max(editedSec, 0);
+
+  const timelineSec = Math.max(editedSec, 0);
+  for (const clip of timelineSortedClips) {
+    const clipDuration = clipTimelineDurationSec(clip);
+    const clipStart = clip.timeline_start_sec;
+    const clipEnd = clipStart + clipDuration;
+
+    if (timelineSec < clipStart) {
+      return clip.start_sec;
+    }
+    if (timelineSec <= clipEnd) {
+      return clip.start_sec + (timelineSec - clipStart) * Math.max(clip.speed, 0.01);
+    }
+  }
+
+  return timelineSortedClips[timelineSortedClips.length - 1].end_sec;
+}
+
+function mapSourceTimeToEditedTime(sourceSec: number, timelineSortedClips: Clip[]): number {
+  if (!Number.isFinite(sourceSec)) return 0;
+  if (!timelineSortedClips.length) return Math.max(sourceSec, 0);
+
+  const sourceTime = Math.max(sourceSec, 0);
+  for (const clip of timelineSortedClips) {
+    if (sourceTime >= clip.start_sec && sourceTime <= clip.end_sec) {
+      return clip.timeline_start_sec + (sourceTime - clip.start_sec) / Math.max(clip.speed, 0.01);
+    }
+  }
+
+  // If source time falls in a removed gap, snap to the nearest kept edge.
+  let nearestEdited = timelineSortedClips[0].timeline_start_sec;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (const clip of timelineSortedClips) {
+    const clipDuration = clipTimelineDurationSec(clip);
+    const candidates = [
+      { source: clip.start_sec, edited: clip.timeline_start_sec },
+      { source: clip.end_sec, edited: clip.timeline_start_sec + clipDuration }
+    ];
+    for (const candidate of candidates) {
+      const distance = Math.abs(candidate.source - sourceTime);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestEdited = candidate.edited;
+      }
+    }
+  }
+  return nearestEdited;
+}
+
+function candidateSourceTag(sourceType: string): string {
+  if (sourceType === "pexels_video") return "Pexels";
+  if (sourceType === "pixabay_video") return "Pixabay";
+  if (sourceType === "project_asset") return "Library";
+  return sourceType;
+}
+
+function confidenceLabel(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "unknown";
+  if (value >= 0.78) return "high";
+  if (value >= 0.55) return "medium";
+  return "low";
+}
+
+function candidateBreakdownChips(breakdown: Record<string, number>): string[] {
+  const keys = ["semantic", "entity", "metadata", "duration"];
+  const chips: string[] = [];
+  keys.forEach((key) => {
+    const value = breakdown[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      chips.push(`${key} ${(value * 100).toFixed(0)}%`);
+    }
+  });
+  return chips.slice(0, 3);
 }
 
 function resolveMediaPath(path: string): string {
@@ -148,9 +235,20 @@ function App() {
   const [applyingCut, setApplyingCut] = useState(false);
   const [queueingPreview, setQueueingPreview] = useState(false);
   const [runningAction, setRunningAction] = useState<VibeAction | null>(null);
+  const [brollSlots, setBrollSlots] = useState<BrollSlot[]>([]);
+  const [loadingBrollSlots, setLoadingBrollSlots] = useState(false);
+  const [suggestingBroll, setSuggestingBroll] = useState(false);
+  const [autoApplyingBroll, setAutoApplyingBroll] = useState(false);
+  const [syncingBroll, setSyncingBroll] = useState(false);
+  const [brollActionKey, setBrollActionKey] = useState<string | null>(null);
+  const [brollTimelineActionKey, setBrollTimelineActionKey] = useState<string | null>(null);
+  const [brollDraftStartById, setBrollDraftStartById] = useState<Record<string, string>>({});
+  const [brollDraftDurationById, setBrollDraftDurationById] = useState<Record<string, string>>({});
+  const [brollDraftOpacityById, setBrollDraftOpacityById] = useState<Record<string, number>>({});
 
   const [previewJob, setPreviewJob] = useState<Job | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewUpdateQueued, setPreviewUpdateQueued] = useState(false);
   const [currentTimeSec, setCurrentTimeSec] = useState(0);
 
   // Waveform data for timeline
@@ -173,6 +271,29 @@ function App() {
     return videoAssets.find((asset) => asset.id === selectedAssetId) ?? null;
   }, [selectedAssetId, videoAssets]);
 
+  const videoClips = useMemo<Clip[]>(() => {
+    if (!project) return [];
+    const videoTrack = project.timeline.tracks.find((track) => track.kind === "video");
+    return (videoTrack?.clips ?? []).slice().sort((a, b) => a.timeline_start_sec - b.timeline_start_sec);
+  }, [project]);
+
+  const overlayClips = useMemo<Clip[]>(() => {
+    if (!project) return [];
+    const overlayTrack = project.timeline.tracks.find((track) => track.kind === "overlay");
+    return overlayTrack?.clips ?? [];
+  }, [project]);
+
+  const sortedOverlayClips = useMemo<Clip[]>(
+    () => overlayClips.slice().sort((a, b) => a.timeline_start_sec - b.timeline_start_sec),
+    [overlayClips]
+  );
+
+  const mediaById = useMemo(() => {
+    const index = new Map<string, MediaAsset>();
+    media.forEach((item) => index.set(item.id, item));
+    return index;
+  }, [media]);
+
   const transcriptWordIndex = useMemo(() => {
     const index = new Map<string, number>();
     transcript?.words.forEach((word, idx) => {
@@ -191,11 +312,6 @@ function App() {
     return transcript.words.filter((word) => !deletedWordIds.has(word.id)).map((word) => word.id);
   }, [transcript, deletedWordIds]);
 
-  const activeWordId = useMemo(() => {
-    if (!transcript) return null;
-    return transcript.words.find((word) => currentTimeSec >= word.start_sec && currentTimeSec <= word.end_sec)?.id ?? null;
-  }, [transcript, currentTimeSec]);
-
   const lowConfidenceCount = useMemo(() => {
     if (!transcript) return 0;
     return transcript.words.filter(
@@ -213,6 +329,64 @@ function App() {
     if (!selectedVideoAsset) return null;
     return resolveMediaPath(selectedVideoAsset.storage_path);
   }, [previewUrl, selectedVideoAsset]);
+
+  const previewRenderBusy = useMemo(() => {
+    const status = previewJob?.status;
+    return (
+      queueingPreview ||
+      applyingCut ||
+      previewUpdateQueued ||
+      status === "queued" ||
+      status === "running"
+    );
+  }, [queueingPreview, applyingCut, previewUpdateQueued, previewJob?.status]);
+
+  const previewStatusText = useMemo(() => {
+    if (!previewJob) return "not queued";
+    if (previewJob.status === "failed") return "failed";
+    if (previewRenderBusy) return "updating latest edit...";
+    if (previewJob.status === "completed") return "up to date";
+    return previewJob.status;
+  }, [previewJob, previewRenderBusy]);
+
+  const previewBusyDetail = useMemo(() => {
+    if (!previewRenderBusy) return "";
+    if (applyingCut) return "Applying cut and rendering...";
+    if (queueingPreview || previewJob?.status === "queued") return "Preparing render...";
+    if (previewUpdateQueued) return "Latest edit queued...";
+    const progress = Math.max(0, Math.min(100, Math.round(previewJob?.progress ?? 0)));
+    return progress > 0 ? `Rendering ${progress}%` : "Rendering...";
+  }, [previewRenderBusy, applyingCut, queueingPreview, previewUpdateQueued, previewJob?.status, previewJob?.progress]);
+
+  // While a fresh preview is rendering, the visible player can still be the prior render.
+  // In that state, keep transcript tracking on source-time so highlighting remains stable.
+  const transcriptPlaybackTimeSec = useMemo(
+    () => (previewRenderBusy ? Math.max(0, currentTimeSec) : mapEditedTimeToSourceTime(currentTimeSec, videoClips)),
+    [previewRenderBusy, currentTimeSec, videoClips]
+  );
+
+  const activeWordId = useMemo(() => {
+    if (!transcript) return null;
+
+    const direct = transcript.words.find((word) => {
+      if (!previewRenderBusy && deletedWordIds.has(word.id)) return false;
+      return transcriptPlaybackTimeSec >= word.start_sec && transcriptPlaybackTimeSec <= word.end_sec;
+    });
+    if (direct) return direct.id;
+
+    // If playhead sits inside a removed gap, snap highlight to the nearest kept word.
+    const nextKept = transcript.words.find(
+      (word) => !deletedWordIds.has(word.id) && word.start_sec >= transcriptPlaybackTimeSec
+    );
+    if (nextKept) return nextKept.id;
+
+    for (let idx = transcript.words.length - 1; idx >= 0; idx -= 1) {
+      const word = transcript.words[idx];
+      if (deletedWordIds.has(word.id)) continue;
+      if (word.end_sec <= transcriptPlaybackTimeSec) return word.id;
+    }
+    return null;
+  }, [transcript, deletedWordIds, transcriptPlaybackTimeSec, previewRenderBusy]);
 
   // Fetch waveform peaks whenever video asset changes
   useEffect(() => {
@@ -270,10 +444,27 @@ function App() {
     }
   }
 
+  async function refreshBrollSlots(projectId: string, transcriptId?: string) {
+    if (!transcriptId) {
+      setBrollSlots([]);
+      return;
+    }
+    setLoadingBrollSlots(true);
+    try {
+      const slots = await api.listBrollSlots(projectId, transcriptId);
+      setBrollSlots(slots);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoadingBrollSlots(false);
+    }
+  }
+
   async function queuePreview(force = false) {
     if (!project || queueingPreview) return;
     if (!force && previewJob && (previewJob.status === "queued" || previewJob.status === "running")) {
       pendingPreviewRefreshRef.current = true;
+      setPreviewUpdateQueued(true);
       setNotice("Preview render in progress. Latest edit will render next.");
       return;
     }
@@ -282,6 +473,7 @@ function App() {
     try {
       const job = await api.renderPreview(project.id, force);
       setPreviewJob(job);
+      setPreviewUpdateQueued(false);
       if (job.status === "completed" && job.output_path) {
         setPreviewUrl(resolveMediaPath(job.output_path));
       }
@@ -318,7 +510,11 @@ function App() {
     setApplyingCut(true);
     setError(null);
     try {
-      const result = await api.applyTranscriptCut(project.id, transcript.id, keptIds);
+      const result = await api.applyTranscriptCut(project.id, transcript.id, keptIds, {
+        contextSec: 0,
+        mergeGapSec: 0.08,
+        minRemovedSec: 0
+      });
       setProject((prev) => (prev ? { ...prev, timeline: result.timeline } : prev));
       lastAppliedSignatureRef.current = signature;
       setNotice(`Cut applied. Removed ${result.removed_word_count} word${result.removed_word_count === 1 ? "" : "s"}.`);
@@ -344,6 +540,12 @@ function App() {
       setAnchorWordId(null);
       setPreviewJob(null);
       setPreviewUrl(null);
+      setPreviewUpdateQueued(false);
+      setBrollSlots([]);
+      setBrollTimelineActionKey(null);
+      setBrollDraftStartById({});
+      setBrollDraftDurationById({});
+      setBrollDraftOpacityById({});
       undoStack.current = [];
       redoStack.current = [];
       setNotice("Project created. Upload a video to start.");
@@ -387,6 +589,11 @@ function App() {
       setDeletedWordIds(new Set());
       setSelectedWordIds(new Set());
       setAnchorWordId(null);
+      setBrollSlots([]);
+      setBrollTimelineActionKey(null);
+      setBrollDraftStartById({});
+      setBrollDraftDurationById({});
+      setBrollDraftOpacityById({});
       lastAppliedSignatureRef.current = "";
       undoStack.current = [];
       redoStack.current = [];
@@ -395,6 +602,7 @@ function App() {
           ? "Transcript generated (fallback mode). Install faster-whisper for higher accuracy."
           : "Transcript generated with word timestamps."
       );
+      await refreshBrollSlots(project.id, response.transcript.id);
       await queuePreview();
     } catch (err) {
       setError((err as Error).message);
@@ -418,6 +626,7 @@ function App() {
       if (response.transcript_id) {
         const latestTranscript = await api.getTranscript(project.id, response.transcript_id);
         setTranscript(latestTranscript);
+        await refreshBrollSlots(project.id, latestTranscript.id);
       }
       setNotice(response.details ?? "Action applied.");
     } catch (err) {
@@ -476,19 +685,6 @@ function App() {
     setSelectedWordIds(new Set(range));
   }
 
-  function toggleWordDeleted(wordId: string) {
-    pushUndo();
-    setDeletedWordIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(wordId)) {
-        next.delete(wordId);
-      } else {
-        next.add(wordId);
-      }
-      return next;
-    });
-  }
-
   function toggleBlock(block: TextBlock) {
     const allDeleted = block.wordIds.every((id) => deletedWordIds.has(id));
     updateDeletedWords(block.wordIds, !allDeleted);
@@ -496,7 +692,9 @@ function App() {
 
   function seekToWord(word: TranscriptWord) {
     if (!videoRef.current) return;
-    videoRef.current.currentTime = Math.max(0, word.start_sec);
+    const targetSec = previewRenderBusy ? Math.max(0, word.start_sec) : mapSourceTimeToEditedTime(word.start_sec, videoClips);
+    videoRef.current.currentTime = targetSec;
+    setCurrentTimeSec(targetSec);
   }
 
   // ── Inline editing ─────────────────────────────────────────────────
@@ -553,6 +751,39 @@ function App() {
 
   // ── Effects ────────────────────────────────────────────────────────
   useEffect(() => {
+    if (!project?.id || !transcript?.id) {
+      setBrollSlots([]);
+      return;
+    }
+    void refreshBrollSlots(project.id, transcript.id);
+  }, [project?.id, transcript?.id]);
+
+  useEffect(() => {
+    setBrollDraftStartById(() => {
+      const next: Record<string, string> = {};
+      sortedOverlayClips.forEach((clip) => {
+        next[clip.id] = formatFixedSec(clip.timeline_start_sec);
+      });
+      return next;
+    });
+    setBrollDraftDurationById(() => {
+      const next: Record<string, string> = {};
+      sortedOverlayClips.forEach((clip) => {
+        next[clip.id] = formatFixedSec(clipTimelineDurationSec(clip));
+      });
+      return next;
+    });
+    setBrollDraftOpacityById(() => {
+      const next: Record<string, number> = {};
+      sortedOverlayClips.forEach((clip) => {
+        const opacity = typeof clip.broll_opacity === "number" ? Math.max(0, Math.min(1, clip.broll_opacity)) : 1;
+        next[clip.id] = opacity;
+      });
+      return next;
+    });
+  }, [sortedOverlayClips]);
+
+  useEffect(() => {
     let active = true;
     void api
       .health()
@@ -584,16 +815,19 @@ function App() {
     const interval = window.setInterval(async () => {
       try {
         const refreshed = await api.getJob(previewJob.id);
+        if ((refreshed.status === "completed" || refreshed.status === "failed") && pendingPreviewRefreshRef.current) {
+          pendingPreviewRefreshRef.current = false;
+          setPreviewUpdateQueued(false);
+          void queuePreview(true);
+          return;
+        }
+
         setPreviewJob(refreshed);
         if (refreshed.status === "completed" && refreshed.output_path) {
           setPreviewUrl(resolveMediaPath(refreshed.output_path));
         }
         if (refreshed.status === "failed") {
           setError(refreshed.error ?? "Preview render failed. Check logs.");
-        }
-        if ((refreshed.status === "completed" || refreshed.status === "failed") && pendingPreviewRefreshRef.current) {
-          pendingPreviewRefreshRef.current = false;
-          void queuePreview(true);
         }
       } catch {
         // Ignore transient polling errors
@@ -669,6 +903,330 @@ function App() {
     window.addEventListener("mouseup", onMouseUp);
     return () => window.removeEventListener("mouseup", onMouseUp);
   }, []);
+
+  async function suggestBroll() {
+    if (!project || !transcript || suggestingBroll) return;
+    setSuggestingBroll(true);
+    setError(null);
+    try {
+      const response = await api.suggestBroll(project.id, {
+        transcript_id: transcript.id,
+        max_slots: 8,
+        candidates_per_slot: 3,
+        replace_existing: true,
+        include_project_assets: true,
+        include_external_sources: true,
+        ai_rerank: true,
+      });
+      setBrollSlots(response.slots);
+      setNotice(`Generated ${response.created_slots} B-roll slot${response.created_slots === 1 ? "" : "s"}.`);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSuggestingBroll(false);
+    }
+  }
+
+  async function autoApplyBroll() {
+    if (!project || !transcript || autoApplyingBroll) return;
+    setAutoApplyingBroll(true);
+    setError(null);
+    try {
+      const response = await api.autoApplyBroll(project.id, {
+        transcript_id: transcript.id,
+        max_slots: 8,
+        candidates_per_slot: 3,
+        replace_existing: true,
+        include_project_assets: true,
+        include_external_sources: true,
+        ai_rerank: true,
+        clear_existing_overlay: true,
+        fallback_to_top_candidate: true,
+        overlay_opacity: 0.85,
+      });
+      setBrollSlots(response.slots);
+      setProject((prev) => (prev ? { ...prev, timeline: response.timeline } : prev));
+      await refreshMedia(project.id);
+      setNotice(
+        `Auto-applied B-roll: ${response.auto_chosen_slots} chosen, ${response.synced_clip_count} synced, ${response.skipped_slots} skipped (threshold ${(response.confidence_threshold * 100).toFixed(0)}%).`
+      );
+      await queuePreview();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setAutoApplyingBroll(false);
+    }
+  }
+
+  async function chooseBroll(slotId: string, candidateId: string) {
+    if (!project || brollActionKey) return;
+    setBrollActionKey(`choose:${slotId}:${candidateId}`);
+    setError(null);
+    try {
+      const updated = await api.chooseBrollCandidate(project.id, slotId, candidateId);
+      setBrollSlots((prev) => prev.map((slot) => (slot.id === slotId ? updated : slot)));
+      await refreshMedia(project.id);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBrollActionKey(null);
+    }
+  }
+
+  async function rerollBroll(slotId: string) {
+    if (!project || brollActionKey) return;
+    const previousSlot = brollSlots.find((slot) => slot.id === slotId) ?? null;
+    const previousCount = previousSlot?.candidates.length ?? 0;
+    setBrollActionKey(`reroll:${slotId}`);
+    setError(null);
+    try {
+      const updated = await api.rerollBrollSlot(project.id, slotId, {
+        candidates_per_slot: 3,
+        include_project_assets: true,
+        include_external_sources: true,
+        ai_rerank: true,
+      });
+      const nextCount = updated.candidates.length;
+      const addedCount = Math.max(0, nextCount - previousCount);
+      setBrollSlots((prev) => prev.map((slot) => (slot.id === slotId ? updated : slot)));
+      setNotice(
+        addedCount > 0
+          ? `Added ${addedCount} new B-roll variant${addedCount === 1 ? "" : "s"} for this slot.`
+          : "Rerolled slot candidates."
+      );
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBrollActionKey(null);
+    }
+  }
+
+  async function rejectBroll(slotId: string) {
+    if (!project || brollActionKey) return;
+    setBrollActionKey(`reject:${slotId}`);
+    setError(null);
+    try {
+      const updated = await api.rejectBrollSlot(project.id, slotId, "manual_reject");
+      setBrollSlots((prev) => prev.map((slot) => (slot.id === slotId ? updated : slot)));
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBrollActionKey(null);
+    }
+  }
+
+  async function syncBrollToTimeline() {
+    if (!project || syncingBroll) return;
+    const chosenSlots = brollSlots
+      .filter((slot) => slot.chosen_candidate_id)
+      .sort((a, b) => a.start_sec - b.start_sec);
+
+    const existingOverlayClips = project.timeline.tracks
+      .filter((track) => track.kind === "overlay")
+      .flatMap((track) => track.clips);
+
+    const operations: Array<{ op_type: string; params: Record<string, unknown>; source?: string }> = [];
+    existingOverlayClips.forEach((clip) => {
+      operations.push({
+        op_type: "delete_broll_clip",
+        params: { clip: clip.id },
+        source: "ui",
+      });
+    });
+
+    chosenSlots.forEach((slot) => {
+      const candidate = slot.candidates.find((item) => item.id === slot.chosen_candidate_id);
+      if (!candidate?.asset_id) return;
+      const slotDuration = Math.max(0.2, slot.end_sec - slot.start_sec);
+      const candidateAsset = mediaById.get(candidate.asset_id);
+      const sourceDuration = candidateAsset?.duration_sec && candidateAsset.duration_sec > 0
+        ? Math.min(candidateAsset.duration_sec, slotDuration)
+        : slotDuration;
+      operations.push({
+        op_type: "add_broll_clip",
+        params: {
+          asset_id: candidate.asset_id,
+          start_sec: 0,
+          end_sec: Number(sourceDuration.toFixed(3)),
+          timeline_start_sec: Number(slot.start_sec.toFixed(3)),
+          opacity: 0.85,
+        },
+        source: "ui",
+      });
+    });
+
+    if (!operations.length) {
+      setNotice("No chosen B-roll slots to sync.");
+      return;
+    }
+
+    setSyncingBroll(true);
+    setError(null);
+    try {
+      const response = await api.applyOperations(project.id, operations);
+      setProject((prev) => (prev ? { ...prev, timeline: response.timeline } : prev));
+      setNotice(`Synced ${chosenSlots.length} chosen B-roll slot${chosenSlots.length === 1 ? "" : "s"} to timeline.`);
+      await queuePreview();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSyncingBroll(false);
+    }
+  }
+
+  function isBrollTimelineClipBusy(clipId: string): boolean {
+    return brollTimelineActionKey?.endsWith(`:${clipId}`) ?? false;
+  }
+
+  function getOverlayClipById(clipId: string): Clip | null {
+    return sortedOverlayClips.find((clip) => clip.id === clipId) ?? null;
+  }
+
+  async function applyBrollTimelineOperations(
+    clipId: string,
+    action: "move" | "trim" | "opacity" | "delete",
+    operations: Array<{ op_type: string; params: Record<string, unknown>; source?: string }>,
+    noticeMessage: string
+  ) {
+    if (!project || !operations.length) return;
+    setBrollTimelineActionKey(`${action}:${clipId}`);
+    setError(null);
+    try {
+      const response = await api.applyOperations(project.id, operations);
+      setProject((prev) => (prev ? { ...prev, timeline: response.timeline } : prev));
+      setNotice(noticeMessage);
+      await queuePreview();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBrollTimelineActionKey(null);
+    }
+  }
+
+  async function setBrollClipStart(clipId: string, requestedStartSec: number) {
+    const clip = getOverlayClipById(clipId);
+    if (!clip) return;
+    const nextStart = Number(Math.max(0, requestedStartSec).toFixed(3));
+    const current = Number(clip.timeline_start_sec.toFixed(3));
+    if (Math.abs(nextStart - current) < 0.001) {
+      setBrollDraftStartById((prev) => ({ ...prev, [clip.id]: formatFixedSec(current) }));
+      return;
+    }
+
+    await applyBrollTimelineOperations(
+      clip.id,
+      "move",
+      [
+        {
+          op_type: "move_broll_clip",
+          params: { clip: clip.id, timeline_start_sec: nextStart },
+          source: "ui",
+        },
+      ],
+      "Updated B-roll start time."
+    );
+  }
+
+  async function setBrollClipDuration(clipId: string, requestedDurationSec: number) {
+    const clip = getOverlayClipById(clipId);
+    if (!clip) return;
+    if (!Number.isFinite(requestedDurationSec) || requestedDurationSec <= 0) {
+      setBrollDraftDurationById((prev) => ({ ...prev, [clip.id]: formatFixedSec(clipTimelineDurationSec(clip)) }));
+      return;
+    }
+
+    const currentDuration = clipTimelineDurationSec(clip);
+    if (Math.abs(requestedDurationSec - currentDuration) < 0.01) {
+      setBrollDraftDurationById((prev) => ({ ...prev, [clip.id]: formatFixedSec(currentDuration) }));
+      return;
+    }
+
+    const maxByAsset = mediaById.get(clip.asset_id)?.duration_sec ?? null;
+    const proposedEnd = clip.start_sec + (requestedDurationSec * Math.max(clip.speed, 0.01));
+    let boundedEnd = proposedEnd;
+    if (typeof maxByAsset === "number" && maxByAsset > 0) {
+      boundedEnd = Math.min(boundedEnd, maxByAsset);
+    }
+    boundedEnd = Math.max(clip.start_sec + 0.1, boundedEnd);
+
+    await applyBrollTimelineOperations(
+      clip.id,
+      "trim",
+      [
+        {
+          op_type: "trim_broll_clip",
+          params: { clip: clip.id, start_sec: clip.start_sec, end_sec: Number(boundedEnd.toFixed(3)) },
+          source: "ui",
+        },
+      ],
+      "Updated B-roll duration."
+    );
+  }
+
+  async function setBrollClipOpacity(clipId: string, nextOpacity: number) {
+    const clip = getOverlayClipById(clipId);
+    if (!clip) return;
+    const clamped = Math.max(0, Math.min(1, nextOpacity));
+    const current = typeof clip.broll_opacity === "number" ? clip.broll_opacity : 1;
+    if (Math.abs(clamped - current) < 0.01) {
+      setBrollDraftOpacityById((prev) => ({ ...prev, [clip.id]: clamped }));
+      return;
+    }
+
+    await applyBrollTimelineOperations(
+      clip.id,
+      "opacity",
+      [
+        {
+          op_type: "set_broll_opacity",
+          params: { clip: clip.id, opacity: Number(clamped.toFixed(3)) },
+          source: "ui",
+        },
+      ],
+      "Updated B-roll opacity."
+    );
+  }
+
+  async function removeBrollClipById(clipId: string) {
+    const clip = getOverlayClipById(clipId);
+    if (!clip) return;
+    await applyBrollTimelineOperations(
+      clip.id,
+      "delete",
+      [
+        {
+          op_type: "delete_broll_clip",
+          params: { clip: clip.id },
+          source: "ui",
+        },
+      ],
+      "Removed B-roll clip from timeline."
+    );
+  }
+
+  async function commitBrollStart(clip: Clip) {
+    const raw = brollDraftStartById[clip.id] ?? formatFixedSec(clip.timeline_start_sec);
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      setBrollDraftStartById((prev) => ({ ...prev, [clip.id]: formatFixedSec(clip.timeline_start_sec) }));
+      return;
+    }
+    await setBrollClipStart(clip.id, parsed);
+  }
+
+  async function commitBrollDuration(clip: Clip) {
+    const raw = brollDraftDurationById[clip.id] ?? formatFixedSec(clipTimelineDurationSec(clip));
+    const parsed = Number(raw);
+    await setBrollClipDuration(clip.id, parsed);
+  }
+
+  async function commitBrollOpacity(clip: Clip, nextOpacity: number) {
+    await setBrollClipOpacity(clip.id, nextOpacity);
+  }
+
+  async function removeBrollClipFromTimeline(clip: Clip) {
+    await removeBrollClipById(clip.id);
+  }
 
   return (
     <div className="appShell">
@@ -830,7 +1388,7 @@ function App() {
                     {transcript.words.map((word) => {
                       const isDeleted = deletedWordIds.has(word.id);
                       const isSelected = selectedWordIds.has(word.id);
-                      const isActive = activeWordId === word.id && !isDeleted;
+                      const isActive = activeWordId === word.id && (!isDeleted || previewRenderBusy);
                       const isFiller = fillerWordIds.has(word.id) && !isDeleted;
                       const isSearchMatch = searchMatchIds.includes(word.id);
                       const isCurrentMatch = searchMatchIds[searchMatchIndex] === word.id;
@@ -951,18 +1509,33 @@ function App() {
               <h2>Video Preview + AI Actions</h2>
               {!previewSource && <p className="muted">Upload a video to preview.</p>}
               {previewSource && (
-                <video
-                  ref={videoRef}
-                  key={previewSource}
-                  src={previewSource}
-                  controls
-                  className="previewVideo"
-                  onTimeUpdate={(event) => setCurrentTimeSec(event.currentTarget.currentTime)}
-                />
+                <div className="previewStage">
+                  <video
+                    ref={videoRef}
+                    key={previewSource}
+                    src={previewSource}
+                    controls
+                    className="previewVideo"
+                    onTimeUpdate={(event) => setCurrentTimeSec(event.currentTarget.currentTime)}
+                  />
+                  {previewRenderBusy && (
+                    <div className="previewBusyBadge" aria-live="polite">
+                      <span className="previewSpinner" aria-hidden="true" />
+                      <span>{previewBusyDetail}</span>
+                    </div>
+                  )}
+                </div>
               )}
               <div className="previewMeta">
                 <span>Playhead: {formatSeconds(currentTimeSec)}</span>
-                <span>Preview: {previewJob ? `${previewJob.status} (${previewJob.progress}%)` : "not queued"}</span>
+                <span>Preview: {previewStatusText}</span>
+                {previewRenderBusy && previewSource && (
+                  <span>Showing last rendered preview while update runs.</span>
+                )}
+                <span>
+                  Job: {previewJob ? `${previewJob.status} (${previewJob.progress}%)` : "not queued"}
+                  {previewUpdateQueued ? " · update queued" : ""}
+                </span>
               </div>
               {previewJob?.status === "failed" && (
                 <p className="warning">Preview failed: {previewJob.error ?? "Unknown render error"}</p>
@@ -997,6 +1570,227 @@ function App() {
                   </button>
                 </div>
               </section>
+
+              <section className="aiPanel brollPanel">
+                <h3>B-roll Studio</h3>
+                <p className="muted">Generate visual cutaway suggestions from transcript chunks. Transcript edits stay unchanged.</p>
+                <div className="wordActions">
+                  <button
+                    onClick={() => void autoApplyBroll()}
+                    disabled={!project || !transcript || autoApplyingBroll || loadingBrollSlots || suggestingBroll || syncingBroll}
+                    title="Generate slots, auto-pick confident candidates, and sync to timeline in one step."
+                  >
+                    {autoApplyingBroll ? "Auto-applying..." : "⚡ Auto B-roll (1-click)"}
+                  </button>
+                  <button
+                    onClick={() => void suggestBroll()}
+                    disabled={!project || !transcript || suggestingBroll || loadingBrollSlots || autoApplyingBroll}
+                  >
+                    {suggestingBroll ? "Suggesting..." : "✨ Suggest B-roll"}
+                  </button>
+                  <button
+                    onClick={() => project && transcript && void refreshBrollSlots(project.id, transcript.id)}
+                    disabled={!project || !transcript || loadingBrollSlots}
+                  >
+                    {loadingBrollSlots ? "Refreshing..." : "↻ Refresh"}
+                  </button>
+                  <button
+                    onClick={() => void syncBrollToTimeline()}
+                    disabled={!project || syncingBroll || autoApplyingBroll}
+                    title="Clears existing overlay clips and applies all chosen B-roll slots."
+                  >
+                    {syncingBroll ? "Syncing..." : "🎬 Sync to Timeline"}
+                  </button>
+                </div>
+                <p className="muted brollMeta">
+                  Slots: {brollSlots.length} · Chosen: {brollSlots.filter((slot) => !!slot.chosen_candidate_id).length} ·
+                  Timeline overlay clips: {overlayClips.length}
+                </p>
+                <div className="brollSlots">
+                  {!brollSlots.length && <p className="muted">No B-roll slots yet. Generate transcript, then click Suggest B-roll.</p>}
+                  {brollSlots.map((slot) => {
+                    const chosenCandidate = slot.candidates.find((candidate) => candidate.id === slot.chosen_candidate_id) ?? null;
+                    return (
+                      <article key={slot.id} className={`brollSlotCard ${slot.status}`}>
+                        <div className="brollSlotHead">
+                          <span className="brollTime">{formatSeconds(slot.start_sec)}-{formatSeconds(slot.end_sec)}</span>
+                          <span className="brollStatus">{slot.status}</span>
+                        </div>
+                        <p className="brollConcept">{slot.concept_text || "general scene"}</p>
+                        {chosenCandidate && (
+                          <p className="brollChosen">
+                            Chosen: {chosenCandidate.source_label ?? chosenCandidate.asset_id ?? "candidate"}
+                          </p>
+                        )}
+                        <div className="brollCandidates">
+                          {slot.candidates.slice(0, 3).map((candidate) => {
+                            const busyChoose = brollActionKey === `choose:${slot.id}:${candidate.id}`;
+                            const isChosen = slot.chosen_candidate_id === candidate.id;
+                            const confidence = typeof candidate.confidence === "number" ? candidate.confidence : null;
+                            const confidencePercent = confidence !== null ? `${(confidence * 100).toFixed(0)}%` : null;
+                            const confidenceTier = confidenceLabel(confidence);
+                            const breakdownChips = candidateBreakdownChips(candidate.score_breakdown ?? {});
+                            return (
+                              <button
+                                key={candidate.id}
+                                type="button"
+                                className={`brollCandidateBtn ${isChosen ? "chosen" : ""}`}
+                                onClick={() => void chooseBroll(slot.id, candidate.id)}
+                                disabled={!!brollActionKey || slot.locked}
+                                title={`score ${(candidate.score * 100).toFixed(0)}%`}
+                              >
+                                <span className="brollCandidateMain">
+                                  {candidateSourceTag(candidate.source_type)} · {candidate.source_label ?? candidate.asset_id ?? "asset"}
+                                </span>
+                                <span className="brollCandidateSide">
+                                  {confidencePercent && (
+                                    <span className={`brollConfidence ${confidenceTier}`}>
+                                      {confidenceTier} {confidencePercent}
+                                    </span>
+                                  )}
+                                  <span>{busyChoose ? "..." : `${(candidate.score * 100).toFixed(0)}%`}</span>
+                                </span>
+                                {!!breakdownChips.length && (
+                                  <span className="brollReasonChips">
+                                    {breakdownChips.join(" · ")}
+                                  </span>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <div className="brollSlotActions">
+                          <button
+                            type="button"
+                            onClick={() => void rerollBroll(slot.id)}
+                            disabled={!!brollActionKey || slot.locked}
+                          >
+                            {brollActionKey === `reroll:${slot.id}` ? "Rerolling..." : "Re-roll"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void rejectBroll(slot.id)}
+                            disabled={!!brollActionKey || slot.locked}
+                          >
+                            {brollActionKey === `reject:${slot.id}` ? "Rejecting..." : "Reject Slot"}
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+
+                <div className="brollTimelineEditor">
+                  <h4>Timeline B-roll Edits</h4>
+                  {!sortedOverlayClips.length && (
+                    <p className="muted">No B-roll clips in timeline yet. Choose slots, then sync to timeline.</p>
+                  )}
+                  {sortedOverlayClips.map((clip, index) => {
+                    const clipBusy = isBrollTimelineClipBusy(clip.id);
+                    const clipDuration = clipTimelineDurationSec(clip);
+                    const clipOpacity = typeof clip.broll_opacity === "number" ? clip.broll_opacity : 1;
+                    const draftStart = brollDraftStartById[clip.id] ?? formatFixedSec(clip.timeline_start_sec);
+                    const draftDuration = brollDraftDurationById[clip.id] ?? formatFixedSec(clipDuration);
+                    const draftOpacity = brollDraftOpacityById[clip.id] ?? clipOpacity;
+                    const source = mediaById.get(clip.asset_id);
+                    return (
+                      <article key={clip.id} className="brollTimelineCard">
+                        <div className="brollTimelineHead">
+                          <span>B{index + 1}</span>
+                          <span>{source?.filename ?? clip.asset_id}</span>
+                        </div>
+                        <div className="brollTimelineFields">
+                          <label>
+                            Start
+                            <input
+                              type="number"
+                              min={0}
+                              step={0.05}
+                              value={draftStart}
+                              disabled={clipBusy}
+                              onChange={(event) =>
+                                setBrollDraftStartById((prev) => ({ ...prev, [clip.id]: event.target.value }))
+                              }
+                              onBlur={() => void commitBrollStart(clip)}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                  event.currentTarget.blur();
+                                }
+                              }}
+                            />
+                          </label>
+                          <label>
+                            Duration
+                            <input
+                              type="number"
+                              min={0.1}
+                              step={0.05}
+                              value={draftDuration}
+                              disabled={clipBusy}
+                              onChange={(event) =>
+                                setBrollDraftDurationById((prev) => ({ ...prev, [clip.id]: event.target.value }))
+                              }
+                              onBlur={() => void commitBrollDuration(clip)}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                  event.currentTarget.blur();
+                                }
+                              }}
+                            />
+                          </label>
+                        </div>
+                        <label className="brollOpacityField">
+                          Opacity {(draftOpacity * 100).toFixed(0)}%
+                          <input
+                            type="range"
+                            min={0}
+                            max={1}
+                            step={0.01}
+                            value={draftOpacity}
+                            disabled={clipBusy}
+                            onChange={(event) =>
+                              setBrollDraftOpacityById((prev) => ({
+                                ...prev,
+                                [clip.id]: Number(event.target.value),
+                              }))
+                            }
+                            onMouseUp={(event) =>
+                              void commitBrollOpacity(clip, Number(event.currentTarget.value))
+                            }
+                            onTouchEnd={(event) =>
+                              void commitBrollOpacity(clip, Number(event.currentTarget.value))
+                            }
+                            onBlur={(event) =>
+                              void commitBrollOpacity(clip, Number(event.currentTarget.value))
+                            }
+                          />
+                        </label>
+                        <div className="brollTimelineActions">
+                          <button
+                            type="button"
+                            disabled={clipBusy}
+                            onClick={() => {
+                              if (videoRef.current) {
+                                videoRef.current.currentTime = clip.timeline_start_sec;
+                              }
+                              setCurrentTimeSec(clip.timeline_start_sec);
+                            }}
+                          >
+                            Jump
+                          </button>
+                          <button
+                            type="button"
+                            disabled={clipBusy}
+                            onClick={() => void removeBrollClipFromTimeline(clip)}
+                          >
+                            {clipBusy ? "Working..." : "Remove"}
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              </section>
             </section>
           </main>
 
@@ -1010,6 +1804,7 @@ function App() {
               selectedWordIds={selectedWordIds}
               activeWordId={activeWordId}
               waveformPeaks={waveformPeaks}
+              overlayClips={overlayClips}
               onSeek={(sec) => {
                 if (videoRef.current) videoRef.current.currentTime = sec;
                 setCurrentTimeSec(sec);
@@ -1027,6 +1822,23 @@ function App() {
               }}
               onDeleteSelected={markSelectionDeleted}
               onRestoreSelected={restoreSelection}
+              onMoveBrollClip={(clipId, timelineStartSec) => {
+                if (brollTimelineActionKey) return;
+                void setBrollClipStart(clipId, timelineStartSec);
+              }}
+              onTrimBrollClip={(clipId, durationSec) => {
+                if (brollTimelineActionKey) return;
+                void setBrollClipDuration(clipId, durationSec);
+              }}
+              onSetBrollOpacity={(clipId, opacity) => {
+                if (brollTimelineActionKey) return;
+                void setBrollClipOpacity(clipId, opacity);
+              }}
+              onDeleteBrollClip={(clipId) => {
+                if (brollTimelineActionKey) return;
+                void removeBrollClipById(clipId);
+              }}
+              brollEditBusy={!!brollTimelineActionKey}
             />
           )}
         </>

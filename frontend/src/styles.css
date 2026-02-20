@@ -577,12 +577,52 @@ button:not(:disabled):active {
 }
 
 /* ── Video preview ───────────────────────────────── */
+.previewStage {
+  position: relative;
+}
+
 .previewVideo {
   width: 100%;
   aspect-ratio: 9 / 16;
   border-radius: var(--radius);
   border: 1px solid var(--border-light);
   background: #000;
+}
+
+.previewBusyBadge {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(126, 220, 255, 0.45);
+  background: rgba(7, 12, 21, 0.84);
+  color: #e6f7ff;
+  font-size: 0.72rem;
+  font-family: "JetBrains Mono", monospace;
+  pointer-events: none;
+}
+
+.previewSpinner {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #73dcff;
+  animation: previewPulse 1s ease-in-out infinite;
+}
+
+@keyframes previewPulse {
+  0%, 100% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 .previewMeta {
@@ -628,6 +668,254 @@ button:not(:disabled):active {
   transform: none;
 }
 
+/* ── B-roll panel ───────────────────────────────── */
+.brollPanel {
+  margin-top: 12px;
+  padding-top: 12px;
+}
+
+.brollMeta {
+  margin: 8px 0 10px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.74rem;
+}
+
+.brollSlots {
+  display: grid;
+  gap: 8px;
+  max-height: 280px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.brollSlotCard {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  padding: 9px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.brollSlotCard.chosen {
+  border-color: rgba(0, 210, 211, 0.45);
+  background: rgba(0, 210, 211, 0.08);
+}
+
+.brollSlotCard.rejected {
+  border-color: rgba(255, 107, 107, 0.35);
+  background: rgba(255, 107, 107, 0.08);
+}
+
+.brollSlotHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.brollTime {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.brollStatus {
+  text-transform: uppercase;
+  font-size: 0.64rem;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.brollConcept {
+  margin: 0 0 6px;
+  font-size: 0.82rem;
+  color: var(--ink);
+}
+
+.brollChosen {
+  margin: 0 0 6px;
+  font-size: 0.75rem;
+  color: #55e6e6;
+}
+
+.brollCandidates {
+  display: grid;
+  gap: 5px;
+}
+
+.brollCandidateBtn {
+  min-height: 30px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  font-size: 0.75rem;
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ink);
+  text-align: left;
+}
+
+.brollCandidateMain {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.brollCandidateSide {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: "JetBrains Mono", monospace;
+}
+
+.brollConfidence {
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.brollConfidence.high {
+  border-color: rgba(57, 255, 136, 0.55);
+  color: #6cf0b0;
+}
+
+.brollConfidence.medium {
+  border-color: rgba(255, 215, 64, 0.5);
+  color: #f8d56d;
+}
+
+.brollConfidence.low {
+  border-color: rgba(255, 107, 107, 0.5);
+  color: #ff8f8f;
+}
+
+.brollReasonChips {
+  width: 100%;
+  font-size: 0.66rem;
+  color: var(--muted);
+}
+
+.brollCandidateBtn.chosen {
+  border-color: rgba(0, 210, 211, 0.5);
+  background: rgba(0, 210, 211, 0.12);
+}
+
+.brollCandidateBtn:not(:disabled):hover {
+  transform: none;
+  box-shadow: none;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.brollSlotActions {
+  display: flex;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.brollSlotActions button {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 0.74rem;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-light);
+}
+
+.brollSlotActions button:not(:disabled):hover {
+  transform: none;
+  box-shadow: none;
+}
+
+.brollTimelineEditor {
+  margin-top: 10px;
+  border-top: 1px dashed var(--border-light);
+  padding-top: 10px;
+  display: grid;
+  gap: 7px;
+}
+
+.brollTimelineEditor h4 {
+  margin: 0;
+  font-size: 0.78rem;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+
+.brollTimelineCard {
+  border: 1px solid rgba(85, 230, 230, 0.3);
+  border-radius: 7px;
+  padding: 8px;
+  background: rgba(0, 210, 211, 0.05);
+  display: grid;
+  gap: 7px;
+}
+
+.brollTimelineHead {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.72rem;
+  color: var(--ink);
+  font-family: "JetBrains Mono", monospace;
+}
+
+.brollTimelineFields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.brollTimelineFields label {
+  display: grid;
+  gap: 4px;
+  font-size: 0.68rem;
+  color: var(--muted);
+}
+
+.brollTimelineFields input {
+  width: 100%;
+  min-height: 28px;
+  border-radius: 6px;
+  border: 1px solid var(--border-light);
+  background: rgba(15, 17, 23, 0.5);
+  color: var(--ink);
+  padding: 0 7px;
+  font-size: 0.75rem;
+}
+
+.brollOpacityField {
+  display: grid;
+  gap: 3px;
+  font-size: 0.68rem;
+  color: var(--muted);
+}
+
+.brollOpacityField input[type="range"] {
+  width: 100%;
+  accent-color: #00d2d3;
+}
+
+.brollTimelineActions {
+  display: flex;
+  gap: 6px;
+}
+
+.brollTimelineActions button {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 0.72rem;
+  border: 1px solid var(--border-light);
+  background: rgba(255, 255, 255, 0.06);
+}
+
 /* ── Responsive ──────────────────────────────────── */
 @media (max-width: 1100px) {
   .controls {
@@ -660,6 +948,10 @@ button:not(:disabled):active {
   .toolbar {
     flex-direction: row;
     overflow-x: auto;
+  }
+
+  .brollTimelineFields {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -750,7 +1042,7 @@ button:not(:disabled):active {
 
 .timelineCanvas {
   position: relative;
-  min-height: 120px;
+  min-height: 156px;
 }
 
 /* ── Time Ruler ─────────────────────────── */
@@ -820,6 +1112,92 @@ button:not(:disabled):active {
 
 .waveformTrack:hover .waveformSvg rect {
   opacity: 0.85;
+}
+
+/* ── B-roll Track ───────────────────────── */
+.brollTrack {
+  position: relative;
+  height: 32px;
+  margin-left: 52px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.brollEmpty {
+  position: absolute;
+  left: 8px;
+  top: 6px;
+  font-size: 0.68rem;
+  color: rgba(255, 255, 255, 0.32);
+}
+
+.brollBlock {
+  position: absolute;
+  top: 5px;
+  height: 22px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, rgba(0, 210, 211, 0.75), rgba(85, 230, 230, 0.95));
+  border: 1px solid rgba(0, 210, 211, 0.75);
+  color: #001a1c;
+  font-weight: 700;
+  font-size: 0.6rem;
+  line-height: 22px;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 16px 0 4px;
+  user-select: none;
+  cursor: grab;
+}
+
+.brollBlock.selected {
+  box-shadow: 0 0 0 1px rgba(160, 250, 250, 0.95), 0 0 12px rgba(0, 210, 211, 0.45);
+}
+
+.brollBlock.dragging {
+  cursor: grabbing;
+}
+
+.brollBlock.disabled {
+  pointer-events: none;
+}
+
+.brollDeleteBtn {
+  position: absolute;
+  right: 9px;
+  top: 3px;
+  width: 14px;
+  height: 14px;
+  min-height: 14px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(0, 26, 28, 0.45);
+  color: #d5ffff;
+  font-size: 11px;
+  line-height: 14px;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.brollDeleteBtn:hover {
+  background: rgba(0, 26, 28, 0.75);
+  transform: none;
+  box-shadow: none;
+  filter: none;
+}
+
+.brollResizeHandle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 8px;
+  height: 100%;
+  border-left: 1px solid rgba(0, 26, 28, 0.45);
+  background: rgba(0, 26, 28, 0.12);
+  cursor: ew-resize;
 }
 
 /* ── Word Track ─────────────────────────── */

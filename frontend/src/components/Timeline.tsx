@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { TranscriptWord } from "../types";
+import type { Clip, TranscriptWord } from "../types";
 
 export type TimelineProps = {
     words: TranscriptWord[];
+    overlayClips: Clip[];
     durationSec: number;
     currentTimeSec: number;
     deletedWordIds: Set<string>;
@@ -14,12 +15,18 @@ export type TimelineProps = {
     onSelectWordsInRange: (startSec: number, endSec: number) => void;
     onDeleteSelected: () => void;
     onRestoreSelected: () => void;
+    onMoveBrollClip: (clipId: string, timelineStartSec: number) => void;
+    onTrimBrollClip: (clipId: string, durationSec: number) => void;
+    onSetBrollOpacity: (clipId: string, opacity: number) => void;
+    onDeleteBrollClip: (clipId: string) => void;
+    brollEditBusy: boolean;
 };
 
 const MIN_PX_PER_SEC = 15;
 const MAX_PX_PER_SEC = 250;
 const DEFAULT_PX_PER_SEC = 40;
 const TRACK_LEFT_MARGIN = 52;
+const MIN_BROLL_DURATION_SEC = 0.1;
 
 function formatTimecode(sec: number): string {
     const m = Math.floor(sec / 60);
@@ -32,8 +39,17 @@ function formatDuration(sec: number): string {
     return `${sec.toFixed(1)}s`;
 }
 
+function clipTimelineDuration(clip: Clip): number {
+    return Math.max((clip.end_sec - clip.start_sec) / Math.max(clip.speed, 0.01), MIN_BROLL_DURATION_SEC);
+}
+
+function clamp(value: number, min: number, max: number): number {
+    return Math.max(min, Math.min(max, value));
+}
+
 export default function Timeline({
     words,
+    overlayClips,
     durationSec,
     currentTimeSec,
     deletedWordIds,
@@ -45,6 +61,11 @@ export default function Timeline({
     onSelectWordsInRange,
     onDeleteSelected,
     onRestoreSelected,
+    onMoveBrollClip,
+    onTrimBrollClip,
+    onSetBrollOpacity,
+    onDeleteBrollClip,
+    brollEditBusy,
 }: TimelineProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const [pxPerSec, setPxPerSec] = useState(DEFAULT_PX_PER_SEC);
@@ -57,6 +78,20 @@ export default function Timeline({
 
     // ── Context menu ────────────────────────────────────────────
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+    const [selectedBrollId, setSelectedBrollId] = useState<string | null>(null);
+    const [brollOpacityDraftById, setBrollOpacityDraftById] = useState<Record<string, number>>({});
+    const opacityCommitTimersRef = useRef<Record<string, number>>({});
+
+    type BrollDragState = {
+        clipId: string;
+        mode: "move" | "resize-end";
+        startClientX: number;
+        initialStartSec: number;
+        initialDurationSec: number;
+        currentStartSec: number;
+        currentDurationSec: number;
+    };
+    const [brollDragState, setBrollDragState] = useState<BrollDragState | null>(null);
 
     const totalWidth = Math.max(durationSec * pxPerSec, 200);
 
@@ -136,6 +171,49 @@ export default function Timeline({
         });
     }, [words, pxPerSec, deletedWordIds, selectedWordIds, activeWordId]);
 
+    // ── B-roll overlay blocks ────────────────────────────────
+    const brollBlocks = useMemo(() => {
+        return overlayClips
+            .slice()
+            .sort((a, b) => a.timeline_start_sec - b.timeline_start_sec)
+            .map((clip) => {
+                const dragPreview = brollDragState?.clipId === clip.id ? brollDragState : null;
+                const timelineStartSec = dragPreview ? dragPreview.currentStartSec : clip.timeline_start_sec;
+                const duration = dragPreview ? dragPreview.currentDurationSec : clipTimelineDuration(clip);
+                const x = timelineStartSec * pxPerSec;
+                const w = Math.max(duration * pxPerSec, 4);
+                const clipOpacity = typeof clip.broll_opacity === "number" ? clip.broll_opacity : 1;
+                const opacity = brollOpacityDraftById[clip.id] ?? clipOpacity;
+                return {
+                    clip,
+                    x,
+                    w,
+                    opacity,
+                    timelineStartSec,
+                    duration,
+                    isDragging: !!dragPreview,
+                };
+            });
+    }, [overlayClips, pxPerSec, brollDragState, brollOpacityDraftById]);
+
+    useEffect(() => {
+        setBrollOpacityDraftById(() => {
+            const next: Record<string, number> = {};
+            overlayClips.forEach((clip) => {
+                next[clip.id] = clamp(typeof clip.broll_opacity === "number" ? clip.broll_opacity : 1, 0, 1);
+            });
+            return next;
+        });
+        setSelectedBrollId((prev) => (prev && overlayClips.some((clip) => clip.id === prev) ? prev : null));
+    }, [overlayClips]);
+
+    useEffect(() => {
+        return () => {
+            Object.values(opacityCommitTimersRef.current).forEach((timer) => window.clearTimeout(timer));
+            opacityCommitTimersRef.current = {};
+        };
+    }, []);
+
     // ── Playhead position ─────────────────────────────────────
     const playheadX = currentTimeSec * pxPerSec;
 
@@ -152,14 +230,14 @@ export default function Timeline({
 
     // ── Auto-scroll to playhead ───────────────────────────────
     useEffect(() => {
-        if (!containerRef.current || dragMode !== "none") return;
+        if (!containerRef.current || dragMode !== "none" || brollDragState) return;
         const el = containerRef.current;
         const viewLeft = el.scrollLeft;
         const viewRight = viewLeft + el.clientWidth;
         if (playheadX < viewLeft + 40 || playheadX > viewRight - 40) {
             el.scrollLeft = playheadX - el.clientWidth / 3;
         }
-    }, [playheadX, dragMode]);
+    }, [playheadX, dragMode, brollDragState]);
 
     // ── Convert mouse event → seconds ────────────────────────
     const secFromEvent = useCallback(
@@ -171,6 +249,38 @@ export default function Timeline({
         },
         [pxPerSec, durationSec]
     );
+
+    function scheduleOpacityCommit(clipId: string, opacity: number) {
+        const prev = opacityCommitTimersRef.current[clipId];
+        if (typeof prev === "number") {
+            window.clearTimeout(prev);
+        }
+        opacityCommitTimersRef.current[clipId] = window.setTimeout(() => {
+            onSetBrollOpacity(clipId, opacity);
+            delete opacityCommitTimersRef.current[clipId];
+        }, 180);
+    }
+
+    function startBrollDrag(
+        event: React.MouseEvent,
+        clip: Clip,
+        mode: "move" | "resize-end"
+    ) {
+        if (event.button !== 0 || brollEditBusy) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const durationSec = clipTimelineDuration(clip);
+        setSelectedBrollId(clip.id);
+        setBrollDragState({
+            clipId: clip.id,
+            mode,
+            startClientX: event.clientX,
+            initialStartSec: clip.timeline_start_sec,
+            initialDurationSec: durationSec,
+            currentStartSec: clip.timeline_start_sec,
+            currentDurationSec: durationSec,
+        });
+    }
 
     // ── Mouse handlers ────────────────────────────────────────
     function handleMouseDown(e: React.MouseEvent) {
@@ -214,6 +324,58 @@ export default function Timeline({
         window.addEventListener("mouseup", up);
         return () => window.removeEventListener("mouseup", up);
     }, [dragMode, rangeStart, rangeEnd, onSelectWordsInRange]);
+
+    useEffect(() => {
+        if (!brollDragState) return;
+
+        function onMove(event: MouseEvent) {
+            setBrollDragState((prev) => {
+                if (!prev) return prev;
+                const deltaSec = (event.clientX - prev.startClientX) / pxPerSec;
+                if (prev.mode === "move") {
+                    const maxStart = Math.max(durationSec, prev.initialStartSec + 30);
+                    return {
+                        ...prev,
+                        currentStartSec: clamp(prev.initialStartSec + deltaSec, 0, maxStart),
+                    };
+                }
+                const maxDuration = Math.max(
+                    durationSec - prev.initialStartSec,
+                    prev.initialDurationSec + 30,
+                    MIN_BROLL_DURATION_SEC
+                );
+                return {
+                    ...prev,
+                    currentDurationSec: clamp(
+                        prev.initialDurationSec + deltaSec,
+                        MIN_BROLL_DURATION_SEC,
+                        maxDuration
+                    ),
+                };
+            });
+        }
+
+        function onUp() {
+            setBrollDragState((prev) => {
+                if (!prev) return prev;
+                if (prev.mode === "move") {
+                    if (Math.abs(prev.currentStartSec - prev.initialStartSec) >= 0.01) {
+                        onMoveBrollClip(prev.clipId, Number(prev.currentStartSec.toFixed(3)));
+                    }
+                } else if (Math.abs(prev.currentDurationSec - prev.initialDurationSec) >= 0.01) {
+                    onTrimBrollClip(prev.clipId, Number(prev.currentDurationSec.toFixed(3)));
+                }
+                return null;
+            });
+        }
+
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", onUp);
+        return () => {
+            window.removeEventListener("mousemove", onMove);
+            window.removeEventListener("mouseup", onUp);
+        };
+    }, [brollDragState, pxPerSec, durationSec, onMoveBrollClip, onTrimBrollClip]);
 
     // ── Right-click context menu ──────────────────────────────
     function handleContextMenu(e: React.MouseEvent) {
@@ -259,7 +421,7 @@ export default function Timeline({
                 <h3>
                     Timeline
                     <span className="tlHint">
-                        Click to seek · Alt+drag to select range · Right-click for actions
+                        Click to seek · Alt+drag to select range · Drag B-roll to move · Alt+wheel B-roll opacity
                     </span>
                 </h3>
                 <div className="zoomControls">
@@ -337,6 +499,78 @@ export default function Timeline({
                                 }}
                             />
                         ))}
+                    </div>
+
+                    {/* ── B-ROLL TRACK ─────────────────────── */}
+                    <div className="brollTrack">
+                        <span className="trackLabel">B-roll</span>
+                        {brollBlocks.length === 0 && (
+                            <div className="brollEmpty">No overlay clips</div>
+                        )}
+                        {brollBlocks.map(({ clip, x, w, opacity, timelineStartSec, duration, isDragging }) => {
+                            const isSelected = selectedBrollId === clip.id;
+                            return (
+                                <div
+                                    key={clip.id}
+                                    className={[
+                                        "brollBlock",
+                                        isSelected ? "selected" : "",
+                                        isDragging ? "dragging" : "",
+                                        brollEditBusy ? "disabled" : "",
+                                    ].filter(Boolean).join(" ")}
+                                    style={{ left: x, width: w, opacity: Math.max(0.28, Math.min(opacity, 1)) }}
+                                    onMouseDown={(event) => startBrollDrag(event, clip, "move")}
+                                    onClick={(event) => {
+                                        event.stopPropagation();
+                                        setSelectedBrollId(clip.id);
+                                    }}
+                                    onDoubleClick={(event) => {
+                                        event.stopPropagation();
+                                        onSeek(timelineStartSec);
+                                    }}
+                                    onWheel={(event) => {
+                                        if (!event.altKey || brollEditBusy) return;
+                                        event.preventDefault();
+                                        event.stopPropagation();
+                                        setSelectedBrollId(clip.id);
+                                        const current = brollOpacityDraftById[clip.id] ?? clamp(
+                                            typeof clip.broll_opacity === "number" ? clip.broll_opacity : 1,
+                                            0,
+                                            1
+                                        );
+                                        const step = event.deltaY < 0 ? 0.04 : -0.04;
+                                        const next = clamp(current + step, 0, 1);
+                                        setBrollOpacityDraftById((prev) => ({ ...prev, [clip.id]: next }));
+                                        scheduleOpacityCommit(clip.id, Number(next.toFixed(3)));
+                                    }}
+                                    title={`B-roll ${formatTimecode(timelineStartSec)} · ${formatDuration(duration)} · opacity ${(opacity * 100).toFixed(0)}%`}
+                                >
+                                    {w > 74 ? `${(opacity * 100).toFixed(0)}%` : ""}
+                                    <button
+                                        type="button"
+                                        className="brollDeleteBtn"
+                                        disabled={brollEditBusy}
+                                        onMouseDown={(event) => {
+                                            event.preventDefault();
+                                            event.stopPropagation();
+                                        }}
+                                        onClick={(event) => {
+                                            event.preventDefault();
+                                            event.stopPropagation();
+                                            onDeleteBrollClip(clip.id);
+                                        }}
+                                        title="Remove B-roll clip"
+                                    >
+                                        ×
+                                    </button>
+                                    <div
+                                        className="brollResizeHandle"
+                                        onMouseDown={(event) => startBrollDrag(event, clip, "resize-end")}
+                                        title="Drag to trim B-roll duration"
+                                    />
+                                </div>
+                            );
+                        })}
                     </div>
 
                     {/* ── WORD TRACK ───────────────────────── */}
