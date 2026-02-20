@@ -1,0 +1,80 @@
+[
+  {
+    "slot_text": "Elon Musk shared the next SpaceX launch plan this morning.",
+    "concept_text": "elon musk spacex launch",
+    "concept_tokens": ["elon", "musk", "spacex", "launch"],
+    "slot_duration_sec": 3.2,
+    "positive_terms": ["elon", "spacex", "rocket"],
+    "candidates": [
+      {
+        "source_type": "pexels_video",
+        "source_label": "Pexels 112233 - Rocket liftoff",
+        "source_url": "https://example.com/rocket-liftoff.mp4",
+        "score": 0.64,
+        "reason": {
+          "query": "rocket launch",
+          "duration_sec": 4.0
+        }
+      },
+      {
+        "source_type": "project_asset",
+        "asset_id": "asset-local-1",
+        "source_label": "office-team-meeting.mp4",
+        "score": 0.72,
+        "reason": {
+          "keyword_hits": ["team"],
+          "duration_sec": 12.0
+        }
+      },
+      {
+        "source_type": "pixabay_video",
+        "source_label": "Pixabay 99887 - Satellite in orbit",
+        "source_url": "https://example.com/satellite.mp4",
+        "score": 0.61,
+        "reason": {
+          "query": "satellite orbit",
+          "duration_sec": 3.1
+        }
+      }
+    ]
+  },
+  {
+    "slot_text": "We toured the apple orchard during sunrise in Himachal.",
+    "concept_text": "apple orchard himachal sunrise",
+    "concept_tokens": ["apple", "orchard", "himachal", "sunrise"],
+    "slot_duration_sec": 2.5,
+    "positive_terms": ["orchard", "apple", "mountain"],
+    "candidates": [
+      {
+        "source_type": "project_asset",
+        "asset_id": "asset-local-2",
+        "source_label": "mountain-orchard-broll.mp4",
+        "score": 0.58,
+        "reason": {
+          "keyword_hits": ["orchard", "mountain"],
+          "duration_sec": 6.0
+        }
+      },
+      {
+        "source_type": "pexels_video",
+        "source_label": "Pexels 445566 - busy city traffic",
+        "source_url": "https://example.com/city-traffic.mp4",
+        "score": 0.66,
+        "reason": {
+          "query": "city lifestyle",
+          "duration_sec": 2.8
+        }
+      },
+      {
+        "source_type": "pixabay_video",
+        "source_label": "Pixabay 77661 - Fresh apples on tree",
+        "source_url": "https://example.com/apples-tree.mp4",
+        "score": 0.55,
+        "reason": {
+          "query": "apple farm",
+          "duration_sec": 2.4
+        }
+      }
+    ]
+  }
+]
