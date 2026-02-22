@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { PlaySquare, Wand2, Scissors, UploadCloud, Video, Sparkles, CheckCircle2 } from "lucide-react";
 import { api } from "./lib/api";
 import type { BrollSlot, Clip, Job, MediaAsset, Project, Transcript, TranscriptWord, VibeAction } from "./types";
 import Timeline from "./components/Timeline";
@@ -509,6 +511,7 @@ function App() {
 
     setApplyingCut(true);
     setError(null);
+    const previousDuration = project.timeline.duration_sec;
     try {
       const result = await api.applyTranscriptCut(project.id, transcript.id, keptIds, {
         contextSec: 0,
@@ -517,8 +520,15 @@ function App() {
       });
       setProject((prev) => (prev ? { ...prev, timeline: result.timeline } : prev));
       lastAppliedSignatureRef.current = signature;
-      setNotice(`Cut applied. Removed ${result.removed_word_count} word${result.removed_word_count === 1 ? "" : "s"}.`);
-      await queuePreview();
+      const nextDuration = result.timeline.duration_sec;
+      const deltaSec = Math.max(0, previousDuration - nextDuration);
+      const deltaLabel = deltaSec >= 0.01
+        ? `Timeline shortened by ${deltaSec.toFixed(2)}s.`
+        : "No additional timeline duration change.";
+      setNotice(
+        `Cut applied. Removed ${result.removed_word_count} word${result.removed_word_count === 1 ? "" : "s"}. ${deltaLabel}`
+      );
+      await queuePreview(true);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -1230,80 +1240,161 @@ function App() {
 
   return (
     <div className="appShell">
-      <header className="topBar">
-        <div>
-          <p className="eyebrow">AI Video Editor</p>
-          <h1>Text-Based Video Editor</h1>
-          <p className="subhead">Edit video by editing text. Click, select, delete words — your video updates automatically.</p>
-        </div>
-        <div className="statusPill">Backend: {backendStatus === "checking" ? "checking" : backendStatus}</div>
-      </header>
+      {!project ? (
+        <AnimatePresence mode="wait">
+          <motion.div
+            className="heroContainer"
+            initial={{ opacity: 0, y: 30 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.8, ease: "easeOut" }}
+          >
+            <div className="heroContent">
+              <motion.div
+                className="heroEyebrow"
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: 0.3, duration: 0.5 }}
+              >
+                <Sparkles size={14} style={{ display: 'inline', marginRight: 6, verticalAlign: 'text-bottom' }} />
+                Next-Gen Video Editing
+              </motion.div>
+              <motion.h1
+                className="heroTitle"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.4, duration: 0.6 }}
+              >
+                Edit Video Just By <br />Editing Text
+              </motion.h1>
+              <motion.p
+                className="heroSubtitle"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.6, duration: 0.6 }}
+              >
+                Upload your footage, get an instant AI transcript, and edit your video like a document. Seamlessly generate B-roll, remove filler words, and create perfect cuts in seconds.
+              </motion.p>
 
-      <section className="controls card">
-        <input
-          value={projectName}
-          onChange={(event) => setProjectName(event.target.value)}
-          placeholder="Project name"
-          className="controlInput"
-        />
-        <button onClick={createProject} disabled={creatingProject}>
-          {creatingProject ? "Creating..." : "Create Project"}
-        </button>
-        <label className="uploadBtn">
-          <input
-            type="file"
-            accept="video/*"
-            disabled={!project || uploading}
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (file) {
-                void uploadVideo(file);
-              }
-              event.currentTarget.value = "";
-            }}
-          />
-          {uploading ? "Uploading..." : "Upload Video"}
-        </label>
-        <select
-          disabled={!project || !videoAssets.length}
-          value={selectedVideoAsset?.id ?? ""}
-          onChange={(event) => {
-            const nextId = event.target.value;
-            setSelectedAssetId(nextId || null);
-            const selected = videoAssets.find((asset) => asset.id === nextId);
-            if (selected) {
-              setPreviewUrl(resolveMediaPath(selected.storage_path));
-            }
-          }}
-        >
-          {!videoAssets.length && <option value="">No uploaded videos</option>}
-          {videoAssets.map((asset) => (
-            <option key={asset.id} value={asset.id}>
-              {asset.filename}
-            </option>
-          ))}
-        </select>
-        <button onClick={generateTranscript} disabled={!project || !selectedVideoAsset || generatingTranscript}>
-          {generatingTranscript ? "Generating..." : "Generate Transcript"}
-        </button>
-      </section>
+              <motion.div
+                className="heroControls"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.8, duration: 0.6 }}
+              >
+                <div className="heroInputGroup">
+                  <input
+                    value={projectName}
+                    onChange={(event) => setProjectName(event.target.value)}
+                    placeholder="Enter your project name..."
+                    className="heroInput"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !creatingProject) {
+                        void createProject();
+                      }
+                    }}
+                  />
+                  <button className="heroBtn" onClick={createProject} disabled={creatingProject}>
+                    {creatingProject ? "Initializing..." : (
+                      <>
+                        <Wand2 size={18} />
+                        Get Started
+                      </>
+                    )}
+                  </button>
+                </div>
+                {error && <div className="message error">{error}</div>}
+              </motion.div>
+            </div>
 
-      {project && (
-        <section className="projectMeta card">
-          <span>{project.name}</span>
-          <span>{project.timeline.resolution.width}x{project.timeline.resolution.height}</span>
-          <span>{project.timeline.fps} fps</span>
-          <span>{formatSeconds(project.timeline.duration_sec)} duration</span>
-        </section>
-      )}
-
-      {error && <div className="message error">{error}</div>}
-      {notice && <div className="message notice">{notice}</div>}
-
-      {!project && <p className="empty">Create a project, upload a video, and generate transcript to start.</p>}
-
-      {project && (
+            <motion.div
+              className="heroFeatures"
+              initial={{ opacity: 0, y: 40 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 1, duration: 0.8 }}
+            >
+              <div className="featureCard">
+                <div className="featureIcon"><Scissors size={20} /></div>
+                <h3>Text-Based Cutting</h3>
+                <p>Delete words from the transcript and the video cuts itself. Removing mistakes is as easy as backspace.</p>
+              </div>
+              <div className="featureCard">
+                <div className="featureIcon"><Video size={20} /></div>
+                <h3>AI B-Roll Generation</h3>
+                <p>Instantly suggest and overlay relevant stock footage or personal clips perfectly synced to your speech.</p>
+              </div>
+              <div className="featureCard">
+                <div className="featureIcon"><CheckCircle2 size={20} /></div>
+                <h3>One-Click Magic</h3>
+                <p>Automatically remove filler words, dead air, and trim the rough edges with powerful AI actions.</p>
+              </div>
+            </motion.div>
+          </motion.div>
+        </AnimatePresence>
+      ) : (
         <>
+          <header className="topBar">
+            <div className="headerLogos">
+              <PlaySquare size={28} className="headerIcon" />
+              <div>
+                <p className="eyebrow">AI Video Editor</p>
+                <h1>{project.name || "Text-Based Video Editor"}</h1>
+              </div>
+            </div>
+            <div className="statusPill">
+              <span className="statusIndicator" style={{ background: backendStatus === "ok" ? "var(--success)" : "var(--danger)", boxShadow: `0 0 8px ${backendStatus === "ok" ? "var(--success)" : "var(--danger)"}` }}></span>
+              Backend: {backendStatus}
+            </div>
+          </header>
+
+          <section className="controls card">
+            <label className="uploadBtn">
+              <input
+                type="file"
+                accept="video/*"
+                disabled={uploading}
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) {
+                    void uploadVideo(file);
+                  }
+                  event.currentTarget.value = "";
+                }}
+              />
+              <UploadCloud size={16} />
+              {uploading ? "Uploading..." : "Upload Video"}
+            </label>
+            <select
+              disabled={!videoAssets.length}
+              value={selectedVideoAsset?.id ?? ""}
+              onChange={(event) => {
+                const nextId = event.target.value;
+                setSelectedAssetId(nextId || null);
+                const selected = videoAssets.find((asset) => asset.id === nextId);
+                if (selected) {
+                  setPreviewUrl(resolveMediaPath(selected.storage_path));
+                }
+              }}
+            >
+              {!videoAssets.length && <option value="">No uploaded videos</option>}
+              {videoAssets.map((asset) => (
+                <option key={asset.id} value={asset.id}>
+                  {asset.filename}
+                </option>
+              ))}
+            </select>
+            <button className="primaryBtn" onClick={generateTranscript} disabled={!selectedVideoAsset || generatingTranscript}>
+              <Wand2 size={16} />
+              {generatingTranscript ? "Generating..." : "Generate Transcript"}
+            </button>
+            <div style={{ marginLeft: "auto", display: "flex", gap: "12px", fontSize: "0.8rem", color: "var(--muted)", fontFamily: "'JetBrains Mono', monospace" }}>
+              <span>Res: {project.timeline.resolution.width}x{project.timeline.resolution.height}</span>
+              <span>{Math.round(project.timeline.fps)} fps</span>
+              <span>{formatSeconds(project.timeline.duration_sec)} dur</span>
+            </div>
+          </section>
+
+          {error && <div className="message error">{error}</div>}
+          {notice && <div className="message notice">{notice}</div>}
           <main className="twoPanel">
             <section className="panel card">
               <h2>Transcript Editor</h2>
@@ -1843,7 +1934,7 @@ function App() {
           )}
         </>
       )}
-    </div >
+    </div>
   );
 }
 
