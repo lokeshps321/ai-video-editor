@@ -13,3 +13,4 @@ python-dotenv==1.0.1
 numpy>=1.26,<3
 sentence-transformers>=3.0.0,<4
 spacy>=3.7,<4
+opencv-python-headless>=4.10,<5

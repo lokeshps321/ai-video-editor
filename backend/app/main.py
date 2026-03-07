@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from shutil import which
 
@@ -38,6 +39,15 @@ app.add_middleware(
 )
 
 
+def _should_start_background_workers() -> bool:
+    raw = (os.getenv("DISABLE_BACKGROUND_WORKERS", "") or "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return False
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return False
+    return True
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     init_db()
@@ -47,14 +57,16 @@ def on_startup() -> None:
     Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
     Path(settings.render_dir).mkdir(parents=True, exist_ok=True)
     Path(settings.tmp_dir).mkdir(parents=True, exist_ok=True)
-    start_render_workers()
-    start_ingest_workers()
+    if _should_start_background_workers():
+        start_render_workers()
+        start_ingest_workers()
 
 
 @app.on_event("shutdown")
 def on_shutdown() -> None:
-    stop_render_workers()
-    stop_ingest_workers()
+    if _should_start_background_workers():
+        stop_render_workers()
+        stop_ingest_workers()
 
 
 app.include_router(projects_router)
@@ -73,9 +85,13 @@ app.mount("/static/renders", StaticFiles(directory=settings.render_dir), name="r
 
 @app.get("/health")
 def health() -> dict[str, str]:
+    vocal_backend = (os.getenv("TRANSCRIBE_VOCAL_ISOLATION_BACKEND", "auto") or "auto").strip() or "auto"
+    vocal_enabled = (os.getenv("TRANSCRIBE_VOCAL_ISOLATION_ENABLED", "true") or "true").strip().lower()
     return {
         "status": "ok",
         "ffmpeg": "available" if which(settings.ffmpeg_bin) else "missing",
         "ffprobe": "available" if which(settings.ffprobe_bin) else "missing",
         "yt_dlp": "available" if which(settings.yt_dlp_bin) else "missing",
+        "vocal_isolation_enabled": "true" if vocal_enabled in {"1", "true", "yes", "on"} else "false",
+        "vocal_isolation_backend": vocal_backend,
     }

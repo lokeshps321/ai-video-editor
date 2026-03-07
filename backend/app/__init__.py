@@ -1,2 +1,1 @@
-"""Prompt-first video editor backend package."""
-
+"""ClipMind backend package."""

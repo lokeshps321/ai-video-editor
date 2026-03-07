@@ -78,6 +78,43 @@ class BrollSlot(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=_utcnow, nullable=False)
 
 
+class BrollPlan(SQLModel, table=True):
+    id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    project_id: str = Field(index=True)
+    transcript_id: Optional[str] = Field(default=None, index=True)
+    plan_version: str = "v1"
+    fallback_used: bool = True
+    planner_model: Optional[str] = None
+    request_json: str = "{}"
+    coverage_json: str = "{}"
+    created_at: datetime = Field(default_factory=_utcnow, nullable=False)
+
+
+class BrollPlanBeat(SQLModel, table=True):
+    id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    plan_id: str = Field(index=True)
+    project_id: str = Field(index=True)
+    transcript_id: Optional[str] = Field(default=None, index=True)
+    beat_index: int = 0
+    start_sec: float = 0.0
+    end_sec: float = 0.0
+    timeline_start_sec: Optional[float] = None
+    timeline_end_sec: Optional[float] = None
+    section_label: str = "body"
+    intent_label: str = "supporting_visual"
+    source_strategy: str = "local_first"
+    shot_style: str = "medium"
+    should_place: bool = True
+    confidence: float = 0.0
+    rationale: str = ""
+    concept_text: str = ""
+    segment_text: str = ""
+    anchor_word_ids_json: str = "[]"
+    query_hints_json: str = "[]"
+    metadata_json: str = "{}"
+    created_at: datetime = Field(default_factory=_utcnow, nullable=False)
+
+
 class BrollCandidate(SQLModel, table=True):
     id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
     project_id: str = Field(index=True)

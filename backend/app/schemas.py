@@ -17,8 +17,15 @@ class Crop(BaseModel):
     height: int = 1920
 
 
+class CropKeyframe(BaseModel):
+    time_sec: float = 0.0
+    x: int = 0
+    y: int = 0
+
+
 class ClipTransform(BaseModel):
     crop: Optional[Crop] = None
+    crop_keyframes: list[CropKeyframe] = Field(default_factory=list)
     scale: Optional[Resolution] = None
     rotate: int = 0
     flip: Optional[Literal["horizontal", "vertical"]] = None
@@ -59,8 +66,16 @@ class TextOverlay(BaseModel):
     x: str = "(w-text_w)/2"
     y: str = "(h-text_h)-80"
     font_size: int = 48
+    font_name: Optional[str] = None
     color: str = "white"
-    style: Literal["static", "pop", "bounce", "typewriter", "karaoke", "fade"] = "static"
+    highlight_color: Optional[str] = None
+    outline_color: str = "black@0.5"
+    outline_width: int = 2
+    shadow: int = 0
+    alignment: int = 2
+    margin_v: int = 80
+    style: str = "static"
+    word_timings: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class Clip(BaseModel):
@@ -99,6 +114,7 @@ class Track(BaseModel):
 
 class ExportSettings(BaseModel):
     format: Literal["mp4", "mov", "webm"] = "mp4"
+    aspect_ratio: Literal["16:9", "9:16"] = "16:9"
     resolution: Literal["720p", "1080p", "4k"] = "1080p"
     fps: Literal[24, 30, 60] = 30
     quality: Literal["low", "medium", "high", "max"] = "high"
@@ -181,10 +197,23 @@ class TranscriptWord(BaseModel):
     start_sec: float
     end_sec: float
     confidence: Optional[float] = None
+    quality_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    quality_label: Optional[Literal["trusted", "weak"]] = None
+    source_pass: Optional[Literal["primary", "retry", "rescue", "manual"]] = None
+
+
+class TranscriptRegion(BaseModel):
+    start_sec: float
+    end_sec: float
+    status: Literal["trusted", "weak", "blanked"]
+    reason: Optional[str] = None
+    word_ids: list[str] = Field(default_factory=list)
 
 
 class TranscriptGenerateRequest(BaseModel):
     asset_id: str
+    language: Optional[str] = None
+    prompt: Optional[str] = None
 
 
 class TranscriptCutRequest(BaseModel):
@@ -195,6 +224,19 @@ class TranscriptCutRequest(BaseModel):
     min_removed_sec: Optional[float] = Field(default=None, ge=0.0)
 
 
+class TranscriptRangeUpdateRequest(BaseModel):
+    start_word_id: str
+    end_word_id: str
+    text: Optional[str] = None
+    mode: Literal["replace", "blank", "preserve"] = "replace"
+
+    @model_validator(mode="after")
+    def validate_payload(self) -> "TranscriptRangeUpdateRequest":
+        if self.mode == "replace" and not (self.text or "").strip():
+            raise ValueError("text is required when mode=replace")
+        return self
+
+
 class TranscriptResponse(BaseModel):
     id: str
     project_id: str
@@ -203,6 +245,7 @@ class TranscriptResponse(BaseModel):
     language: Optional[str]
     text: str
     words: list[TranscriptWord]
+    regions: list[TranscriptRegion] = Field(default_factory=list)
     duration_sec: float
     is_mock: bool
     created_at: str
@@ -224,13 +267,21 @@ class TranscriptCutResponse(BaseModel):
 
 class BrollSuggestRequest(BaseModel):
     transcript_id: Optional[str] = None
-    max_slots: int = Field(default=8, ge=1, le=40)
+    max_slots: int = Field(default=20, ge=1, le=40)
     candidates_per_slot: int = Field(default=3, ge=1, le=10)
     min_chunk_words: int = Field(default=4, ge=1, le=30)
     replace_existing: bool = True
     include_project_assets: bool = True
     include_external_sources: bool = True
     ai_rerank: bool = True
+
+
+class BrollPlanRequest(BaseModel):
+    transcript_id: Optional[str] = None
+    max_slots: int = Field(default=20, ge=1, le=40)
+    min_chunk_words: int = Field(default=4, ge=1, le=30)
+    include_project_assets: bool = True
+    include_external_sources: bool = True
 
 
 class BrollRerollRequest(BaseModel):
@@ -260,6 +311,8 @@ class BrollCandidateResponse(BaseModel):
     confidence: Optional[float] = None
     score_breakdown: dict[str, float] = Field(default_factory=dict)
     entities: list[str] = Field(default_factory=list)
+    visual_intent: Optional[str] = None
+    weak_reason_codes: list[str] = Field(default_factory=list)
     reason: dict[str, Any] = Field(default_factory=dict)
     created_at: str
 
@@ -274,6 +327,10 @@ class BrollSlotResponse(BaseModel):
     concept_text: str
     locked: bool
     status: str
+    review_status: str = "needs_review"
+    visual_intent: Optional[str] = None
+    review_summary: Optional[str] = None
+    weak_reason_codes: list[str] = Field(default_factory=list)
     chosen_candidate_id: Optional[str]
     created_at: str
     updated_at: str
@@ -287,9 +344,51 @@ class BrollSuggestResponse(BaseModel):
     slots: list[BrollSlotResponse]
 
 
+class BrollPlanBeatResponse(BaseModel):
+    id: str
+    beat_index: int
+    start_sec: float
+    end_sec: float
+    timeline_start_sec: Optional[float] = None
+    timeline_end_sec: Optional[float] = None
+    section_label: str
+    intent_label: str
+    source_strategy: str
+    shot_style: str
+    should_place: bool
+    confidence: float
+    rationale: str
+    concept_text: str
+    segment_text: str
+    anchor_word_ids: list[str] = Field(default_factory=list)
+    query_hints: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class BrollCoverageSectionResponse(BaseModel):
+    section_label: str
+    start_sec: float
+    end_sec: float
+    beat_count: int
+    target_beats: int
+
+
+class BrollPlanResponse(BaseModel):
+    id: str
+    project_id: str
+    transcript_id: Optional[str]
+    plan_version: str
+    fallback_used: bool
+    planner_model: Optional[str] = None
+    created_at: str
+    beats: list[BrollPlanBeatResponse] = Field(default_factory=list)
+    uncovered_ranges: list[dict[str, float]] = Field(default_factory=list)
+    coverage_sections: list[BrollCoverageSectionResponse] = Field(default_factory=list)
+
+
 class BrollAutoApplyRequest(BaseModel):
     transcript_id: Optional[str] = None
-    max_slots: int = Field(default=8, ge=1, le=40)
+    max_slots: int = Field(default=20, ge=1, le=40)
     candidates_per_slot: int = Field(default=3, ge=1, le=10)
     min_chunk_words: int = Field(default=4, ge=1, le=30)
     replace_existing: bool = True
@@ -314,12 +413,36 @@ class BrollAutoApplyResponse(BaseModel):
     slots: list[BrollSlotResponse]
 
 
+class BrollSyncRequest(BaseModel):
+    transcript_id: Optional[str] = None
+    clear_existing_overlay: bool = True
+    overlay_opacity: float = Field(default=0.85, ge=0.0, le=1.0)
+    slot_ids: list[str] = Field(default_factory=list)
+
+
+class BrollSyncResponse(BaseModel):
+    project_id: str
+    transcript_id: Optional[str]
+    synced_clip_count: int
+    timeline: TimelineState
+    slots: list[BrollSlotResponse]
+
+
+class BrollUndoResponse(BaseModel):
+    project_id: str
+    restored_clip_count: int
+    timeline: TimelineState
+    transaction_action: Optional[str] = None
+
+
 class JobResponse(BaseModel):
     id: str
     project_id: str
     kind: str
     status: str
     progress: int
+    stage: Optional[str] = None
+    message: Optional[str] = None
     output_path: Optional[str]
     error: Optional[str]
 
@@ -337,6 +460,7 @@ class JobEventResponse(BaseModel):
 
 class RenderRequest(BaseModel):
     format: Literal["mp4", "mov", "webm"] = "mp4"
+    aspect_ratio: Literal["16:9", "9:16"] = "16:9"
     resolution: Literal["720p", "1080p", "4k"] = "1080p"
     fps: Literal[24, 30, 60] = 30
     quality: Literal["low", "medium", "high", "max"] = "high"
