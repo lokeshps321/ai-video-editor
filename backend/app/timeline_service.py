@@ -12,6 +12,7 @@ from .schemas import (
     AudioKeyframe,
     Clip,
     Crop,
+    CropKeyframe,
     ExportSettings,
     OperationPayload,
     Resolution,
@@ -20,6 +21,335 @@ from .schemas import (
     Track,
     Transition,
 )
+
+_LEGACY_SUBTITLE_STYLES = {"static", "pop", "bounce", "typewriter", "karaoke", "fade", "creator"}
+_CAPTION_STYLE_ALIASES = {
+    "kinetic": "hormozi_bold",
+    "minimal": "minimalist",
+    "bold": "hormozi_bold",
+    "gradient": "neon_gamer",
+    "outline": "neon_gamer",
+    "cinema": "cinematic_serif",
+    "cinematic": "cinematic_serif",
+    "serif": "cinematic_serif",
+    "retro": "retro_vhs",
+    "vhs": "retro_vhs",
+    "pop": "pop_color",
+    "colorful": "pop_color",
+    "gold": "elegant_gold",
+    "elegant": "elegant_gold",
+    "luxury": "elegant_gold",
+    "street": "street_impact",
+    "impact": "street_impact",
+    "urban": "street_impact",
+}
+_CAPTION_STYLE_PRESETS: dict[str, dict[str, Any]] = {
+    "hormozi_bold": {
+        "render_style": "hormozi_bold",
+        "font_name": "Montserrat-Bold",
+        "font_size": 24,
+        "primary_color": "&H0000FFFF",
+        "highlight_color": "&H0000FFFF",
+        "outline_color": "&H00000000",
+        "outline_width": 2,
+        "shadow": 0,
+        "alignment": 2,
+        "margin_v": 50,
+        "max_words_per_caption": 1,
+        "max_gap_sec": 0.18,
+        "max_caption_duration_sec": 0.95,
+        "max_caption_display_sec": 1.05,
+        "caption_guard_sec": 0.002,
+        "min_duration_sec": 0.06,
+    },
+    "neon_gamer": {
+        "render_style": "neon_gamer",
+        "font_name": "Orbitron-Regular",
+        "font_size": 22,
+        "primary_color": "&H00FFFFFF",
+        "highlight_color": "&H00FF0000",
+        "outline_color": "&H00FF0000",
+        "outline_width": 1,
+        "shadow": 2,
+        "alignment": 2,
+        "margin_v": 50,
+        "max_words_per_caption": 1,
+        "max_gap_sec": 0.18,
+        "max_caption_duration_sec": 0.95,
+        "max_caption_display_sec": 1.05,
+        "caption_guard_sec": 0.002,
+        "min_duration_sec": 0.06,
+    },
+    "minimalist": {
+        "render_style": "minimalist",
+        "font_name": "Helvetica-Light",
+        "font_size": 18,
+        "primary_color": "&H00FFFFFF",
+        "highlight_color": "&H00EEEEEE",
+        "outline_color": "&H00000000",
+        "outline_width": 0,
+        "shadow": 1,
+        "alignment": 2,
+        "margin_v": 30,
+        "max_words_per_caption": 4,
+        "max_gap_sec": 0.45,
+        "max_caption_duration_sec": 2.2,
+        "max_caption_display_sec": 2.6,
+        "caption_guard_sec": 0.01,
+        "min_duration_sec": 0.12,
+    },
+    "cinematic_serif": {
+        "render_style": "cinematic_serif",
+        "font_name": "Georgia",
+        "font_size": 20,
+        "primary_color": "&H00E0E8FF",
+        "highlight_color": "&H0000D4FF",
+        "outline_color": "&H00000000",
+        "outline_width": 1,
+        "shadow": 2,
+        "alignment": 2,
+        "margin_v": 40,
+        "max_words_per_caption": 3,
+        "max_gap_sec": 0.40,
+        "max_caption_duration_sec": 1.8,
+        "max_caption_display_sec": 2.2,
+        "caption_guard_sec": 0.008,
+        "min_duration_sec": 0.10,
+    },
+    "retro_vhs": {
+        "render_style": "retro_vhs",
+        "font_name": "Courier-Bold",
+        "font_size": 20,
+        "primary_color": "&H00FFFF00",
+        "highlight_color": "&H00FF00FF",
+        "outline_color": "&H00800040",
+        "outline_width": 2,
+        "shadow": 1,
+        "alignment": 2,
+        "margin_v": 45,
+        "max_words_per_caption": 1,
+        "max_gap_sec": 0.15,
+        "max_caption_duration_sec": 0.85,
+        "max_caption_display_sec": 0.95,
+        "caption_guard_sec": 0.002,
+        "min_duration_sec": 0.05,
+    },
+    "pop_color": {
+        "render_style": "pop_color",
+        "font_name": "Poppins-Bold",
+        "font_size": 24,
+        "primary_color": "&H008080FF",
+        "highlight_color": "&H0000FF80",
+        "outline_color": "&H00000000",
+        "outline_width": 2,
+        "shadow": 0,
+        "alignment": 2,
+        "margin_v": 50,
+        "max_words_per_caption": 2,
+        "max_gap_sec": 0.22,
+        "max_caption_duration_sec": 1.1,
+        "max_caption_display_sec": 1.4,
+        "caption_guard_sec": 0.005,
+        "min_duration_sec": 0.08,
+    },
+    "elegant_gold": {
+        "render_style": "elegant_gold",
+        "font_name": "Playfair-Display",
+        "font_size": 20,
+        "primary_color": "&H0000D4FF",
+        "highlight_color": "&H0000E8FF",
+        "outline_color": "&H00101010",
+        "outline_width": 1,
+        "shadow": 3,
+        "alignment": 2,
+        "margin_v": 35,
+        "max_words_per_caption": 4,
+        "max_gap_sec": 0.50,
+        "max_caption_duration_sec": 2.4,
+        "max_caption_display_sec": 2.8,
+        "caption_guard_sec": 0.01,
+        "min_duration_sec": 0.12,
+    },
+    "street_impact": {
+        "render_style": "street_impact",
+        "font_name": "Impact",
+        "font_size": 26,
+        "primary_color": "&H00FFFFFF",
+        "highlight_color": "&H000000FF",
+        "outline_color": "&H00000000",
+        "outline_width": 4,
+        "shadow": 0,
+        "alignment": 2,
+        "margin_v": 50,
+        "max_words_per_caption": 1,
+        "max_gap_sec": 0.16,
+        "max_caption_duration_sec": 0.90,
+        "max_caption_display_sec": 1.0,
+        "caption_guard_sec": 0.002,
+        "min_duration_sec": 0.06,
+    },
+}
+
+
+def _normalize_subtitle_style(value: object) -> str:
+    normalized = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return _CAPTION_STYLE_ALIASES.get(normalized, normalized)
+
+
+def _as_int(value: object, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
+def _as_float(value: object, default: float, minimum: float, maximum: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
+def _merged_caption_style_presets(raw: object) -> dict[str, dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {
+        style_id: dict(config) for style_id, config in _CAPTION_STYLE_PRESETS.items()
+    }
+    if not isinstance(raw, dict):
+        return merged
+
+    for style_key, payload in raw.items():
+        if not isinstance(payload, dict):
+            continue
+        style_id = _normalize_subtitle_style(style_key)
+        if not style_id:
+            continue
+        base = dict(merged.get(style_id, {}))
+        base.setdefault("render_style", style_id)
+        base.setdefault("font_size", 48)
+        base.setdefault("primary_color", "white")
+        base.setdefault("highlight_color", base["primary_color"])
+        base.setdefault("outline_color", "black@0.5")
+        base.setdefault("outline_width", 2)
+        base.setdefault("shadow", 0)
+        base.setdefault("alignment", 2)
+        base.setdefault("margin_v", 80)
+        base.setdefault("max_words_per_caption", 3)
+        base.setdefault("max_gap_sec", 0.35)
+        base.setdefault("max_caption_duration_sec", 1.15)
+        base.setdefault("max_caption_display_sec", 1.8)
+        base.setdefault("caption_guard_sec", 0.01)
+        base.setdefault("min_duration_sec", 0.12)
+
+        font_name = payload.get("font_name", base.get("font_name"))
+        if font_name is not None:
+            normalized_font = str(font_name).strip()
+            base["font_name"] = normalized_font or None
+
+        if "render_style" in payload:
+            render_style = _normalize_subtitle_style(payload.get("render_style"))
+            if render_style:
+                base["render_style"] = render_style
+        if "font_size" in payload:
+            base["font_size"] = _as_int(payload.get("font_size"), int(base["font_size"]), 10, 160)
+        if "primary_color" in payload:
+            base["primary_color"] = str(payload.get("primary_color") or base["primary_color"])
+        if "highlight_color" in payload:
+            base["highlight_color"] = str(payload.get("highlight_color") or base["highlight_color"])
+        if "outline_color" in payload:
+            base["outline_color"] = str(payload.get("outline_color") or base["outline_color"])
+        if "outline_width" in payload:
+            base["outline_width"] = _as_int(payload.get("outline_width"), int(base["outline_width"]), 0, 12)
+        if "shadow" in payload:
+            base["shadow"] = _as_int(payload.get("shadow"), int(base["shadow"]), 0, 12)
+        if "alignment" in payload:
+            base["alignment"] = _as_int(payload.get("alignment"), int(base["alignment"]), 1, 9)
+        if "margin_v" in payload:
+            base["margin_v"] = _as_int(payload.get("margin_v"), int(base["margin_v"]), 0, 500)
+
+        if "max_words_per_caption" in payload:
+            base["max_words_per_caption"] = _as_int(
+                payload.get("max_words_per_caption"),
+                int(base["max_words_per_caption"]),
+                1,
+                8,
+            )
+        if "max_gap_sec" in payload:
+            base["max_gap_sec"] = _as_float(
+                payload.get("max_gap_sec"),
+                float(base["max_gap_sec"]),
+                0.03,
+                2.0,
+            )
+        if "max_caption_duration_sec" in payload:
+            base["max_caption_duration_sec"] = _as_float(
+                payload.get("max_caption_duration_sec"),
+                float(base["max_caption_duration_sec"]),
+                0.25,
+                8.0,
+            )
+        if "max_caption_display_sec" in payload:
+            base["max_caption_display_sec"] = _as_float(
+                payload.get("max_caption_display_sec"),
+                float(base["max_caption_display_sec"]),
+                0.25,
+                10.0,
+            )
+        if "caption_guard_sec" in payload:
+            base["caption_guard_sec"] = _as_float(
+                payload.get("caption_guard_sec"),
+                float(base["caption_guard_sec"]),
+                0.0,
+                0.1,
+            )
+        if "min_duration_sec" in payload:
+            base["min_duration_sec"] = _as_float(
+                payload.get("min_duration_sec"),
+                float(base["min_duration_sec"]),
+                0.03,
+                1.0,
+            )
+        merged[style_id] = base
+    return merged
+
+
+def _caption_x_expression(alignment: int) -> str:
+    if alignment in {1, 4, 7}:
+        return "40"
+    if alignment in {3, 6, 9}:
+        return "(w-text_w)-40"
+    return "(w-text_w)/2"
+
+
+def _caption_y_expression(alignment: int, margin_v: int) -> str:
+    if alignment in {1, 2, 3}:
+        # Keep captions visible above player controls and inside active picture
+        # area when videos are letterboxed/pillarboxed. Use a comma-free min()
+        # equivalent because drawtext option parsing is fragile with unescaped commas.
+        a = f"((h-text_h)-{margin_v})"
+        b = "((h*0.70)-(text_h/2))"
+        return f"(({a}+{b}-abs({a}-{b}))/2)"
+    if alignment in {4, 5, 6}:
+        return "(h-text_h)/2"
+    return str(margin_v)
+
+
+def _coalesce_caption_chunks(
+    chunks: list[list[dict[str, Any]]],
+    max_caption_overlays: int,
+) -> list[list[dict[str, Any]]]:
+    if max_caption_overlays <= 0 or len(chunks) <= max_caption_overlays:
+        return chunks
+    group_size = max(1, (len(chunks) + max_caption_overlays - 1) // max_caption_overlays)
+    merged: list[list[dict[str, Any]]] = []
+    for index in range(0, len(chunks), group_size):
+        combined: list[dict[str, Any]] = []
+        for part in chunks[index : index + group_size]:
+            combined.extend(part)
+        if combined:
+            merged.append(combined)
+    return merged
 
 
 def _utcnow() -> datetime:
@@ -122,6 +452,19 @@ def _primary_track(state: TimelineState, kind: str = "video") -> Track:
     return track
 
 
+def _track_by_ref(state: TimelineState, track_ref: str | None = None, kind: str | None = None) -> Track:
+    if track_ref is not None:
+        normalized = str(track_ref).strip()
+        if normalized:
+            for track in state.tracks:
+                if track.id == normalized:
+                    return track
+            raise ValueError(f"track not found: {normalized}")
+    if kind is None:
+        raise ValueError("track kind is required when track_id is not provided")
+    return _primary_track(state, kind)
+
+
 def _clip_duration_on_timeline(clip: Clip) -> float:
     return max((clip.end_sec - clip.start_sec) / max(clip.speed, 0.01), 0.0)
 
@@ -167,6 +510,31 @@ def _clip_index_by_ref(state: TimelineState, clip_ref: str | int, track_kind: st
             if clip.id == str(clip_ref):
                 return track, idx
     raise ValueError(f"clip not found: {clip_ref}")
+
+
+def _text_overlay_index_by_ref(
+    state: TimelineState,
+    overlay_ref: str,
+    *,
+    clip_ref: str | int | None = None,
+) -> tuple[Track, int, int]:
+    normalized_clip_ref = _normalize_clip_ref(clip_ref) if clip_ref is not None else None
+    clip_filter_id: str | None = None
+    if normalized_clip_ref is not None:
+        track, clip_idx = _clip_index_by_ref(state, normalized_clip_ref)
+        clip_filter_id = track.clips[clip_idx].id
+
+    overlay_id = str(overlay_ref)
+    for track in state.tracks:
+        if track.kind != "video":
+            continue
+        for clip_idx, clip in enumerate(track.clips):
+            if clip_filter_id is not None and clip.id != clip_filter_id:
+                continue
+            for overlay_idx, overlay in enumerate(clip.text_overlays):
+                if overlay.id == overlay_id:
+                    return track, clip_idx, overlay_idx
+    raise ValueError(f"text overlay not found: {overlay_id}")
 
 
 def _normalize_clip_ref(value: Any) -> str | int:
@@ -288,10 +656,56 @@ def _apply_add_text_overlay(state: TimelineState, params: dict[str, Any]) -> Non
         x=str(params.get("x", "(w-text_w)/2")),
         y=str(params.get("y", "(h-text_h)-80")),
         font_size=int(params.get("font_size", 48)),
+        font_name=(str(params.get("font_name", "")).strip() or None),
         color=str(params.get("color", "white")),
+        highlight_color=(str(params.get("highlight_color", "")).strip() or None),
+        outline_color=str(params.get("outline_color", "black@0.5")),
+        outline_width=int(params.get("outline_width", 2)),
+        shadow=int(params.get("shadow", 0)),
+        alignment=int(params.get("alignment", 2)),
+        margin_v=int(params.get("margin_v", 80)),
         style=str(params.get("style", "static")),
     )
     clip.text_overlays.append(overlay)
+
+
+def _apply_move_text_overlay(state: TimelineState, params: dict[str, Any]) -> None:
+    track, clip_idx, overlay_idx = _text_overlay_index_by_ref(
+        state,
+        str(params["overlay"]),
+        clip_ref=params.get("clip"),
+    )
+    clip = track.clips[clip_idx]
+    overlay = clip.text_overlays[overlay_idx]
+    clip_source_duration = max(clip.end_sec - clip.start_sec, 0.1)
+    max_start = max(0.0, clip_source_duration - overlay.duration_sec)
+    overlay.start_sec = round(max(0.0, min(float(params.get("start_sec", overlay.start_sec)), max_start)), 3)
+
+
+def _apply_trim_text_overlay(state: TimelineState, params: dict[str, Any]) -> None:
+    track, clip_idx, overlay_idx = _text_overlay_index_by_ref(
+        state,
+        str(params["overlay"]),
+        clip_ref=params.get("clip"),
+    )
+    clip = track.clips[clip_idx]
+    overlay = clip.text_overlays[overlay_idx]
+    clip_source_duration = max(clip.end_sec - clip.start_sec, 0.1)
+    start_sec = float(params.get("start_sec", overlay.start_sec))
+    duration_sec = float(params.get("duration_sec", overlay.duration_sec))
+    start_sec = max(0.0, min(start_sec, clip_source_duration - 0.05))
+    max_duration = max(0.05, clip_source_duration - start_sec)
+    overlay.start_sec = round(start_sec, 3)
+    overlay.duration_sec = round(max(0.05, min(duration_sec, max_duration)), 3)
+
+
+def _apply_delete_text_overlay(state: TimelineState, params: dict[str, Any]) -> None:
+    track, clip_idx, overlay_idx = _text_overlay_index_by_ref(
+        state,
+        str(params["overlay"]),
+        clip_ref=params.get("clip"),
+    )
+    del track.clips[clip_idx].text_overlays[overlay_idx]
 
 
 def _apply_add_clip(state: TimelineState, params: dict[str, Any]) -> None:
@@ -344,6 +758,38 @@ def _apply_add_broll_clip(state: TimelineState, params: dict[str, Any]) -> None:
         timeline_start_sec=round(timeline_start, 3),
         broll_opacity=round(opacity, 3),
     )
+    crop_payload = params.get("crop")
+    if isinstance(crop_payload, dict):
+        try:
+            clip.transform.crop = Crop(
+                x=int(crop_payload.get("x", 0)),
+                y=int(crop_payload.get("y", 0)),
+                width=int(crop_payload.get("width", 0)),
+                height=int(crop_payload.get("height", 0)),
+            )
+        except (TypeError, ValueError):
+            pass
+    keyframe_payload = params.get("crop_keyframes")
+    if isinstance(keyframe_payload, list):
+        keyframes: list[CropKeyframe] = []
+        for raw in keyframe_payload:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                keyframes.append(
+                    CropKeyframe(
+                        time_sec=max(0.0, float(raw.get("time_sec", 0.0))),
+                        x=int(raw.get("x", 0)),
+                        y=int(raw.get("y", 0)),
+                    )
+                )
+            except (TypeError, ValueError):
+                continue
+        keyframes.sort(key=lambda item: item.time_sec)
+        clip.transform.crop_keyframes = keyframes
+    preset = params.get("preset")
+    if isinstance(preset, str) and preset.strip():
+        clip.adjustments.preset = preset.strip()
     # B-roll defaults to visual overlay semantics; keep overlay audio muted.
     clip.audio.mute = True
     track.clips.append(clip)
@@ -421,7 +867,8 @@ def _apply_volume(state: TimelineState, params: dict[str, Any]) -> None:
         return
 
     track_kind = str(params.get("track_kind", "audio"))
-    track = _primary_track(state, track_kind)
+    track_id = str(params.get("track_id", "")).strip() or None
+    track = _track_by_ref(state, track_id, track_kind)
     if "volume" in params:
         track.volume = max(0.0, float(params.get("volume", 1.0)))
     if "mute" in params:
@@ -585,28 +1032,116 @@ def _apply_replace_video_track_clips(state: TimelineState, params: dict[str, Any
                 track.clips = []
 
 
+def _apply_clear_subtitles(state: TimelineState, params: dict[str, Any]) -> None:
+    """Remove all text_overlays from video track clips."""
+    asset_id = str(params.get("asset_id", "")).strip() or None
+    video_track = _primary_track(state, "video")
+    for clip in video_track.clips:
+        if asset_id and clip.asset_id != asset_id:
+            continue
+        clip.text_overlays = []
+
+
 def _apply_set_subtitles(state: TimelineState, params: dict[str, Any]) -> None:
     raw_words = params.get("words")
     if not isinstance(raw_words, list) or not raw_words:
         raise ValueError("words must be a non-empty list")
 
     asset_id = str(params.get("asset_id", "")).strip() or None
-    max_words = int(params.get("max_words_per_caption", 3))
+    style = _normalize_subtitle_style(params.get("style", "hormozi_bold")) or "hormozi_bold"
+    style_presets = _merged_caption_style_presets(params.get("caption_styles"))
+    preset = style_presets.get(style)
+    allowed_styles = set(_LEGACY_SUBTITLE_STYLES) | set(style_presets)
+    if style not in allowed_styles:
+        style = "creator"
+        preset = None
+
+    if preset is not None:
+        default_max_words = int(preset.get("max_words_per_caption", 3))
+        default_max_gap_sec = float(preset.get("max_gap_sec", 0.35))
+        default_max_caption_duration_sec = float(preset.get("max_caption_duration_sec", 1.15))
+        default_max_caption_display_sec = float(preset.get("max_caption_display_sec", 1.8))
+        default_caption_guard_sec = float(preset.get("caption_guard_sec", 0.01))
+        min_duration_sec = float(preset.get("min_duration_sec", 0.12))
+    else:
+        if style == "karaoke":
+            default_max_words = 1
+            default_max_gap_sec = 0.18
+            default_max_caption_duration_sec = 0.9
+            default_max_caption_display_sec = 0.95
+            default_caption_guard_sec = 0.002
+            min_duration_sec = 0.06
+        elif style == "creator":
+            default_max_words = 4
+            default_max_gap_sec = 0.45
+            default_max_caption_duration_sec = 2.0
+            default_max_caption_display_sec = 2.4
+            default_caption_guard_sec = 0.01
+            min_duration_sec = 0.12
+        else:
+            default_max_words = 3
+            default_max_gap_sec = 0.35
+            default_max_caption_duration_sec = 1.15
+            default_max_caption_display_sec = 1.8
+            default_caption_guard_sec = 0.01
+            min_duration_sec = 0.12
+
+    max_words = int(params.get("max_words_per_caption", default_max_words))
     max_words = max(1, min(max_words, 8))
     max_chars = int(params.get("max_chars_per_caption", 42))
     max_chars = max(10, min(max_chars, 80))
-    max_gap_sec = max(0.05, float(params.get("max_gap_sec", 0.55)))
-    style = str(params.get("style", "karaoke")).strip().lower() or "karaoke"
-    allowed_styles = {"static", "pop", "bounce", "typewriter", "karaoke", "fade"}
-    if style not in allowed_styles:
-        style = "karaoke"
+    max_gap_sec = max(0.03, float(params.get("max_gap_sec", default_max_gap_sec)))
+    max_caption_duration_sec = max(0.25, float(params.get("max_caption_duration_sec", default_max_caption_duration_sec)))
+    max_caption_display_sec = max(0.25, float(params.get("max_caption_display_sec", default_max_caption_display_sec)))
+    caption_guard_sec = max(0.0, float(params.get("caption_guard_sec", default_caption_guard_sec)))
+    max_caption_display_hard_cap_factor = max(
+        1.1,
+        float(params.get("max_caption_display_hard_cap_factor", 1.8)),
+    )
+    max_caption_overlays = _as_int(
+        params.get("max_caption_overlays", 0),
+        0,
+        0,
+        5000,
+    )
     clear_existing = bool(params.get("clear_existing", True))
 
     # Punctuation characters that signal sentence/clause boundaries
     sentence_end_chars = {'.', '!', '?'}
     clause_break_chars = {',', ';', ':', '—', '–'}
 
+    min_duration_sec = max(0.03, min(float(min_duration_sec), 1.0))
+    render_style = str(preset.get("render_style", style)) if preset is not None else style
+    overlay_alignment = _as_int(preset.get("alignment"), 2, 1, 9) if preset is not None else 2
+    overlay_margin_v = _as_int(preset.get("margin_v"), 80, 0, 500) if preset is not None else 80
+    overlay_x = _caption_x_expression(overlay_alignment) if preset is not None else "(w-text_w)/2"
+    overlay_y = (
+        _caption_y_expression(overlay_alignment, overlay_margin_v)
+        if preset is not None
+        else ("(h-text_h)-112" if style == "creator" else "(h-text_h)-80")
+    )
+    overlay_font_size = (
+        _as_int(preset.get("font_size"), 48, 10, 160)
+        if preset is not None
+        else (52 if style == "creator" else 48)
+    )
+    overlay_font_name = (
+        (str(preset.get("font_name")).strip() or None)
+        if preset is not None and preset.get("font_name") is not None
+        else None
+    )
+    overlay_color = str(preset.get("primary_color", "white")) if preset is not None else "white"
+    overlay_highlight_color = (
+        str(preset.get("highlight_color", overlay_color))
+        if preset is not None
+        else None
+    )
+    overlay_outline_color = str(preset.get("outline_color", "black@0.5")) if preset is not None else "black@0.5"
+    overlay_outline_width = _as_int(preset.get("outline_width"), 2, 0, 12) if preset is not None else 2
+    overlay_shadow = _as_int(preset.get("shadow"), 0, 0, 12) if preset is not None else 0
+
     video_track = _primary_track(state, "video")
+    clip_chunks: list[tuple[Clip, list[list[dict[str, Any]]]]] = []
     for clip in video_track.clips:
         if clear_existing:
             clip.text_overlays = []
@@ -655,6 +1190,11 @@ def _apply_set_subtitles(state: TimelineState, params: dict[str, Any]) -> None:
                 running_text = " ".join(str(w["text"]) for w in current) + " " + word_text
                 if len(running_text) > max_chars:
                     should_split = True
+            # Split when caption would stay on-screen too long (prevents merged phrases).
+            if not should_split and current:
+                candidate_span = max(float(item["end_sec"]) - float(current[0]["start_sec"]), 0.0)
+                if candidate_span > max_caption_duration_sec:
+                    should_split = True
             # Split after sentence-ending punctuation on previous word
             if not should_split and current and len(current) >= 2:
                 prev_text = str(current[-1]["text"])
@@ -673,19 +1213,63 @@ def _apply_set_subtitles(state: TimelineState, params: dict[str, Any]) -> None:
             prev_end = float(item["end_sec"])
         if current:
             chunks.append(current)
+        if chunks:
+            clip_chunks.append((clip, chunks))
 
-        for chunk in chunks:
+    overlays_remaining = max_caption_overlays if max_caption_overlays > 0 else None
+    clips_remaining = len(clip_chunks)
+    for clip, raw_chunks in clip_chunks:
+        chunks = raw_chunks
+        if overlays_remaining is not None:
+            if overlays_remaining <= 0:
+                clips_remaining = max(clips_remaining - 1, 0)
+                continue
+            fair_share = max(1, overlays_remaining // max(clips_remaining, 1))
+            clip_budget = min(overlays_remaining, fair_share)
+            chunks = _coalesce_caption_chunks(chunks, clip_budget)
+            overlays_remaining -= len(chunks)
+            clips_remaining = max(clips_remaining - 1, 0)
+
+        for idx, chunk in enumerate(chunks):
             if not chunk:
                 continue
             source_start = float(chunk[0]["start_sec"])
-            source_end = max(float(chunk[-1]["end_sec"]), source_start + 0.12)
-            duration = max(round(source_end - source_start, 3), 0.12)
+            source_end = max(float(chunk[-1]["end_sec"]), source_start + min_duration_sec)
+            if idx + 1 < len(chunks):
+                next_start = float(chunks[idx + 1][0]["start_sec"])
+                max_end_before_next = max(source_start + min_duration_sec, next_start - caption_guard_sec)
+                source_end = min(source_end, max_end_before_next)
+            # Hard cap subtitle visibility only for clearly pathological ASR spans.
+            natural_span = max(float(chunk[-1]["end_sec"]) - source_start, 0.0)
+            if natural_span > (max_caption_display_sec * max_caption_display_hard_cap_factor):
+                source_end = min(source_end, source_start + max_caption_display_sec)
+            duration = max(round(source_end - source_start, 3), min_duration_sec)
+            caption_text = " ".join(str(item["text"]) for item in chunk)
+            if style == "creator":
+                caption_text = caption_text.upper()
+
             overlay = TextOverlay(
                 id=str(uuid4()),
-                text=" ".join(str(item["text"]) for item in chunk),
+                text=caption_text,
                 start_sec=round(max(source_start - clip.start_sec, 0.0), 3),
                 duration_sec=duration,
-                style=style,
+                x=overlay_x,
+                y=overlay_y,
+                font_size=overlay_font_size,
+                font_name=overlay_font_name,
+                color=overlay_color,
+                highlight_color=overlay_highlight_color,
+                outline_color=overlay_outline_color,
+                outline_width=overlay_outline_width,
+                shadow=overlay_shadow,
+                alignment=overlay_alignment,
+                margin_v=overlay_margin_v,
+                style=render_style,
+                word_timings=[{
+                    "text": str(w["text"]),
+                    "start_sec": float(w["start_sec"]),
+                    "end_sec": float(w["end_sec"])
+                } for w in chunk]
             )
             clip.text_overlays.append(overlay)
 
@@ -701,6 +1285,9 @@ def apply_operation(state: TimelineState, operation: OperationPayload) -> Timeli
         "merge_clips": _apply_merge,
         "set_transition": _apply_transition,
         "add_text_overlay": _apply_add_text_overlay,
+        "move_text_overlay": _apply_move_text_overlay,
+        "trim_text_overlay": _apply_trim_text_overlay,
+        "delete_text_overlay": _apply_delete_text_overlay,
         "add_audio_track": _apply_add_audio_track,
         "add_broll_clip": _apply_add_broll_clip,
         "move_broll_clip": _apply_move_broll_clip,
@@ -719,6 +1306,7 @@ def apply_operation(state: TimelineState, operation: OperationPayload) -> Timeli
         "move_clip": _apply_move_clip,
         "reorder_clips": _apply_reorder_clips,
         "replace_video_track_clips": _apply_replace_video_track_clips,
+        "clear_subtitles": _apply_clear_subtitles,
         "set_subtitles": _apply_set_subtitles,
         "set_export_settings": _apply_export_settings,
         "import_media": lambda *_: None,

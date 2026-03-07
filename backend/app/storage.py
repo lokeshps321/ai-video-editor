@@ -49,6 +49,15 @@ class LocalStorage:
         rel = Path(absolute_path).resolve().relative_to(self.render_root)
         return f"/static/renders/{rel.as_posix()}"
 
+    def resolve_render_asset(self, storage_path: str) -> str:
+        if storage_path.startswith("/static/renders/"):
+            rel_path = storage_path[len("/static/renders/"):]
+            return str(self.render_root / rel_path)
+        path = Path(storage_path)
+        if path.is_absolute():
+            return str(path)
+        return str(self.render_root / storage_path)
+
     def resolve_upload_asset(self, storage_path: str) -> str:
         path = Path(storage_path)
         if path.is_absolute():
