@@ -1,5 +1,5 @@
 {
-  "name": "prompt-video-editor-frontend",
+  "name": "clipmind-frontend",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -9,10 +9,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "framer-motion": "^12.34.3",
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.5.0",
+    "framer-motion": "^12.34.5",
     "lucide-react": "^0.575.0",
     "react": "^19.1.1",
-    "react-dom": "^19.1.1"
+    "react-dom": "^19.1.1",
+    "react-router-dom": "^7.13.1",
+    "three": "^0.183.2"
   },
   "devDependencies": {
     "@types/react": "^19.1.13",
