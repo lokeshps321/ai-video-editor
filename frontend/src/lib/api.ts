@@ -1,7 +1,10 @@
 import type {
   BrollAutoApplyResponse,
+  BrollSyncResponse,
   BrollSlot,
   BrollSuggestResponse,
+  BrollUndoResponse,
+  ExportAspectRatio,
   Job,
   JobEvent,
   MediaAsset,
@@ -15,12 +18,60 @@ import type {
   VibeActionResponse
 } from "../types";
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
-const REQUEST_TIMEOUT_MS = 30000;
+function resolveDefaultApiBase(): string {
+  if (typeof window === "undefined") {
+    return "http://127.0.0.1:8000";
+  }
+  const { hostname, origin, protocol } = window.location;
+  if (hostname === "localhost" || hostname === "127.0.0.1") {
+    return `${protocol}//${hostname}:8000`;
+  }
+  return origin;
+}
+
+const configuredApiBase = String(import.meta.env.VITE_API_BASE ?? "").trim();
+const DEFAULT_API_BASE = resolveDefaultApiBase();
+const API_BASE = configuredApiBase || DEFAULT_API_BASE;
+const parsedDefaultTimeoutMs = Number(import.meta.env.VITE_REQUEST_TIMEOUT_MS ?? 120000);
+const REQUEST_TIMEOUT_MS = Number.isFinite(parsedDefaultTimeoutMs)
+  ? Math.max(5000, parsedDefaultTimeoutMs)
+  : 120000;
 const UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 // High-quality transcription models can take significantly longer on CPU.
 const TRANSCRIPT_TIMEOUT_MS = 30 * 60 * 1000;
 const ACTION_TIMEOUT_MS = 30 * 60 * 1000;
+const WAVEFORM_TIMEOUT_MS = 5 * 60 * 1000;
+
+function extractErrorMessage(payload: unknown): string {
+  if (typeof payload === "string" && payload.trim()) {
+    return payload.trim();
+  }
+  if (payload && typeof payload === "object") {
+    const maybeRecord = payload as Record<string, unknown>;
+    if (typeof maybeRecord.detail === "string" && maybeRecord.detail.trim()) {
+      return maybeRecord.detail.trim();
+    }
+    if (typeof maybeRecord.message === "string" && maybeRecord.message.trim()) {
+      return maybeRecord.message.trim();
+    }
+    return JSON.stringify(payload);
+  }
+  return "";
+}
+
+function parseContentDispositionFilename(contentDisposition: string | null): string | null {
+  if (!contentDisposition) return null;
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]).trim();
+    } catch {
+      return utf8Match[1].trim();
+    }
+  }
+  const basicMatch = contentDisposition.match(/filename="?([^"]+)"?/i);
+  return basicMatch?.[1]?.trim() || null;
+}
 
 async function request<T>(path: string, init?: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
   const controller = new AbortController();
@@ -28,8 +79,20 @@ async function request<T>(path: string, init?: RequestInit, timeoutMs = REQUEST_
   try {
     const res = await fetch(`${API_BASE}${path}`, { ...init, signal: controller.signal });
     if (!res.ok) {
-      const text = await res.text();
-      throw new Error(text || `Request failed with ${res.status}`);
+      let message = "";
+      const contentType = res.headers.get("content-type") ?? "";
+      if (contentType.includes("application/json")) {
+        try {
+          message = extractErrorMessage(await res.json());
+        } catch {
+          // Ignore JSON parse issues and fall back to text payload below.
+        }
+      }
+      if (!message) {
+        const text = await res.text();
+        message = text.trim();
+      }
+      throw new Error(message || `Request failed with ${res.status}`);
     }
     return (await res.json()) as T;
   } catch (error) {
@@ -106,10 +169,27 @@ export const api = {
   redo: (projectId: string): Promise<Project> =>
     request<Project>(`/api/v1/projects/${projectId}/redo`, { method: "POST" }),
 
-  renderPreview: (projectId: string, force = false): Promise<Job> =>
+  renderPreview: (
+    projectId: string,
+    force = false,
+    settings?: {
+      aspect_ratio?: ExportAspectRatio;
+      fps?: 24 | 30 | 60;
+    }
+  ): Promise<Job> =>
     request<Job>(
       `/api/v1/render/preview?project_id=${encodeURIComponent(projectId)}${force ? "&force=true" : ""}`,
-      { method: "POST" }
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          format: "mp4",
+          aspect_ratio: settings?.aspect_ratio ?? "9:16",
+          resolution: "720p",
+          fps: settings?.fps ?? 30,
+          quality: "low",
+        }),
+      }
     ),
 
   ingestUrl: (projectId: string, url: string): Promise<Job> =>
@@ -121,7 +201,14 @@ export const api = {
 
   renderExport: (
     projectId: string,
-    settings: { format: "mp4" | "mov" | "webm"; resolution: "720p" | "1080p" | "4k"; fps: 24 | 30 | 60; quality: "low" | "medium" | "high" | "max"; bitrate?: string }
+    settings: {
+      format: "mp4" | "mov" | "webm";
+      aspect_ratio: ExportAspectRatio;
+      resolution: "720p" | "1080p" | "4k";
+      fps: 24 | 30 | 60;
+      quality: "low" | "medium" | "high" | "max";
+      bitrate?: string;
+    }
   ): Promise<Job> =>
     request<Job>(`/api/v1/render/export?project_id=${encodeURIComponent(projectId)}`, {
       method: "POST",
@@ -131,14 +218,71 @@ export const api = {
 
   getJob: (jobId: string): Promise<Job> => request<Job>(`/api/v1/jobs/${jobId}`),
   getJobEvents: (jobId: string): Promise<JobEvent[]> => request<JobEvent[]>(`/api/v1/jobs/${jobId}/events`),
+  downloadJobOutput: async (jobId: string, fallbackFilename = "export.mp4"): Promise<string> => {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/jobs/${encodeURIComponent(jobId)}/download`, {
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        let message = "";
+        const contentType = res.headers.get("content-type") ?? "";
+        if (contentType.includes("application/json")) {
+          try {
+            message = extractErrorMessage(await res.json());
+          } catch {
+            // Ignore JSON parse issues and fall back to text payload below.
+          }
+        }
+        if (!message) {
+          message = (await res.text()).trim();
+        }
+        throw new Error(message || `Download failed with ${res.status}`);
+      }
 
-  generateTranscript: (projectId: string, assetId: string): Promise<TranscriptGenerateResponse> =>
+      const blob = await res.blob();
+      const filename = parseContentDispositionFilename(res.headers.get("content-disposition")) || fallbackFilename;
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download = filename;
+      link.style.display = "none";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => window.URL.revokeObjectURL(downloadUrl), 0);
+      return filename;
+    } catch (error) {
+      const err = error as Error & { name?: string };
+      if (err.name === "AbortError") {
+        throw new Error(`Download timed out after ${Math.round(REQUEST_TIMEOUT_MS / 1000)}s. Check backend API at ${API_BASE}.`);
+      }
+      if (err.message === "Failed to fetch") {
+        throw new Error(`Backend not reachable at ${API_BASE}. Start FastAPI server and retry.`);
+      }
+      throw err;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  },
+
+  generateTranscript: (
+    projectId: string,
+    assetId: string,
+    language?: string,
+    prompt?: string
+  ): Promise<TranscriptGenerateResponse> =>
     request<TranscriptGenerateResponse>(
       `/api/v1/transcript/generate?project_id=${encodeURIComponent(projectId)}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ asset_id: assetId })
+        body: JSON.stringify({
+          asset_id: assetId,
+          ...(language ? { language } : {}),
+          ...(prompt ? { prompt } : {})
+        })
       },
       TRANSCRIPT_TIMEOUT_MS
     ),
@@ -206,6 +350,34 @@ export const api = {
       body: JSON.stringify(payload ?? {})
     }),
 
+  suggestBrollAsync: (
+    projectId: string,
+    payload?: {
+      transcript_id?: string;
+      max_slots?: number;
+      candidates_per_slot?: number;
+      min_chunk_words?: number;
+      replace_existing?: boolean;
+      include_project_assets?: boolean;
+      include_external_sources?: boolean;
+      ai_rerank?: boolean;
+    },
+    force = false
+  ): Promise<Job> =>
+    request<Job>(
+      `/api/v1/broll/suggest/async?project_id=${encodeURIComponent(projectId)}${force ? "&force=true" : ""}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload ?? {})
+      }
+    ),
+
+  getSuggestBrollResult: (projectId: string, jobId: string): Promise<BrollSuggestResponse> =>
+    request<BrollSuggestResponse>(
+      `/api/v1/broll/suggest/results/${encodeURIComponent(jobId)}?project_id=${encodeURIComponent(projectId)}`
+    ),
+
   autoApplyBroll: (
     projectId: string,
     payload?: {
@@ -231,6 +403,31 @@ export const api = {
         body: JSON.stringify(payload ?? {})
       },
       ACTION_TIMEOUT_MS
+    ),
+
+  syncBroll: (
+    projectId: string,
+    payload?: {
+      transcript_id?: string;
+      clear_existing_overlay?: boolean;
+      overlay_opacity?: number;
+      slot_ids?: string[];
+    }
+  ): Promise<BrollSyncResponse> =>
+    request<BrollSyncResponse>(
+      `/api/v1/broll/sync?project_id=${encodeURIComponent(projectId)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload ?? {})
+      },
+      ACTION_TIMEOUT_MS
+    ),
+
+  undoBrollTransaction: (projectId: string): Promise<BrollUndoResponse> =>
+    request<BrollUndoResponse>(
+      `/api/v1/broll/undo?project_id=${encodeURIComponent(projectId)}`,
+      { method: "POST" }
     ),
 
   listBrollSlots: (projectId: string, transcriptId?: string): Promise<BrollSlot[]> =>
@@ -293,8 +490,27 @@ export const api = {
       }
     ),
 
+  updateTranscriptRange: (
+    transcriptId: string,
+    projectId: string,
+    payload: {
+      start_word_id: string;
+      end_word_id: string;
+      text?: string;
+      mode?: "replace" | "blank" | "preserve";
+    }
+  ): Promise<Transcript> =>
+    request<Transcript>(
+      `/api/v1/transcript/${encodeURIComponent(transcriptId)}/range?project_id=${encodeURIComponent(projectId)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      }
+    ),
+
   getWaveform: (assetId: string, numPeaks = 800): Promise<{ asset_id: string; num_peaks: number; duration_sec: number; peaks: number[] }> =>
-    request(`/api/v1/media/${encodeURIComponent(assetId)}/waveform?num_peaks=${numPeaks}`),
+    request(`/api/v1/media/${encodeURIComponent(assetId)}/waveform?num_peaks=${numPeaks}`, undefined, WAVEFORM_TIMEOUT_MS),
 
   health: (): Promise<{ status: string; ffmpeg?: string; ffprobe?: string }> => request("/health"),
 

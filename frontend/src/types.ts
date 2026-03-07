@@ -10,8 +10,15 @@ export type Crop = {
   height: number;
 };
 
+export type CropKeyframe = {
+  time_sec: number;
+  x: number;
+  y: number;
+};
+
 export type ClipTransform = {
   crop: Crop | null;
+  crop_keyframes: CropKeyframe[];
   scale: Resolution | null;
   rotate: number;
   flip: "horizontal" | "vertical" | null;
@@ -52,8 +59,15 @@ export type TextOverlay = {
   x: string;
   y: string;
   font_size: number;
+  font_name?: string | null;
   color: string;
-  style: "static" | "pop" | "bounce" | "typewriter" | "karaoke" | "fade";
+  highlight_color?: string | null;
+  outline_color?: string;
+  outline_width?: number;
+  shadow?: number;
+  alignment?: number;
+  margin_v?: number;
+  style: string;
 };
 
 export type Clip = {
@@ -87,6 +101,8 @@ export type Timeline = {
   duration_sec: number;
 };
 
+export type ExportAspectRatio = "16:9" | "9:16";
+
 export type Project = {
   id: string;
   name: string;
@@ -119,6 +135,8 @@ export type Job = {
   kind: string;
   status: "queued" | "running" | "completed" | "failed";
   progress: number;
+  stage?: string | null;
+  message?: string | null;
   output_path: string | null;
   error: string | null;
 };
@@ -149,6 +167,17 @@ export type TranscriptWord = {
   start_sec: number;
   end_sec: number;
   confidence?: number | null;
+  quality_score?: number | null;
+  quality_label?: "trusted" | "weak" | null;
+  source_pass?: "primary" | "retry" | "rescue" | "manual" | null;
+};
+
+export type TranscriptRegion = {
+  start_sec: number;
+  end_sec: number;
+  status: "trusted" | "weak" | "blanked";
+  reason?: string | null;
+  word_ids: string[];
 };
 
 export type Transcript = {
@@ -159,6 +188,7 @@ export type Transcript = {
   language: string | null;
   text: string;
   words: TranscriptWord[];
+  regions: TranscriptRegion[];
   duration_sec: number;
   is_mock: boolean;
   created_at: string;
@@ -200,6 +230,8 @@ export type BrollCandidate = {
   confidence: number | null;
   score_breakdown: Record<string, number>;
   entities: string[];
+  visual_intent: string | null;
+  weak_reason_codes: string[];
   reason: Record<string, unknown>;
   created_at: string;
 };
@@ -214,6 +246,10 @@ export type BrollSlot = {
   concept_text: string;
   locked: boolean;
   status: string;
+  review_status: string;
+  visual_intent: string | null;
+  review_summary: string | null;
+  weak_reason_codes: string[];
   chosen_candidate_id: string | null;
   created_at: string;
   updated_at: string;
@@ -237,4 +273,19 @@ export type BrollAutoApplyResponse = {
   confidence_threshold: number;
   timeline: Timeline;
   slots: BrollSlot[];
+};
+
+export type BrollSyncResponse = {
+  project_id: string;
+  transcript_id: string | null;
+  synced_clip_count: number;
+  timeline: Timeline;
+  slots: BrollSlot[];
+};
+
+export type BrollUndoResponse = {
+  project_id: string;
+  restored_clip_count: number;
+  timeline: Timeline;
+  transaction_action: string | null;
 };
