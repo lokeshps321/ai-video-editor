@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import os
+import re
 import shlex
 import subprocess
+import tempfile
+import threading
+from functools import lru_cache
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .config import get_settings
 from .schemas import Clip, ExportSettings, Resolution, TimelineState
@@ -11,23 +16,395 @@ from .schemas import Clip, ExportSettings, Resolution, TimelineState
 settings = get_settings()
 
 
+@lru_cache(maxsize=1)
+def _ffmpeg_supports_encoder(encoder_name: str) -> bool:
+    try:
+        process = subprocess.run(
+            [settings.ffmpeg_bin, "-hide_banner", "-encoders"],
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return False
+    if process.returncode != 0:
+        return False
+    output = f"{process.stdout}\n{process.stderr}"
+    return bool(re.search(rf"^\s*V\S*\s+{re.escape(encoder_name)}\b", output, flags=re.MULTILINE))
+
+
+@lru_cache(maxsize=8)
+def _ffmpeg_encoder_usable(encoder_name: str) -> bool:
+    if not _ffmpeg_supports_encoder(encoder_name):
+        return False
+    try:
+        process = subprocess.run(
+            [
+                settings.ffmpeg_bin,
+                "-hide_banner",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=size=16x16:rate=1:color=black",
+                "-frames:v",
+                "1",
+                "-c:v",
+                encoder_name,
+                "-f",
+                "null",
+                "-",
+            ],
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return False
+    return process.returncode == 0
+
+
+def _resolve_h264_video_encoder() -> str:
+    configured = (settings.render_video_encoder or "auto").strip().lower()
+    if configured in {"libx264", "h264_nvenc"}:
+        return configured
+    if configured == "auto" and _ffmpeg_encoder_usable("h264_nvenc"):
+        return "h264_nvenc"
+    return "libx264"
+
+
+def _quality_to_nvenc_preset(quality: str) -> str:
+    return {
+        "low": "p1",
+        "medium": "p4",
+        "high": "p5",
+        "max": "p7",
+    }.get(quality, "p5")
+
+
+def _quality_to_nvenc_cq(quality: str) -> int:
+    return {
+        "low": 30,
+        "medium": 25,
+        "high": 21,
+        "max": 18,
+    }.get(quality, 21)
+
+# Convert hex #RRGGBB or named colors to ASS &HAABBGGRR format
+def _color_to_ass(color: str | None, fallback: str = "&H00FFFFFF") -> str:
+    if not color:
+        return fallback
+    raw = str(color).strip()
+    # Already ASS format
+    if raw.upper().startswith("&H"):
+        return raw.upper()
+        
+    alpha_hex = "00" # default opaque
+    if "@" in raw:
+        base_color, alpha_str = raw.split("@", 1)
+        raw = base_color
+        try:
+            alpha_float = float(alpha_str)
+            # ASS alpha: 00 is opaque, FF is transparent.
+            # So 0.5 opacity = 50% transparent = 127 = 7F
+            alpha_int = int((1.0 - max(0.0, min(1.0, alpha_float))) * 255)
+            alpha_hex = f"{alpha_int:02X}"
+        except ValueError:
+            pass
+
+    # Named white/black/yellow shortcuts
+    name_map = {
+        "white": "FFFFFF", "black": "000000",
+        "yellow": "00FFFF", "red": "0000FF",
+        "blue": "FF0000", "cyan": "FFFF00",
+        "green": "00FF00", "magenta": "FF00FF",
+    }
+    if raw.lower() in name_map:
+        return f"&H{alpha_hex}{name_map[raw.lower()]}"
+
+    # Convert #RRGGBB or #RRGGBBAA
+    hex_raw = raw.lstrip("#")
+    if len(hex_raw) in (6, 8):
+        try:
+            r = int(hex_raw[0:2], 16)
+            g = int(hex_raw[2:4], 16)
+            b = int(hex_raw[4:6], 16)
+            
+            # If 8 digits and no @ was provided, parse the alpha from the hex
+            if len(hex_raw) == 8 and alpha_hex == "00":
+                # #RRGGBBAA where AA is opacity (FF=opaque, 00=transparent)
+                # ASS needs transparency (00=opaque, FF=transparent)
+                a = int(hex_raw[6:8], 16)
+                ass_alpha = 255 - a
+                alpha_hex = f"{ass_alpha:02X}"
+                
+            return f"&H{alpha_hex}{b:02X}{g:02X}{r:02X}"
+        except ValueError:
+            pass
+    return fallback
+
+
+def _clamp_int(value: int, minimum: int, maximum: int) -> int:
+    return max(minimum, min(value, maximum))
+
+
+def _scale_ass_caption_metrics(
+    font_size: int,
+    margin_v: int,
+    outline_w: int,
+    shadow: int,
+    alignment: int,
+    out_w: int,
+    out_h: int,
+) -> tuple[int, int, int, int]:
+    portrait = out_h >= out_w
+    ref_w, ref_h = (360.0, 640.0) if portrait else (640.0, 360.0)
+    scale = max(1.0, min(out_w / ref_w, out_h / ref_h))
+
+    scaled_font = max(18, int(round(font_size * scale)))
+    if portrait:
+        min_font = max(40, int(round(out_h * 0.032)))
+        max_font = max(min_font, int(round(out_h * 0.056)))
+    else:
+        min_font = max(24, int(round(out_h * 0.040)))
+        max_font = max(min_font, int(round(out_h * 0.085)))
+    scaled_font = _clamp_int(scaled_font, min_font, max_font)
+
+    scaled_outline = max(1, int(round(outline_w * scale * (0.65 if portrait else 0.75))))
+    scaled_shadow = max(0, int(round(shadow * scale * (0.40 if portrait else 0.55))))
+
+    if alignment in {1, 2, 3}:
+        if portrait:
+            # Portrait exports need a lower-third safe area, not a linear margin
+            # scale that drifts captions toward mid-frame on taller outputs.
+            scaled_margin = int(round(margin_v * (out_h / 1080.0)))
+            min_margin = int(round(out_h * 0.085))
+            max_margin = int(round(out_h * 0.130))
+        else:
+            scaled_margin = int(round(margin_v * scale))
+            min_margin = int(round(out_h * 0.055))
+            max_margin = int(round(out_h * 0.180))
+        scaled_margin = _clamp_int(scaled_margin, min_margin, max_margin)
+    else:
+        scaled_margin = max(0, int(round(margin_v * scale)))
+
+    return scaled_font, scaled_margin, scaled_outline, scaled_shadow
+
+
+def _build_ass_subtitle_file(
+    text_overlays: list[dict],
+    out_w: int,
+    out_h: int,
+) -> str:
+    """Write an ASS subtitle file to a temp path and return the path.
+    Uses a single ASS file instead of 100+ drawtext filters for massive speed gains.
+    """
+    def _ts(sec: float) -> str:
+        """Return ASS timestamp in H:MM:SS.CS format (centiseconds)."""
+        total_cs = max(0, int(round(max(sec, 0.0) * 100)))
+        h = total_cs // 360000
+        rem = total_cs % 360000
+        m = rem // 6000
+        rem %= 6000
+        s = rem // 100
+        cs = rem % 100
+        return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+    # Build events from first overlay to estimate global style
+    margin_v = 60
+    alignment = 2
+    font_size = 48
+    primary = "&H00FFFFFF"
+    outline_color = "&H00000000"
+    outline_w = 2
+    shadow = 1
+    font_name = "DejaVu Sans" # Better fallback for Linux than Arial
+    bold = 0
+
+    if text_overlays:
+        sample = text_overlays[0]
+        font_size = int(sample.get("font_size", 48))
+        primary = _color_to_ass(str(sample.get("color", "white")))
+        outline_color = _color_to_ass(str(sample.get("outline_color", "black")))
+        outline_w = int(sample.get("outline_width", 2))
+        shadow = int(sample.get("shadow", 1))
+        margin_v = int(sample.get("margin_v", 60))
+        alignment = int(sample.get("alignment", 2))
+        
+        raw_font = str(sample.get("font_name", "Arial"))
+        if "bold" in raw_font.lower():
+            bold = -1
+        # Strip common weight suffixes that libass might not like in the family name
+        font_name = raw_font.split("-")[0].split(" ")[0]
+        # Common Linux fallbacks if Windows fonts are requested
+        if font_name.lower() in ("arial", "helvetica", "inter", "roboto"):
+            font_name = "DejaVu Sans"
+
+        font_size, margin_v, outline_w, shadow = _scale_ass_caption_metrics(
+            font_size,
+            margin_v,
+            outline_w,
+            shadow,
+            alignment,
+            out_w,
+            out_h,
+        )
+            
+    print(f"DEBUG ASS: generating with font='{font_name}', size={font_size}, color={primary}, align={alignment}, margin_v={margin_v}, overlays={len(text_overlays)}")
+
+    lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        f"PlayResX: {out_w}",
+        f"PlayResY: {out_h}",
+        "WrapStyle: 0",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        f"Style: Default,{font_name},{font_size},{primary},&H000000FF,{outline_color},&HA0000000,{bold},0,0,0,100,100,0,0,1,{outline_w},{shadow},{alignment},10,10,{margin_v},1",
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    for overlay in text_overlays:
+        start_sec = float(overlay.get("start", 0.0))
+        end_sec = float(overlay.get("end", start_sec + 1.0))
+        raw_text = str(overlay.get("text", "")).replace("\n", "\\N")
+        # Escape special ASS characters
+        raw_text = raw_text.replace("{", "").replace("}", "")
+        
+        words = overlay.get("word_timings", [])
+        highlight_color = overlay.get("highlight_color")
+
+        # If we have word timings AND a highlight color, do a word-by-word karaoke style reveal!
+        if words and highlight_color:
+            hl_ass_color = _color_to_ass(str(highlight_color), fallback=primary)
+            
+            # The raw_text is exactly the words joined by spaces (maybe some uppercasing).
+            # We split it into parts matching the words array.
+            final_words = raw_text.split(" ")
+            
+            # Failsafe: if parts don't match (e.g. custom text edits), fallback to standard block
+            if len(final_words) == len(words):
+                for i in range(len(words)):
+                    # Word segment covers the time until the START of the next word
+                    seg_start = start_sec if i == 0 else float(words[i]["start_tl"])
+                    seg_end = end_sec if i == len(words) - 1 else float(words[i+1]["start_tl"])
+                    
+                    colored_line = []
+                    for j, w in enumerate(final_words):
+                        if i == j:
+                            colored_line.append(f"{{\\c{hl_ass_color}&}}{w}{{\\c{primary}&}}")
+                        else:
+                            colored_line.append(w)
+                    
+                    full_line = " ".join(colored_line)
+                    # Use Layer 1 to ensure it's above the video
+                    lines.append(f"Dialogue: 1,{_ts(seg_start)},{_ts(seg_end)},Default,,0,0,0,,{full_line}")
+                continue
+                
+        # Standard fallback (no highlights, just plain text block)
+        lines.append(f"Dialogue: 1,{_ts(start_sec)},{_ts(end_sec)},Default,,0,0,0,,{raw_text}")
+
+    content = "\n".join(lines)
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", suffix=".ass", delete=False
+    )
+    tmp.write(content)
+    tmp.close()
+    return tmp.name
+
+_SCRIPT_FONT_CANDIDATES: list[tuple[tuple[tuple[int, int], ...], list[str]]] = [
+    (
+        ((0x0C80, 0x0CFF),),  # Kannada
+        ["/usr/share/fonts/truetype/lohit-kannada/Lohit-Kannada.ttf"],
+    ),
+    (
+        ((0x0900, 0x097F),),  # Devanagari
+        ["/usr/share/fonts/truetype/lohit-devanagari/Lohit-Devanagari.ttf"],
+    ),
+    (
+        ((0x0B80, 0x0BFF),),  # Tamil
+        [
+            "/usr/share/fonts/truetype/lohit-tamil/Lohit-Tamil.ttf",
+            "/usr/share/fonts/truetype/samyak-fonts/Samyak-Tamil.ttf",
+        ],
+    ),
+    (
+        ((0x0C00, 0x0C7F),),  # Telugu
+        ["/usr/share/fonts/truetype/lohit-telugu/Lohit-Telugu.ttf"],
+    ),
+    (
+        ((0x0D00, 0x0D7F),),  # Malayalam
+        ["/usr/share/fonts/truetype/lohit-malayalam/Lohit-Malayalam.ttf"],
+    ),
+    (
+        ((0x0980, 0x09FF),),  # Bengali/Assamese
+        [
+            "/usr/share/fonts/truetype/lohit-bengali/Lohit-Bengali.ttf",
+            "/usr/share/fonts/truetype/lohit-assamese/Lohit-Assamese.ttf",
+        ],
+    ),
+    (
+        ((0x0A80, 0x0AFF),),  # Gujarati
+        ["/usr/share/fonts/truetype/lohit-gujarati/Lohit-Gujarati.ttf"],
+    ),
+    (
+        ((0x0A00, 0x0A7F),),  # Gurmukhi (Punjabi)
+        ["/usr/share/fonts/truetype/lohit-punjabi/Lohit-Gurmukhi.ttf"],
+    ),
+    (
+        ((0x0B00, 0x0B7F),),  # Odia
+        ["/usr/share/fonts/truetype/lohit-oriya/Lohit-Odia.ttf"],
+    ),
+]
+
+_GENERIC_FONT_CANDIDATES: list[str] = [
+    "/usr/share/fonts/truetype/freefont/FreeSerif.ttf",
+    "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+]
+
+_MAX_INLINE_FILTER_COMPLEX_CHARS = 20_000
+_ASS_COLOR_RE = re.compile(r"^&H([0-9A-Fa-f]{8})$")
+_CAPTION_STYLE_ALIASES = {
+    "kinetic": "hormozi_bold",
+    "minimal": "minimalist",
+    "bold": "hormozi_bold",
+    "gradient": "neon_gamer",
+    "outline": "neon_gamer",
+    "cinema": "cinematic_serif",
+    "cinematic": "cinematic_serif",
+    "serif": "cinematic_serif",
+    "retro": "retro_vhs",
+    "vhs": "retro_vhs",
+    "pop": "pop_color",
+    "colorful": "pop_color",
+    "gold": "elegant_gold",
+    "elegant": "elegant_gold",
+    "luxury": "elegant_gold",
+    "street": "street_impact",
+    "impact": "street_impact",
+    "urban": "street_impact",
+}
+
+
 def _even(value: int) -> int:
     return value if value % 2 == 0 else value + 1
 
 
-def _resolution_dims(resolution: str, timeline_resolution: Resolution) -> tuple[int, int]:
-    short_side_map = {
-        "720p": 720,
-        "1080p": 1080,
-        "4k": 2160,
+def _resolution_dims(resolution: str, aspect_ratio: str) -> tuple[int, int]:
+    dims_map = {
+        "16:9": {
+            "720p": (1280, 720),
+            "1080p": (1920, 1080),
+            "4k": (3840, 2160),
+        },
+        "9:16": {
+            "720p": (720, 1280),
+            "1080p": (1080, 1920),
+            "4k": (2160, 3840),
+        },
     }
-    short_side = short_side_map[resolution]
-    src_w = max(timeline_resolution.width, 2)
-    src_h = max(timeline_resolution.height, 2)
-    scale = short_side / min(src_w, src_h)
-    out_w = _even(int(round(src_w * scale)))
-    out_h = _even(int(round(src_h * scale)))
-    return out_w, out_h
+    width, height = dims_map[aspect_ratio][resolution]
+    return _even(width), _even(height)
 
 
 def _quality_to_crf(quality: str) -> int:
@@ -78,6 +455,87 @@ def _escape_drawtext_expr(expr: str) -> str:
     )
 
 
+def _font_exists(path: str) -> bool:
+    return Path(path).is_file()
+
+
+def _contains_script(text: str, ranges: tuple[tuple[int, int], ...]) -> bool:
+    for char in text:
+        code = ord(char)
+        for start, end in ranges:
+            if start <= code <= end:
+                return True
+    return False
+
+
+def _pick_drawtext_fontfile(text: str) -> str | None:
+    override = (os.getenv("RENDER_SUBTITLE_FONTFILE", "") or "").strip()
+    if override and _font_exists(override):
+        return override
+
+    for ranges, candidates in _SCRIPT_FONT_CANDIDATES:
+        if not _contains_script(text, ranges):
+            continue
+        for path in candidates:
+            if _font_exists(path):
+                return path
+
+    for path in _GENERIC_FONT_CANDIDATES:
+        if _font_exists(path):
+            return path
+    return None
+
+
+def _normalize_caption_style(style: str) -> str:
+    normalized = str(style or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return _CAPTION_STYLE_ALIASES.get(normalized, normalized)
+
+
+def _ass_color_to_drawtext(value: str) -> str | None:
+    match = _ASS_COLOR_RE.match(str(value or "").strip())
+    if not match:
+        return None
+    packed = match.group(1)
+    alpha = int(packed[0:2], 16)
+    blue = int(packed[2:4], 16)
+    green = int(packed[4:6], 16)
+    red = int(packed[6:8], 16)
+    opacity = max(0.0, min(1.0, 1.0 - (alpha / 255.0)))
+    rgb = f"#{red:02X}{green:02X}{blue:02X}"
+    if opacity >= 0.995:
+        return rgb
+    if opacity <= 0.005:
+        return f"{rgb}@0"
+    return f"{rgb}@{opacity:.3f}".rstrip("0").rstrip(".")
+
+
+def _resolve_drawtext_color(value: str | None, fallback: str) -> str:
+    if value is None:
+        return fallback
+    raw = str(value).strip()
+    if not raw:
+        return fallback
+    converted = _ass_color_to_drawtext(raw)
+    return converted if converted else raw
+
+
+def _drawtext_stroke_shadow_options(
+    *,
+    outline_color: str,
+    outline_width: int,
+    shadow: int,
+) -> list[str]:
+    options: list[str] = []
+    if outline_width > 0:
+        options.append(f"borderw={outline_width}")
+        options.append(f"bordercolor={outline_color}")
+    if shadow > 0:
+        options.append(f"shadowcolor={outline_color}")
+        options.append("shadowx=0")
+        options.append(f"shadowy={shadow}")
+    return options
+
+
 def _float(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
 
@@ -113,13 +571,51 @@ def _apply_preset_filters(chain: list[str], preset: str | None) -> None:
         chain.append("curves=preset=vintage")
     elif key in {"mono", "blackwhite", "b&w"}:
         chain.append("hue=s=0")
+    elif key == "text_safe_mild":
+        chain.append("eq=brightness=-0.055:contrast=0.96:saturation=0.95")
+    elif key == "text_safe_soft":
+        chain.append("boxblur=luma_radius=2:luma_power=1")
+        chain.append("eq=brightness=-0.085:contrast=0.94:saturation=0.92")
 
 
-def _video_filters_for_clip(clip: Clip, out_w: int, out_h: int, fps: int) -> str:
+def _crop_x_expression(crop_width: int, keyframes: list[tuple[float, int]]) -> str:
+    if not keyframes:
+        return "0"
+    points = sorted(keyframes, key=lambda item: item[0])
+    deduped: list[tuple[float, int]] = []
+    for time_sec, x in points:
+        clamped_x = max(0, int(x))
+        if deduped and abs(deduped[-1][0] - time_sec) < 1e-6:
+            deduped[-1] = (time_sec, clamped_x)
+        else:
+            deduped.append((time_sec, clamped_x))
+    if len(deduped) == 1:
+        return f"max(0,min(iw-{crop_width},{deduped[0][1]}))"
+    expr = f"{deduped[-1][1]}"
+    for idx in range(len(deduped) - 2, -1, -1):
+        t0, x0 = deduped[idx]
+        t1, x1 = deduped[idx + 1]
+        if t1 <= t0:
+            continue
+        span = max(t1 - t0, 0.001)
+        lerp = f"({x0}+({x1 - x0})*(t-{t0:.3f})/{span:.3f})"
+        expr = f"if(lt(t,{t1:.3f}),{lerp},{expr})"
+    return f"max(0,min(iw-{crop_width},{expr}))"
+
+
+def _video_filters_for_clip(clip: Clip, out_w: int, out_h: int, fps: int, *, cover_output: bool = False) -> str:
     chain: list[str] = []
     if clip.transform.crop:
         crop = clip.transform.crop
-        chain.append(f"crop={crop.width}:{crop.height}:{crop.x}:{crop.y}")
+        if clip.transform.crop_keyframes:
+            keyframes = [
+                (max(0.0, float(item.time_sec)), int(item.x))
+                for item in clip.transform.crop_keyframes
+            ]
+            x_expr = _crop_x_expression(max(2, int(crop.width)), keyframes)
+            chain.append(f"crop={crop.width}:{crop.height}:'{x_expr}':{int(crop.y)}")
+        else:
+            chain.append(f"crop={crop.width}:{crop.height}:{crop.x}:{crop.y}")
     if clip.transform.rotate == 90:
         chain.append("transpose=1")
     elif clip.transform.rotate == 180:
@@ -152,8 +648,12 @@ def _video_filters_for_clip(clip: Clip, out_w: int, out_h: int, fps: int) -> str
         chain.append(f"colorbalance=rs={rs:.4f}:bs={bs:.4f}")
 
     chain.append(f"fps={fps}")
-    chain.append(f"scale={out_w}:{out_h}:force_original_aspect_ratio=decrease")
-    chain.append(f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2")
+    if cover_output:
+        chain.append(f"scale={out_w}:{out_h}:force_original_aspect_ratio=increase")
+        chain.append(f"crop={out_w}:{out_h}:(iw-ow)/2:(ih-oh)/2")
+    else:
+        chain.append(f"scale={out_w}:{out_h}:force_original_aspect_ratio=decrease")
+        chain.append(f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2")
     chain.append("format=yuv420p")
     return ",".join(chain)
 
@@ -183,19 +683,84 @@ def _timeline_layout(clips: list[Clip]) -> tuple[list[float], list[float]]:
     return starts, transitions
 
 
-def _collect_text_overlays(clips: Iterable[Clip], render_starts: dict[str, float]) -> list[tuple[str, float, float, str, str, int, str, str]]:
-    overlays: list[tuple[str, float, float, str, str, int, str, str]] = []
+def _collect_text_overlays(clips: Iterable[Clip], render_starts: dict[str, float]) -> list[dict[str, object]]:
+    overlays: list[dict[str, object]] = []
     for clip in clips:
         base = render_starts.get(clip.id, clip.timeline_start_sec)
+        speed = float(getattr(clip, "speed", 1.0))
+        if speed <= 0:
+            speed = 1.0
         for item in clip.text_overlays:
-            start = base + item.start_sec
-            end = start + item.duration_sec
-            overlays.append((item.text, start, end, item.x, item.y, item.font_size, item.style, item.color))
+            start = base + (item.start_sec / speed)
+            end = base + ((item.start_sec + item.duration_sec) / speed)
+            overlay_dict = {
+                "text": item.text,
+                "start": start,
+                "end": end,
+                "x": item.x,
+                "y": item.y,
+                "font_size": item.font_size,
+                "style": item.style,
+                "color": item.color,
+                "highlight_color": item.highlight_color,
+                "outline_color": item.outline_color,
+                "outline_width": item.outline_width,
+                "shadow": item.shadow,
+                "font_name": item.font_name,
+                "alignment": getattr(item, "alignment", 2),
+                "margin_v": getattr(item, "margin_v", 80),
+            }
+            
+            # Process word timings into timeline space
+            raw_words = getattr(item, "word_timings", [])
+            mapped_words = []
+            for w in raw_words:
+                w_src_start = float(w.get("start_sec", 0.0))
+                w_src_end = float(w.get("end_sec", 0.0))
+                # Convert to timeline space
+                w_tl_start = base + (max(w_src_start - clip.start_sec, 0.0) / speed)
+                w_tl_end = base + (max(w_src_end - clip.start_sec, 0.0) / speed)
+                mapped_words.append({
+                    "text": w.get("text", ""),
+                    "start_tl": w_tl_start,
+                    "end_tl": w_tl_end
+                })
+            overlay_dict["word_timings"] = mapped_words
+            overlays.append(overlay_dict)
     return overlays
 
 
-def _style_drawtext_options(style: str, start: float, end: float, font_size: int, x: str, y: str, color: str) -> str:
-    normalized = style.lower()
+def _style_drawtext_options(
+    style: str,
+    start: float,
+    end: float,
+    font_size: int,
+    x: str,
+    y: str,
+    color: str,
+    *,
+    highlight_color: str | None = None,
+    outline_color: str = "black@0.5",
+    outline_width: int = 2,
+    shadow: int = 0,
+) -> str:
+    normalized = _normalize_caption_style(style)
+    primary = _resolve_drawtext_color(color, "white")
+    highlight = _resolve_drawtext_color(highlight_color, primary)
+    stroke_color = _resolve_drawtext_color(outline_color, "black@0.5")
+    stroke_width = max(int(outline_width), 0)
+    shadow_size = max(int(shadow), 0)
+
+    def _with_base(parts: list[str], *, border_width: int | None = None, shadow_px: int | None = None) -> str:
+        parts.extend(
+            _drawtext_stroke_shadow_options(
+                outline_color=stroke_color,
+                outline_width=stroke_width if border_width is None else max(border_width, 0),
+                shadow=shadow_size if shadow_px is None else max(shadow_px, 0),
+            )
+        )
+        return ":".join(parts)
+
     if normalized == "fade":
         fade_in = min(0.25, max(end - start, 0.1) * 0.3)
         fade_out = min(0.25, max(end - start, 0.1) * 0.3)
@@ -204,33 +769,200 @@ def _style_drawtext_options(style: str, start: float, end: float, font_size: int
             f"if(lt(t,{start + fade_in:.3f}),(t-{start:.3f})/{fade_in:.3f},"
             f"if(lt(t,{max(end - fade_out, start):.3f}),1,({end:.3f}-t)/{fade_out:.3f})))"
         )
-        return f"x={x}:y={y}:fontsize={font_size}:fontcolor={color}:alpha='{_escape_drawtext_expr(alpha)}'"
-    if normalized == "pop":
-        pop_end = start + 0.3
+        return _with_base(
+            [
+                f"x={x}",
+                f"y={y}",
+                f"fontsize={font_size}",
+                f"fontcolor={primary}",
+                f"alpha='{_escape_drawtext_expr(alpha)}'",
+            ]
+        )
+    if normalized in {"pop", "hormozi_bold"}:
+        pop_end = start + (0.12 if normalized == "hormozi_bold" else 0.3)
+        start_scale = 1.22 if normalized == "hormozi_bold" else 1.35
+        duration = 0.12 if normalized == "hormozi_bold" else 0.30
         size_expr = (
             f"if(lt(t,{pop_end:.3f}),"
-            f"{font_size}*(1.35-0.35*((t-{start:.3f})/0.30)),{font_size})"
+            f"{font_size}*({start_scale:.2f}-{(start_scale - 1.0):.2f}*((t-{start:.3f})/{duration:.2f})),{font_size})"
         )
-        return (
-            f"x={x}:y={y}:fontsize='{_escape_drawtext_expr(size_expr)}':"
-            f"fontcolor={color}:borderw=2:bordercolor=black@0.5"
+        return _with_base(
+            [
+                f"x={x}",
+                f"y={y}",
+                f"fontsize='{_escape_drawtext_expr(size_expr)}'",
+                f"fontcolor={primary}",
+            ]
         )
     if normalized == "bounce":
         y_expr = f"{y}+18*sin((t-{start:.3f})*12)"
-        return f"x={x}:y='{_escape_drawtext_expr(y_expr)}':fontsize={font_size}:fontcolor={color}:borderw=2:bordercolor=black@0.6"
+        return _with_base(
+            [
+                f"x={x}",
+                f"y='{_escape_drawtext_expr(y_expr)}'",
+                f"fontsize={font_size}",
+                f"fontcolor={primary}",
+            ]
+        )
     if normalized == "typewriter":
         alpha = f"if(lt(t,{start + 0.08:.3f}),0,1)"
-        return f"x={x}:y={y}:fontsize={font_size}:fontcolor={color}:alpha='{_escape_drawtext_expr(alpha)}'"
-    if normalized == "karaoke":
+        return _with_base(
+            [
+                f"x={x}",
+                f"y={y}",
+                f"fontsize={font_size}",
+                f"fontcolor={primary}",
+                f"alpha='{_escape_drawtext_expr(alpha)}'",
+            ]
+        )
+    if normalized in {"karaoke", "neon_gamer"}:
         # Avoid fontcolor_expr here: some ffmpeg builds accept it but render nothing.
         # Pulse alpha instead, while keeping a standard fontcolor path.
         pulse_alpha = f"if(lt(mod(t-{start:.3f},0.45),0.22),1,0.78)"
-        return (
-            f"x={x}:y={y}:fontsize={font_size}:fontcolor={color}:"
-            f"alpha='{_escape_drawtext_expr(pulse_alpha)}':"
-            "borderw=2:bordercolor=black@0.6"
+        return _with_base(
+            [
+                f"x={x}",
+                f"y={y}",
+                f"fontsize={font_size}",
+                f"fontcolor={highlight}",
+                f"alpha='{_escape_drawtext_expr(pulse_alpha)}'",
+            ],
+            border_width=max(stroke_width, 1),
+            shadow_px=max(shadow_size, 2 if normalized == "neon_gamer" else 0),
         )
-    return f"x={x}:y={y}:fontsize={font_size}:fontcolor={color}:borderw=2:bordercolor=black@0.5"
+    if normalized == "creator":
+        # Lightweight creator look: pop-in + readable stroke/shadow.
+        # Keep math simple so long-caption renders don't overload ffmpeg.
+        punch_end = start + 0.18
+        fade_in = 0.06
+        fade_out = 0.10
+        fade_out_start = max(start + fade_in, end - fade_out)
+        size_expr = (
+            f"if(lt(t,{punch_end:.3f}),"
+            f"{font_size}*(1.16-0.16*((t-{start:.3f})/0.18)),{font_size})"
+        )
+        alpha_expr = (
+            f"if(lt(t,{start:.3f}),0,"
+            f"if(lt(t,{start + fade_in:.3f}),(t-{start:.3f})/{fade_in:.3f},"
+            f"if(lt(t,{fade_out_start:.3f}),1,"
+            f"if(lt(t,{end:.3f}),({end:.3f}-t)/{fade_out:.3f},0))))"
+        )
+        creator_border_color = _resolve_drawtext_color(outline_color, "black@0.85")
+        if str(outline_color).strip().lower() == "black@0.5":
+            creator_border_color = "black@0.85"
+        creator_shadow_color = "black@0.72" if shadow_size == 0 else creator_border_color
+        return (
+            f"x={x}:y={y}:"
+            f"fontsize='{_escape_drawtext_expr(size_expr)}':"
+            f"fontcolor={primary}:"
+            f"alpha='{_escape_drawtext_expr(alpha_expr)}':"
+            f"borderw={max(stroke_width, 3)}:bordercolor={creator_border_color}:"
+            f"shadowcolor={creator_shadow_color}:shadowx=0:shadowy={max(shadow_size, 3)}"
+        )
+    if normalized == "minimalist":
+        return _with_base(
+            [
+                f"x={x}",
+                f"y={y}",
+                f"fontsize={font_size}",
+                f"fontcolor={primary}",
+            ]
+        )
+    if normalized == "cinematic_serif":
+        # Gentle fade-in / fade-out like classic movie subtitles.
+        fade_in = min(0.30, max(end - start, 0.15) * 0.25)
+        fade_out = min(0.30, max(end - start, 0.15) * 0.25)
+        fade_out_start = max(start + fade_in, end - fade_out)
+        alpha = (
+            f"if(lt(t,{start:.3f}),0,"
+            f"if(lt(t,{start + fade_in:.3f}),(t-{start:.3f})/{fade_in:.3f},"
+            f"if(lt(t,{fade_out_start:.3f}),1,({end:.3f}-t)/{fade_out:.3f})))"
+        )
+        return _with_base(
+            [
+                f"x={x}",
+                f"y={y}",
+                f"fontsize={font_size}",
+                f"fontcolor={primary}",
+                f"alpha='{_escape_drawtext_expr(alpha)}'",
+            ],
+            shadow_px=max(shadow_size, 2),
+        )
+    if normalized == "retro_vhs":
+        # Typewriter snap-in with a subtle alpha flicker for VHS feel.
+        snap_delay = 0.06
+        flicker = f"if(lt(t,{start + snap_delay:.3f}),0,if(lt(mod(t-{start:.3f},0.55),0.04),0.7,1))"
+        return _with_base(
+            [
+                f"x={x}",
+                f"y={y}",
+                f"fontsize={font_size}",
+                f"fontcolor={highlight}",
+                f"alpha='{_escape_drawtext_expr(flicker)}'",
+            ],
+            border_width=max(stroke_width, 2),
+        )
+    if normalized == "pop_color":
+        # Scale pop-in (1.3x → 1x) with snappy timing for social media energy.
+        pop_dur = 0.15
+        pop_end = start + pop_dur
+        size_expr = (
+            f"if(lt(t,{pop_end:.3f}),"
+            f"{font_size}*(1.30-0.30*((t-{start:.3f})/{pop_dur:.2f})),{font_size})"
+        )
+        return _with_base(
+            [
+                f"x={x}",
+                f"y={y}",
+                f"fontsize='{_escape_drawtext_expr(size_expr)}'",
+                f"fontcolor={primary}",
+            ]
+        )
+    if normalized == "elegant_gold":
+        # Slow, graceful fade-in with extended sustain and deeper shadow.
+        fade_in = min(0.40, max(end - start, 0.2) * 0.30)
+        fade_out = min(0.35, max(end - start, 0.2) * 0.25)
+        fade_out_start = max(start + fade_in, end - fade_out)
+        alpha = (
+            f"if(lt(t,{start:.3f}),0,"
+            f"if(lt(t,{start + fade_in:.3f}),(t-{start:.3f})/{fade_in:.3f},"
+            f"if(lt(t,{fade_out_start:.3f}),1,({end:.3f}-t)/{fade_out:.3f})))"
+        )
+        return _with_base(
+            [
+                f"x={x}",
+                f"y={y}",
+                f"fontsize={font_size}",
+                f"fontcolor={primary}",
+                f"alpha='{_escape_drawtext_expr(alpha)}'",
+            ],
+            shadow_px=max(shadow_size, 3),
+        )
+    if normalized == "street_impact":
+        # Hard slam-in with fast scale punch for maximum visual impact.
+        slam_dur = 0.08
+        slam_end = start + slam_dur
+        size_expr = (
+            f"if(lt(t,{slam_end:.3f}),"
+            f"{font_size}*(1.40-0.40*((t-{start:.3f})/{slam_dur:.2f})),{font_size})"
+        )
+        return _with_base(
+            [
+                f"x={x}",
+                f"y={y}",
+                f"fontsize='{_escape_drawtext_expr(size_expr)}'",
+                f"fontcolor={primary}",
+            ],
+            border_width=max(stroke_width, 4),
+        )
+    return _with_base(
+        [
+            f"x={x}",
+            f"y={y}",
+            f"fontsize={font_size}",
+            f"fontcolor={primary}",
+        ]
+    )
 
 
 def _volume_expression(clip: Clip) -> str:
@@ -289,7 +1021,7 @@ def build_ffmpeg_command(
     overlay_inputs: list[tuple[Clip, str]] | None = None,
     overlay_has_video_flags: list[bool] | None = None,
 ) -> list[str]:
-    out_w, out_h = _resolution_dims(export_settings.resolution, timeline.resolution)
+    out_w, out_h = _resolution_dims(export_settings.resolution, export_settings.aspect_ratio)
     fps = export_settings.fps
     overlay_inputs = list(overlay_inputs or [])
     if overlay_has_video_flags is None:
@@ -358,8 +1090,9 @@ def build_ffmpeg_command(
         )
 
     filter_parts: list[str] = []
+    main_cover_output = False
     for idx, (clip, _src) in enumerate(clip_inputs):
-        vf = _video_filters_for_clip(clip, out_w, out_h, fps)
+        vf = _video_filters_for_clip(clip, out_w, out_h, fps, cover_output=main_cover_output)
         filter_parts.append(f"[{idx}:v]{vf}[v{idx}]")
         duration = max(_clip_duration(clip), 0.1)
         if clip_has_audio_flags[idx]:
@@ -419,7 +1152,7 @@ def build_ffmpeg_command(
                 continue
             source_stream_index = overlay_base_index + idx
             overlay_stream = f"ov{idx}"
-            vf = _video_filters_for_clip(clip, out_w, out_h, fps)
+            vf = _video_filters_for_clip(clip, out_w, out_h, fps, cover_output=True)
             filter_parts.append(f"[{source_stream_index}:v]{vf}[{overlay_stream}]")
 
             opacity = _float(clip.broll_opacity, 0.0, 1.0)
@@ -442,17 +1175,18 @@ def build_ffmpeg_command(
             last_video_stream = next_stream
 
     text_overlays = _collect_text_overlays([clip for clip, _ in clip_inputs], render_starts)
-    text_overlays = sorted(text_overlays, key=lambda item: item[1])
-    for idx, (text, start, end, x, y, font_size, style, color) in enumerate(text_overlays):
+    text_overlays = sorted(text_overlays, key=lambda item: float(item["start"]))
+    # Use a SINGLE ASS subtitle file instead of N chained drawtext filters.
+    # This is dramatically faster (one pass vs N passes per frame) and avoids OOM
+    # kills on longer videos with many captions.
+    _ass_subtitle_path: str | None = None
+    if text_overlays:
+        _ass_subtitle_path = _build_ass_subtitle_file(text_overlays, out_w, out_h)
         src = last_video_stream
-        dst = f"vtxt{idx}"
-        safe = _escape_drawtext(text)
-        style_options = _style_drawtext_options(style, start, end, font_size, x, y, color)
-        enable_expr = _escape_drawtext_expr(f"between(t,{start:.3f},{end:.3f})")
-        filter_parts.append(
-            f"[{src}]drawtext=text='{safe}':"
-            f"{style_options}:enable='{enable_expr}'[{dst}]"
-        )
+        dst = "vtxt_ass"
+        # Escape path for ffmpeg filter string (backslashes and colons)
+        esc_path = _ass_subtitle_path.replace("\\", "\\\\").replace(":", "\\:")
+        filter_parts.append(f"[{src}]subtitles='{esc_path}'[{dst}]")
         last_video_stream = dst
 
     has_audio = True
@@ -482,53 +1216,219 @@ def build_ffmpeg_command(
             chain += f"[{label}]"
             filter_parts.append(chain)
             mix_parts.append(f"[{label}]")
-        filter_parts.append(f"{''.join(mix_parts)}amix=inputs={len(mix_parts)}:duration=longest:normalize=0[aout]")
+        # Normalize mixed tracks to avoid clipping/distortion when multiple
+        # sources overlap (voice + music + overlays).
+        filter_parts.append(f"{''.join(mix_parts)}amix=inputs={len(mix_parts)}:duration=longest:normalize=1[aout]")
     else:
         filter_parts.append("[amain]anull[aout]")
 
     filter_complex = ";".join(filter_parts)
-    cmd.extend(["-filter_complex", filter_complex])
+    if len(filter_complex) > _MAX_INLINE_FILTER_COMPLEX_CHARS:
+        tmp_dir = Path(settings.tmp_dir)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        prefix = f"ffmpeg-filter-{Path(output_path).stem[:24]}-"
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            suffix=".txt",
+            prefix=prefix,
+            dir=tmp_dir,
+            delete=False,
+        ) as filter_file:
+            filter_file.write(filter_complex)
+            filter_script_path = filter_file.name
+        cmd.extend(["-filter_complex_script", filter_script_path])
+    else:
+        cmd.extend(["-filter_complex", filter_complex])
     cmd.extend(["-map", f"[{last_video_stream}]"])
     if has_audio:
         cmd.extend(["-map", "[aout]"])
     cmd.extend(["-r", str(fps)])
-    cmd.extend(["-crf", str(_quality_to_crf(export_settings.quality))])
     if export_settings.bitrate:
         cmd.extend(["-b:v", export_settings.bitrate])
     if export_settings.format == "webm":
         cmd.extend(["-c:v", "libvpx-vp9", "-pix_fmt", "yuv420p"])
+        cmd.extend(["-crf", str(_quality_to_crf(export_settings.quality))])
         if has_audio:
             cmd.extend(["-c:a", "libopus", "-b:a", "160k"])
         else:
             cmd.extend(["-an"])
     else:
-        cmd.extend(
-            [
-                "-c:v",
-                "libx264",
-                "-preset",
-                _quality_to_x264_preset(export_settings.quality),
-                "-pix_fmt",
-                "yuv420p",
-            ]
-        )
+        video_encoder = _resolve_h264_video_encoder()
+        if video_encoder == "h264_nvenc":
+            cmd.extend(
+                [
+                    "-c:v",
+                    "h264_nvenc",
+                    "-preset",
+                    _quality_to_nvenc_preset(export_settings.quality),
+                    "-cq",
+                    str(_quality_to_nvenc_cq(export_settings.quality)),
+                    "-pix_fmt",
+                    "yuv420p",
+                ]
+            )
+        else:
+            cmd.extend(
+                [
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    _quality_to_x264_preset(export_settings.quality),
+                    "-crf",
+                    str(_quality_to_crf(export_settings.quality)),
+                    "-pix_fmt",
+                    "yuv420p",
+                ]
+            )
         if has_audio:
             cmd.extend(["-c:a", "aac", "-b:a", "192k"])
         else:
             cmd.extend(["-an"])
-    cmd.append("-shortest")
+        # Make MP4 previews seekable immediately in browser players.
+        cmd.extend(["-movflags", "+faststart"])
+    # Only apply -shortest when there are no short B-roll overlay inputs,
+    # as their short durations could prematurely truncate the output.
+    if not overlay_inputs:
+        cmd.append("-shortest")
     cmd.append(output_path)
+    print(f"DEBUG FFMPEG: {' '.join(shlex.quote(p) for p in cmd)}")
     return cmd
 
 
-def run_ffmpeg(command: list[str]) -> None:
-    process = subprocess.run(command, capture_output=True, text=True)
-    if process.returncode != 0:
+def _parse_ffmpeg_out_time_seconds(progress_fields: dict[str, str]) -> float | None:
+    out_time = progress_fields.get("out_time")
+    if out_time:
+        parts = out_time.strip().split(":")
+        if len(parts) == 3:
+            try:
+                hours = float(parts[0])
+                minutes = float(parts[1])
+                seconds = float(parts[2])
+                return (hours * 3600.0) + (minutes * 60.0) + seconds
+            except ValueError:
+                pass
+
+    for key in ("out_time_us", "out_time_ms"):
+        raw_value = progress_fields.get(key)
+        if not raw_value:
+            continue
+        try:
+            return float(raw_value) / 1_000_000.0
+        except ValueError:
+            continue
+
+    return None
+
+
+def run_ffmpeg(
+    command: list[str],
+    *,
+    duration_sec: float | None = None,
+    progress_callback: Callable[[float], None] | None = None,
+) -> None:
+    filter_script_paths: list[Path] = []
+    ass_paths: list[Path] = []
+    for idx, part in enumerate(command):
+        if part == "-filter_complex_script" and idx + 1 < len(command):
+            filter_script_paths.append(Path(command[idx + 1]))
+        # Detect temp ASS files embedded in -filter_complex values
+        if part == "-filter_complex" and idx + 1 < len(command):
+            fc = command[idx + 1]
+            import re as _re
+            for match in _re.finditer(r"subtitles='([^']+\.ass)'", fc):
+                ass_paths.append(Path(match.group(1).replace("\\:", ":").replace("\\\\", "\\")))
+    try:
+        ffmpeg_command = command[:-1] + ["-progress", "pipe:1", "-nostats", command[-1]]
+        process = subprocess.Popen(
+            ffmpeg_command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+    except OSError as exc:
         formatted = " ".join(shlex.quote(part) for part in command)
         raise RuntimeError(
-            f"ffmpeg failed ({process.returncode})\n"
+            f"ffmpeg invocation failed: {exc}\n"
+            f"command: {formatted}"
+        ) from exc
+
+    stderr_lines: list[str] = []
+
+    def collect_stderr() -> None:
+        if not process.stderr:
+            return
+        for line in process.stderr:
+            stderr_lines.append(line)
+
+    stderr_thread = threading.Thread(target=collect_stderr, name="ffmpeg-stderr", daemon=True)
+    stderr_thread.start()
+
+    progress_fields: dict[str, str] = {}
+    last_fraction = -1.0
+    try:
+        if process.stdout:
+            for raw_line in process.stdout:
+                line = raw_line.strip()
+                if not line or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                progress_fields[key] = value
+                if not progress_callback or not duration_sec or duration_sec <= 0:
+                    continue
+                rendered_sec = _parse_ffmpeg_out_time_seconds(progress_fields)
+                if rendered_sec is None:
+                    continue
+                normalized = max(0.0, min(1.0, rendered_sec / duration_sec))
+                if normalized > last_fraction:
+                    last_fraction = normalized
+                    progress_callback(normalized)
+        returncode = process.wait()
+    finally:
+        if process.stdout:
+            process.stdout.close()
+        stderr_thread.join(timeout=1.0)
+        if process.stderr:
+            process.stderr.close()
+        for path in filter_script_paths:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                # Best effort cleanup for temp filter scripts.
+                pass
+        for path in ass_paths:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    if progress_callback and duration_sec and duration_sec > 0:
+        progress_callback(1.0)
+
+    if returncode != 0:
+        formatted = " ".join(shlex.quote(part) for part in command)
+        # Detect if ffmpeg was killed by a signal (e.g. SIGINT from server restart)
+        stderr_output = "".join(stderr_lines)
+        stderr_lower = stderr_output.lower()
+        if returncode in (-2, 255) or "received signal 2" in stderr_lower:
+            raise RuntimeError(
+                f"ffmpeg was interrupted (signal 2 / SIGINT) — likely caused by a server restart. "
+                f"Please retry the render.\n"
+                f"command: {formatted}\n"
+                f"stderr: {stderr_output.strip()}"
+            )
+        if returncode in (-9, 137):
+            raise RuntimeError(
+                "ffmpeg was killed by the OS (signal 9 / likely out-of-memory). "
+                "Try a simpler caption render (fewer caption blocks) or rerun after pending renders finish.\n"
+                f"command: {formatted}\n"
+                f"stderr: {stderr_output.strip()}"
+            )
+        raise RuntimeError(
+            f"ffmpeg failed ({returncode})\n"
             f"command: {formatted}\n"
-            f"stderr: {process.stderr.strip()}"
+            f"stderr: {stderr_output.strip()}"
         )
 
 
