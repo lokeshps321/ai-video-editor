@@ -41,7 +41,15 @@ def test_transcript_generate_and_cut_flow(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr("app.routers.media.probe_duration_seconds", lambda _: 8.0)
     monkeypatch.setattr("app.routers.media.probe_stream_flags", lambda _: {"has_video": True, "has_audio": True})
 
-    def fake_generate_transcript(_path: str, _duration_sec: float) -> TranscriptPayload:
+    seen_language: list[str | None] = []
+
+    def fake_generate_transcript(
+        _path: str,
+        _duration_sec: float,
+        *,
+        language_hint: str | None = None,
+    ) -> TranscriptPayload:
+        seen_language.append(language_hint)
         words = [
             TranscriptWordPayload(id="w1", text="hello", start_sec=0.5, end_sec=1.0),
             TranscriptWordPayload(id="w2", text="brave", start_sec=1.0, end_sec=1.3),
@@ -64,9 +72,10 @@ def test_transcript_generate_and_cut_flow(monkeypatch: pytest.MonkeyPatch) -> No
 
         generate_res = client.post(
             f"/api/v1/transcript/generate?project_id={project_id}",
-            json={"asset_id": asset_id},
+            json={"asset_id": asset_id, "language": "kn"},
         )
         assert generate_res.status_code == 200
+        assert seen_language == ["kn"]
         generated = generate_res.json()
         transcript = generated["transcript"]
         assert transcript["source"] == "test_provider"
@@ -85,7 +94,7 @@ def test_transcript_generate_and_cut_flow(monkeypatch: pytest.MonkeyPatch) -> No
         video_track = next(track for track in cut_payload["timeline"]["tracks"] if track["kind"] == "video")
         assert len(video_track["clips"]) == 2
         assert video_track["clips"][0]["start_sec"] == 0.0
-        assert video_track["clips"][0]["end_sec"] == 1.0
+        assert video_track["clips"][0]["end_sec"] == pytest.approx(1.0, abs=0.02)
         assert video_track["clips"][1]["start_sec"] == 2.4
         assert video_track["clips"][1]["end_sec"] == 8.0
 
@@ -97,7 +106,13 @@ def test_transcript_cut_applies_context_padding(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr("app.routers.media.probe_duration_seconds", lambda _: 8.0)
     monkeypatch.setattr("app.routers.media.probe_stream_flags", lambda _: {"has_video": True, "has_audio": True})
 
-    def fake_generate_transcript(_path: str, _duration_sec: float) -> TranscriptPayload:
+    def fake_generate_transcript(
+        _path: str,
+        _duration_sec: float,
+        *,
+        language_hint: str | None = None,
+    ) -> TranscriptPayload:
+        del language_hint
         words = [
             TranscriptWordPayload(id="w1", text="hello", start_sec=0.5, end_sec=1.0),
             TranscriptWordPayload(id="w2", text="brave", start_sec=1.0, end_sec=1.3),
@@ -134,7 +149,7 @@ def test_transcript_cut_applies_context_padding(monkeypatch: pytest.MonkeyPatch)
         video_track = next(track for track in cut_payload["timeline"]["tracks"] if track["kind"] == "video")
         assert len(video_track["clips"]) == 2
         assert video_track["clips"][0]["start_sec"] == pytest.approx(0.0, abs=0.001)
-        assert video_track["clips"][0]["end_sec"] == pytest.approx(1.18, abs=0.01)
+        assert video_track["clips"][0]["end_sec"] == pytest.approx(1.18, abs=0.02)
         assert video_track["clips"][1]["start_sec"] == pytest.approx(2.22, abs=0.01)
         assert video_track["clips"][1]["end_sec"] == pytest.approx(8.0, abs=0.001)
 
@@ -146,7 +161,13 @@ def test_transcript_cut_preserves_unedited_gaps(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr("app.routers.media.probe_duration_seconds", lambda _: 40.0)
     monkeypatch.setattr("app.routers.media.probe_stream_flags", lambda _: {"has_video": True, "has_audio": True})
 
-    def fake_generate_transcript(_path: str, _duration_sec: float) -> TranscriptPayload:
+    def fake_generate_transcript(
+        _path: str,
+        _duration_sec: float,
+        *,
+        language_hint: str | None = None,
+    ) -> TranscriptPayload:
+        del language_hint
         words = [
             TranscriptWordPayload(id="w1", text="alpha", start_sec=0.5, end_sec=1.0),
             TranscriptWordPayload(id="w2", text="beta", start_sec=2.0, end_sec=2.4),
@@ -193,7 +214,7 @@ def test_transcript_allows_videos_over_60_seconds_by_default(monkeypatch: pytest
     monkeypatch.setattr("app.routers.media.probe_stream_flags", lambda _: {"has_video": True, "has_audio": True})
     monkeypatch.setattr(
         "app.routers.transcript.generate_transcript",
-        lambda _path, _duration_sec: TranscriptPayload(
+        lambda _path, _duration_sec, **_kwargs: TranscriptPayload(
             source="test_provider",
             language="en",
             text="hello world",

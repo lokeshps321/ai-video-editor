@@ -91,6 +91,35 @@ def test_track_volume_and_solo_state() -> None:
     assert audio_track.solo is True
 
 
+def test_set_volume_targets_specific_track_id() -> None:
+    state = make_timeline()
+    state.tracks.append(Track(id="audio-2", kind="audio", clips=[], volume=0.25, mute=False, solo=False))
+
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="set_volume",
+            params={
+                "track_id": "audio-2",
+                "track_kind": "audio",
+                "volume": 0.8,
+                "mute": True,
+                "solo": True,
+            },
+        ),
+    )
+
+    assert state.tracks[1].id == "audio-1"
+    assert state.tracks[1].volume == 1.0
+    assert state.tracks[1].mute is False
+    assert state.tracks[1].solo is False
+
+    assert state.tracks[2].id == "audio-2"
+    assert state.tracks[2].volume == 0.8
+    assert state.tracks[2].mute is True
+    assert state.tracks[2].solo is True
+
+
 def test_set_volume_clip_index_with_audio_track_hint() -> None:
     state = make_timeline()
     apply_operation(
@@ -153,7 +182,6 @@ def test_set_subtitles_operation() -> None:
             params={
                 "asset_id": "asset-a",
                 "style": "karaoke",
-                "max_words_per_caption": 2,
                 "words": [
                     {"id": "w1", "text": "hello", "start_sec": 0.2, "end_sec": 0.5},
                     {"id": "w2", "text": "world", "start_sec": 0.5, "end_sec": 0.8},
@@ -163,9 +191,248 @@ def test_set_subtitles_operation() -> None:
         ),
     )
     clip = state.tracks[0].clips[0]
-    assert len(clip.text_overlays) == 2
-    assert clip.text_overlays[0].text == "hello world"
+    assert len(clip.text_overlays) == 3
+    assert clip.text_overlays[0].text == "hello"
     assert clip.text_overlays[0].style == "karaoke"
+
+
+def test_set_subtitles_respects_overlay_cap_by_merging_chunks() -> None:
+    state = make_timeline()
+    words = [
+        {
+            "id": f"w{idx}",
+            "text": f"word{idx}",
+            "start_sec": round(0.2 + (idx * 0.22), 3),
+            "end_sec": round(0.35 + (idx * 0.22), 3),
+        }
+        for idx in range(20)
+    ]
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="set_subtitles",
+            params={
+                "asset_id": "asset-a",
+                "style": "karaoke",
+                "max_caption_overlays": 5,
+                "words": words,
+            },
+        ),
+    )
+    clip = state.tracks[0].clips[0]
+    assert len(clip.text_overlays) == 5
+    assert any(" " in overlay.text for overlay in clip.text_overlays)
+
+
+def test_set_subtitles_non_karaoke_can_group_words_until_duration_limit() -> None:
+    state = make_timeline()
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="set_subtitles",
+            params={
+                "asset_id": "asset-a",
+                "style": "static",
+                "max_words_per_caption": 8,
+                "max_gap_sec": 1.0,
+                "max_caption_duration_sec": 0.6,
+                "words": [
+                    {"id": "w1", "text": "this", "start_sec": 0.2, "end_sec": 0.45},
+                    {"id": "w2", "text": "is", "start_sec": 0.46, "end_sec": 0.7},
+                    {"id": "w3", "text": "too", "start_sec": 0.71, "end_sec": 0.95},
+                    {"id": "w4", "text": "long", "start_sec": 0.96, "end_sec": 1.2},
+                ],
+            },
+        ),
+    )
+    clip = state.tracks[0].clips[0]
+    assert len(clip.text_overlays) == 2
+    assert clip.text_overlays[0].text == "this is"
+    assert clip.text_overlays[1].text == "too long"
+
+
+def test_set_subtitles_karaoke_word_level_overlays_do_not_overlap() -> None:
+    state = make_timeline()
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="set_subtitles",
+            params={
+                "asset_id": "asset-a",
+                "style": "karaoke",
+                "words": [
+                    {"id": "w1", "text": "one", "start_sec": 0.20, "end_sec": 0.70},
+                    {"id": "w2", "text": "two", "start_sec": 0.68, "end_sec": 1.00},
+                    {"id": "w3", "text": "three", "start_sec": 0.98, "end_sec": 1.30},
+                ],
+            },
+        ),
+    )
+    clip = state.tracks[0].clips[0]
+    assert len(clip.text_overlays) == 3
+
+    first_start = clip.text_overlays[0].start_sec
+    first_end = first_start + clip.text_overlays[0].duration_sec
+    second_start = clip.text_overlays[1].start_sec
+    second_end = second_start + clip.text_overlays[1].duration_sec
+    third_start = clip.text_overlays[2].start_sec
+
+    assert first_end <= (second_start + 1e-6)
+    assert second_end <= (third_start + 1e-6)
+
+
+def test_set_subtitles_caps_overlay_duration_for_pathological_word_timestamps() -> None:
+    state = make_timeline()
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="set_subtitles",
+            params={
+                "asset_id": "asset-a",
+                "style": "karaoke",
+                "words": [
+                    {"id": "w1", "text": "as", "start_sec": 0.02, "end_sec": 7.82},
+                    {"id": "w2", "text": "i", "start_sec": 7.82, "end_sec": 9.0},
+                ],
+            },
+        ),
+    )
+    clip = state.tracks[0].clips[0]
+    assert len(clip.text_overlays) == 2
+    assert clip.text_overlays[0].duration_sec <= 0.96
+
+
+def test_set_subtitles_karaoke_preserves_natural_duration_when_not_pathological() -> None:
+    state = make_timeline()
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="set_subtitles",
+            params={
+                "asset_id": "asset-a",
+                "style": "karaoke",
+                "words": [
+                    {"id": "w1", "text": "forever", "start_sec": 0.20, "end_sec": 1.32},
+                ],
+            },
+        ),
+    )
+    clip = state.tracks[0].clips[0]
+    assert len(clip.text_overlays) == 1
+    assert clip.text_overlays[0].duration_sec >= 1.1
+
+
+def test_set_subtitles_hormozi_preset_applies_caption_style_fields() -> None:
+    state = make_timeline()
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="set_subtitles",
+            params={
+                "asset_id": "asset-a",
+                "style": "hormozi_bold",
+                "words": [
+                    {"id": "w1", "text": "hello", "start_sec": 0.2, "end_sec": 0.45},
+                ],
+            },
+        ),
+    )
+    clip = state.tracks[0].clips[0]
+    assert len(clip.text_overlays) == 1
+    overlay = clip.text_overlays[0]
+    assert overlay.style == "hormozi_bold"
+    assert overlay.font_name == "Montserrat-Bold"
+    assert overlay.font_size == 24
+    assert overlay.color == "&H0000FFFF"
+    assert overlay.highlight_color == "&H0000FFFF"
+    assert overlay.outline_color == "&H00000000"
+    assert overlay.outline_width == 2
+    assert overlay.margin_v == 50
+
+
+def test_text_overlay_lifecycle_operations() -> None:
+    state = make_timeline()
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="add_text_overlay",
+            params={
+                "clip": "clip-a",
+                "text": "Hook line",
+                "start_sec": 1.0,
+                "duration_sec": 1.6,
+                "style": "creator",
+            },
+        ),
+    )
+    clip = state.tracks[0].clips[0]
+    assert len(clip.text_overlays) == 1
+    overlay_id = clip.text_overlays[0].id
+
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="move_text_overlay",
+            params={"clip": "clip-a", "overlay": overlay_id, "start_sec": 2.75},
+        ),
+    )
+    assert clip.text_overlays[0].start_sec == 2.75
+
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="trim_text_overlay",
+            params={"clip": "clip-a", "overlay": overlay_id, "start_sec": 2.2, "duration_sec": 2.4},
+        ),
+    )
+    assert clip.text_overlays[0].start_sec == 2.2
+    assert clip.text_overlays[0].duration_sec == 2.4
+
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="delete_text_overlay",
+            params={"clip": "clip-a", "overlay": overlay_id},
+        ),
+    )
+    assert clip.text_overlays == []
+
+
+def test_text_overlay_trim_clamps_to_clip_window() -> None:
+    state = make_timeline()
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="add_text_overlay",
+            params={
+                "clip": "clip-a",
+                "text": "CTA",
+                "start_sec": 8.5,
+                "duration_sec": 1.4,
+            },
+        ),
+    )
+    clip = state.tracks[0].clips[0]
+    overlay_id = clip.text_overlays[0].id
+
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="move_text_overlay",
+            params={"clip": "clip-a", "overlay": overlay_id, "start_sec": 9.7},
+        ),
+    )
+    assert clip.text_overlays[0].start_sec == 8.6
+
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="trim_text_overlay",
+            params={"clip": "clip-a", "overlay": overlay_id, "start_sec": 9.9, "duration_sec": 5.0},
+        ),
+    )
+    assert clip.text_overlays[0].start_sec == 9.9
+    assert clip.text_overlays[0].duration_sec == 0.1
 
 
 def test_default_timeline_includes_overlay_track() -> None:
@@ -187,6 +454,7 @@ def test_broll_clip_lifecycle_operations() -> None:
                 "end_sec": 1.9,
                 "timeline_start_sec": 2.0,
                 "opacity": 0.45,
+                "crop": {"x": 10, "y": 0, "width": 720, "height": 1280},
             },
         ),
     )
@@ -195,6 +463,8 @@ def test_broll_clip_lifecycle_operations() -> None:
     clip_id = overlay_track.clips[0].id
     assert overlay_track.clips[0].broll_opacity == 0.45
     assert overlay_track.clips[0].audio.mute is True
+    assert overlay_track.clips[0].transform.crop is not None
+    assert overlay_track.clips[0].transform.crop.width == 720
 
     apply_operation(
         state,

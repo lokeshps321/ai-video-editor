@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
@@ -21,9 +23,25 @@ from ..schemas import (
 )
 from ..storage import storage
 from ..timeline_service import apply_operation, get_timeline_row, load_timeline_state, save_timeline_state
-from ..transcription_service import TranscriptPayload, generate_transcript
+from ..transcription_service import (
+    TranscriptPayload,
+    TranscriptWordPayload,
+    generate_transcript,
+    sanitize_transcript_words,
+)
 
 router = APIRouter(prefix="/api/v1/vibe", tags=["vibe"])
+
+_TRIM_EDGE_PUNCT_RE = re.compile(r"(^[^\w']+|[^\w']+$)")
+_FILLER_SINGLE_WORDS_CONSERVATIVE: set[str] = {"um", "uh", "uhm", "umm", "hmm", "hm", "ah", "er", "eh"}
+_FILLER_SINGLE_WORDS_AGGRESSIVE: set[str] = {"like", "basically", "literally", "actually", "right"}
+_FILLER_MULTI_WORD_PHRASES: tuple[tuple[str, ...], ...] = (
+    ("you", "know"),
+    ("i", "mean"),
+    ("sort", "of"),
+    ("kind", "of"),
+    ("so", "yeah"),
+)
 
 
 def _utcnow() -> datetime:
@@ -39,6 +57,81 @@ def _env_bool(name: str, default: bool) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _coerce_bool(value: object, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _normalize_word_token(text: str) -> str:
+    lowered = text.strip().lower()
+    return _TRIM_EDGE_PUNCT_RE.sub("", lowered)
+
+
+def _detect_filler_ranges(words: list[TranscriptWord]) -> list[tuple[float, float]]:
+    if not words:
+        return []
+
+    tokens = [_normalize_word_token(word.text) for word in words]
+    ranges: list[tuple[float, float]] = []
+    consumed_indices: set[int] = set()
+
+    # Prefer phrase-level matches ("you know", "i mean", etc.) to avoid double counting.
+    idx = 0
+    while idx < len(words):
+        matched = False
+        for phrase in _FILLER_MULTI_WORD_PHRASES:
+            phrase_len = len(phrase)
+            if idx + phrase_len > len(words):
+                continue
+            if tuple(tokens[idx : idx + phrase_len]) != phrase:
+                continue
+            ranges.append((float(words[idx].start_sec), float(words[idx + phrase_len - 1].end_sec)))
+            for phrase_index in range(idx, idx + phrase_len):
+                consumed_indices.add(phrase_index)
+            idx += phrase_len
+            matched = True
+            break
+        if not matched:
+            idx += 1
+
+    filler_single_words = set(_FILLER_SINGLE_WORDS_CONSERVATIVE)
+    if _env_bool("TRANSCRIBE_FILLER_AGGRESSIVE_SINGLE_WORDS", False):
+        filler_single_words.update(_FILLER_SINGLE_WORDS_AGGRESSIVE)
+
+    for idx, token in enumerate(tokens):
+        if not token or idx in consumed_indices:
+            continue
+        if token in filler_single_words:
+            ranges.append((float(words[idx].start_sec), float(words[idx].end_sec)))
+
+    if not ranges:
+        return []
+
+    ranges.sort(key=lambda item: item[0])
+    merged: list[tuple[float, float]] = []
+    for start_sec, end_sec in ranges:
+        if not merged:
+            merged.append((start_sec, end_sec))
+            continue
+        prev_start, prev_end = merged[-1]
+        if start_sec <= prev_end:
+            merged[-1] = (prev_start, max(prev_end, end_sec))
+            continue
+        merged.append((start_sec, end_sec))
+    return merged
 
 
 def _min_expected_words(duration_sec: float) -> int:
@@ -78,7 +171,78 @@ def _load_words(row: Transcript) -> list[TranscriptWord]:
         payload = json.loads(row.words_json or "[]")
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="Stored transcript words are invalid") from exc
-    return [TranscriptWord.model_validate(item) for item in payload]
+    words = [TranscriptWord.model_validate(item) for item in payload]
+    normalized = sanitize_transcript_words(
+        [
+            TranscriptWordPayload(
+                id=item.id,
+                text=item.text,
+                start_sec=float(item.start_sec),
+                end_sec=float(item.end_sec),
+                confidence=item.confidence,
+            )
+            for item in words
+        ],
+        float(row.duration_sec or 0.0),
+        apply_filters=True,
+    )
+    return [
+        TranscriptWord(
+            id=item.id,
+            text=item.text,
+            start_sec=item.start_sec,
+            end_sec=item.end_sec,
+            confidence=item.confidence,
+        )
+        for item in normalized
+    ]
+
+
+def _coerce_client_words(raw_words: object, duration_sec: float) -> list[TranscriptWord]:
+    if not isinstance(raw_words, list):
+        return []
+    incoming: list[TranscriptWordPayload] = []
+    for item in raw_words:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text", "")).strip()
+        if not text:
+            continue
+        try:
+            start_sec = float(item.get("start_sec", 0.0))
+            end_sec = float(item.get("end_sec", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if end_sec <= start_sec:
+            end_sec = start_sec + 0.05
+        confidence_raw = item.get("confidence")
+        confidence: float | None
+        try:
+            confidence = float(confidence_raw) if confidence_raw is not None else None
+        except (TypeError, ValueError):
+            confidence = None
+        incoming.append(
+            TranscriptWordPayload(
+                id=str(item.get("id") or uuid4()),
+                text=text,
+                start_sec=start_sec,
+                end_sec=end_sec,
+                confidence=confidence,
+            )
+        )
+    if not incoming:
+        return []
+    normalized = sanitize_transcript_words(incoming, duration_sec)
+    return [
+        TranscriptWord(
+            id=item.id,
+            text=item.text,
+            start_sec=item.start_sec,
+            end_sec=item.end_sec,
+            confidence=item.confidence,
+        )
+        for item in normalized
+    ]
 
 
 def _duration_from_asset(asset: MediaAsset, source_path: str) -> float:
@@ -129,7 +293,10 @@ def _get_or_create_transcript(
     source_path: str,
     duration_sec: float,
 ) -> Transcript:
+    allow_mock_fallback = _env_bool("TRANSCRIBE_ALLOW_MOCK_FALLBACK", True)
     existing = _latest_transcript(session, project_id=project_id, asset_id=asset.id)
+    if existing and existing.is_mock and not allow_mock_fallback:
+        existing = None
     if existing:
         existing_words = _load_words(existing)
         if existing_words:
@@ -137,9 +304,26 @@ def _get_or_create_transcript(
             if not regenerate_low_quality or len(existing_words) >= _min_expected_words(duration_sec):
                 return existing
     try:
-        payload = generate_transcript(source_path, duration_sec)
+        # Caption workflow should remain usable even if a cloud ASR provider is down.
+        fast_mode = _env_bool("TRANSCRIBE_FAST_MODE", False)
+        try:
+            payload = generate_transcript(
+                source_path,
+                duration_sec,
+                allow_mock_fallback=allow_mock_fallback,
+                fast_mode=fast_mode,
+            )
+        except TypeError as exc:
+            if "allow_mock_fallback" not in str(exc) and "fast_mode" not in str(exc):
+                raise
+            payload = generate_transcript(source_path, duration_sec)
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    if payload.is_mock and not allow_mock_fallback:
+        raise HTTPException(
+            status_code=503,
+            detail="Transcription provider unavailable and mock fallback is disabled. Retry after restoring ASR connectivity.",
+        )
     if not payload.words:
         raise HTTPException(status_code=500, detail="Transcript generation returned no words")
     return _store_transcript(
@@ -192,7 +376,7 @@ def _queue_preview(session: Session, *, project_id: str) -> Job:
     # just changed (e.g., subtitles). Reusing an older in-flight preview can
     # return a render built from stale pre-action timeline data.
     job = create_job(session, project_id, kind="preview")
-    request = ExportSettings(format="mp4", resolution="720p", fps=24, quality="low")
+    request = ExportSettings(format="mp4", aspect_ratio="16:9", resolution="720p", fps=24, quality="low")
     enqueue_render_job(job.id, request)
     return job
 
@@ -256,39 +440,76 @@ def apply_vibe_action(
             asset_id=asset.id,
             duration_sec=duration_sec,
         )
-        transcript_row = _get_or_create_transcript(
-            session,
-            project_id=project_id,
-            asset=asset,
-            source_path=source_path,
-            duration_sec=duration_sec,
-        )
-        words = _load_words(transcript_row)
+        client_words = _coerce_client_words(payload.options.get("words"), duration_sec)
+        if client_words:
+            words = client_words
+            transcript_row = _latest_transcript(session, project_id=project_id, asset_id=asset.id)
+        else:
+            transcript_row = _get_or_create_transcript(
+                session,
+                project_id=project_id,
+                asset=asset,
+                source_path=source_path,
+                duration_sec=duration_sec,
+            )
+            words = _load_words(transcript_row)
+        subtitle_style = str(payload.options.get("style", "hormozi_bold"))
+        op_params: dict[str, object] = {
+            "asset_id": asset.id,
+            "words": [word.model_dump() for word in words],
+            "style": subtitle_style,
+            "clear_existing": True,
+        }
+        if "caption_styles" in payload.options:
+            op_params["caption_styles"] = payload.options.get("caption_styles")
+        for key in (
+            "max_words_per_caption",
+            "max_chars_per_caption",
+            "max_gap_sec",
+            "max_caption_duration_sec",
+            "max_caption_display_sec",
+            "caption_guard_sec",
+            "max_caption_display_hard_cap_factor",
+        ):
+            if key in payload.options:
+                op_params[key] = payload.options.get(key)
+        if "max_caption_overlays" in payload.options:
+            op_params["max_caption_overlays"] = payload.options.get("max_caption_overlays")
+        else:
+            # Safety cap for long renders: too many drawtext filters can be OOM-killed.
+            op_params["max_caption_overlays"] = max(60, min(140, int(duration_sec * 0.45)))
         op = OperationPayload(
             op_type="set_subtitles",
             source="ui",
-            params={
-                "asset_id": asset.id,
-                "words": [word.model_dump() for word in words],
-                "style": str(payload.options.get("style", "karaoke")),
-                "max_words_per_caption": int(payload.options.get("max_words_per_caption", 3)),
-                "max_gap_sec": float(payload.options.get("max_gap_sec", 0.55)),
-                "clear_existing": True,
-            },
+            params=op_params,
         )
         timeline_state = _apply_single_operation(session, project_id=project_id, operation=op)
         caption_count = 0
+        first_caption_at: float | None = None
         for track in timeline_state.tracks:
             if track.kind != "video":
                 continue
             for clip in track.clips:
-                caption_count += len(clip.text_overlays)
-        details = f"Added {caption_count} subtitle overlay blocks."
+                overlays = clip.text_overlays
+                caption_count += len(overlays)
+                for overlay in overlays:
+                    absolute_start = max(float(clip.timeline_start_sec) + float(overlay.start_sec), 0.0)
+                    if first_caption_at is None or absolute_start < first_caption_at:
+                        first_caption_at = absolute_start
+        if caption_count <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="No captions were generated from transcript words. Regenerate transcript and try Add Captions again.",
+            )
+        if first_caption_at is not None:
+            details = f"Added {caption_count} caption overlay blocks. First caption at {first_caption_at:.2f}s."
+        else:
+            details = f"Added {caption_count} caption overlay blocks."
     elif payload.action == "auto_cut_pauses":
         threshold = float(payload.options.get("silence_threshold_db", -35.0))
         min_silence_sec = float(payload.options.get("min_silence_sec", 0.35))
         min_pause_sec = float(payload.options.get("min_pause_sec", 0.4))
-        remove_fillers = bool(payload.options.get("remove_filler_words", True))
+        remove_fillers = _coerce_bool(payload.options.get("remove_filler_words"), True)
 
         # --- Hybrid: transcript gaps + silence detection + filler words ---
         transcript_row = _get_or_create_transcript(
@@ -304,7 +525,6 @@ def apply_vibe_action(
         transcript_pauses: list[tuple[float, float]] = []
         filler_ranges: list[tuple[float, float]] = []
         if words:
-            from ..transcription_service import FILLER_WORDS
             for i in range(len(words) - 1):
                 gap_start = float(words[i].end_sec)
                 gap_end = float(words[i + 1].start_sec)
@@ -312,10 +532,7 @@ def apply_vibe_action(
                     transcript_pauses.append((gap_start, gap_end))
             # Detect filler words
             if remove_fillers:
-                for word in words:
-                    word_lower = word.text.strip().lower().rstrip(".,!?;:")
-                    if word_lower in FILLER_WORDS:
-                        filler_ranges.append((float(word.start_sec), float(word.end_sec)))
+                filler_ranges = _detect_filler_ranges(words)
 
         # Also get silence-detected pauses (catches non-speech silence)
         silences = detect_silence_ranges(source_path, noise_db=threshold, min_silence_sec=min_silence_sec)

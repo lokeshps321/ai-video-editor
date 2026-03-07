@@ -4,6 +4,7 @@ import json
 import mimetypes
 import queue
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -260,6 +261,37 @@ def _set_job_status(
     session.commit()
 
 
+def get_latest_job_event(session: Session, job_id: str) -> JobEvent | None:
+    return session.exec(
+        select(JobEvent)
+        .where(JobEvent.job_id == job_id)
+        .order_by(JobEvent.id.desc())
+    ).first()
+
+
+def set_job_status(
+    session: Session,
+    job: Job,
+    *,
+    status: str,
+    progress: int,
+    stage: str,
+    message: str | None = None,
+    error: str | None = None,
+    output_path: str | None = None,
+) -> None:
+    _set_job_status(
+        session,
+        job,
+        status=status,
+        progress=progress,
+        stage=stage,
+        message=message,
+        error=error,
+        output_path=output_path,
+    )
+
+
 def process_render_job(job_id: str, export_settings: ExportSettings) -> None:
     with Session(engine) as session:
         job = session.exec(select(Job).where(Job.id == job_id)).first()
@@ -362,7 +394,38 @@ def process_render_job(job_id: str, export_settings: ExportSettings) -> None:
                 stage="render",
                 message="Rendering video",
             )
-            run_ffmpeg(command)
+            progress_state = {
+                "last_progress": 35,
+                "last_update_monotonic": time.monotonic(),
+            }
+
+            def handle_render_progress(fraction: float) -> None:
+                bounded_fraction = max(0.0, min(1.0, fraction))
+                next_progress = max(35, min(99, 35 + int(round(bounded_fraction * 64))))
+                now = time.monotonic()
+                if next_progress <= progress_state["last_progress"]:
+                    return
+                if (
+                    next_progress - progress_state["last_progress"] < 2
+                    and now - progress_state["last_update_monotonic"] < 0.75
+                ):
+                    return
+                progress_state["last_progress"] = next_progress
+                progress_state["last_update_monotonic"] = now
+                _set_job_status(
+                    session,
+                    job,
+                    status="running",
+                    progress=next_progress,
+                    stage="render",
+                    message=f"Rendering video ({next_progress}%)",
+                )
+
+            run_ffmpeg(
+                command,
+                duration_sec=max(float(state.duration_sec or 0.0), 0.0),
+                progress_callback=handle_render_progress,
+            )
             _set_job_status(
                 session,
                 job,

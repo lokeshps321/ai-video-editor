@@ -72,6 +72,70 @@ def test_render_preview_records_job_events() -> None:
         assert events[0]["stage"] == "queued"
 
 
+def test_render_preview_uses_requested_portrait_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def _capture_enqueue(job_id: str, export_settings) -> None:
+        captured["job_id"] = job_id
+        captured["aspect_ratio"] = export_settings.aspect_ratio
+        captured["resolution"] = export_settings.resolution
+        captured["fps"] = export_settings.fps
+        captured["quality"] = export_settings.quality
+
+    monkeypatch.setattr("app.routers.render.enqueue_render_job", _capture_enqueue)
+
+    with TestClient(app) as client:
+        create_res = client.post(
+            "/api/v1/projects",
+            json={"name": "Preview Portrait Test", "fps": 30, "width": 1080, "height": 1920},
+        )
+        assert create_res.status_code == 200
+        project_id = create_res.json()["id"]
+
+        preview_res = client.post(
+            f"/api/v1/render/preview?project_id={project_id}",
+            json={"format": "mp4", "aspect_ratio": "9:16", "resolution": "1080p", "fps": 60, "quality": "high"},
+        )
+        assert preview_res.status_code == 200
+        job = preview_res.json()
+        assert job["status"] == "queued"
+        assert captured["job_id"] == job["id"]
+        assert captured["aspect_ratio"] == "9:16"
+        assert captured["resolution"] == "720p"
+        assert captured["fps"] == 60
+        assert captured["quality"] == "low"
+
+
+def test_render_export_accepts_aspect_ratio(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def _capture_enqueue(job_id: str, export_settings) -> None:
+        captured["job_id"] = job_id
+        captured["aspect_ratio"] = export_settings.aspect_ratio
+        captured["resolution"] = export_settings.resolution
+
+    monkeypatch.setattr("app.routers.render.enqueue_render_job", _capture_enqueue)
+
+    with TestClient(app) as client:
+        create_res = client.post(
+            "/api/v1/projects",
+            json={"name": "Render Export Aspect Test", "fps": 30, "width": 1080, "height": 1920},
+        )
+        assert create_res.status_code == 200
+        project_id = create_res.json()["id"]
+
+        export_res = client.post(
+            f"/api/v1/render/export?project_id={project_id}",
+            json={"format": "mp4", "aspect_ratio": "9:16", "resolution": "1080p", "fps": 30, "quality": "high"},
+        )
+        assert export_res.status_code == 200
+        job = export_res.json()
+        assert job["status"] == "queued"
+        assert captured["job_id"] == job["id"]
+        assert captured["aspect_ratio"] == "9:16"
+        assert captured["resolution"] == "1080p"
+
+
 def test_ingest_url_creates_media_asset_and_events(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_download_video_with_ytdlp(url: str, project_id: str) -> tuple[str, str]:
         project_dir = Path(os.environ["UPLOAD_DIR"]) / project_id
