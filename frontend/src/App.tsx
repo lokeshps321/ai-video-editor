@@ -1,10 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Captions,
+  ChevronDown,
+  ChevronUp,
   Check,
   Clapperboard,
   Download,
-  PlaySquare,
+  FileVideo,
+  FolderOpen,
+  Globe,
+  Keyboard,
+  Pencil,
+  Plus,
   Redo2,
   RefreshCw,
   RotateCcw,
@@ -15,10 +22,14 @@ import {
   Undo2,
   UploadCloud,
   Wand2,
+  X,
+  Zap,
 } from "lucide-react";
 import { api } from "./lib/api";
+import { consumePendingUploadFile } from "./lib/pendingUpload";
 import type {
   BrollCandidate,
+  BrollConfig,
   BrollSlot,
   Clip,
   ExportAspectRatio,
@@ -27,6 +38,8 @@ import type {
   Project,
   Timeline as ProjectTimeline,
   Transcript,
+  TranscriptGenerateResponse,
+  TranscriptMode,
   TranscriptRegion,
   TranscriptWord,
   VibeAction
@@ -37,7 +50,13 @@ import Timeline, {
   type TimelineLane,
   type TimelineLaneClipSelection,
 } from "./components/Timeline";
+import {
+  readLockedLaneIds,
+  selectTranscriptWordIdsInRange,
+  writeLockedLaneIds,
+} from "./utils/timelineSelection";
 import { BrollCandidateCard } from "./components/BrollCandidateCard";
+import BrandLogo from "./components/BrandLogo";
 import { BRAND } from "./config/brand";
 import {
   AI_ACTION_ITEMS,
@@ -52,6 +71,7 @@ import {
   LOW_CONFIDENCE_WARN_MIN_COUNT,
   LOW_CONFIDENCE_WARN_RATIO,
   TRANSCRIPT_LANGUAGE_OPTIONS,
+  TRANSCRIPT_MODE_OPTIONS,
   type FeatureTabId,
 } from "./config/editor";
 
@@ -79,6 +99,34 @@ type BrollGenerationPlan = {
   usedExternalFallback: boolean;
 };
 
+type QuickEditSummary = {
+  cutDetails: string | null;
+  captionDetails: string | null;
+  removedDurationSec: number | null;
+  removedWordCount: number | null;
+  captionBlockCount: number | null;
+  captionsAdded: boolean;
+  finalDurationSec: number;
+  nextStep: string;
+};
+
+type ExportSettingsSnapshot = {
+  format: "mp4" | "mov" | "webm";
+  aspectRatio: ExportAspectRatio;
+  resolution: "720p" | "1080p" | "4k";
+  fps: 24 | 30 | 60;
+  quality: "low" | "medium" | "high" | "max";
+};
+
+type ExportCompletionSummary = ExportSettingsSnapshot & {
+  jobId: string;
+  filename: string;
+  outputPath: string | null;
+  downloadError: string | null;
+};
+
+const WORKSPACE_READY_NOTICE = "Workspace ready — upload a video to start.";
+
 type InspectorTimelineSelection = TimelineLaneClipSelection;
 type InspectorCaptionSelection = TimelineCaptionSelection;
 
@@ -89,9 +137,151 @@ function formatSeconds(value: number): string {
   return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
 
+function transcriptStageCeiling(stage: string | null | undefined, status: Job["status"] | undefined): number {
+  if (status === "queued") return 10;
+  switch ((stage ?? "").trim()) {
+    case "prepare":
+      return 14;
+    case "prepare_audio":
+      return 30;
+    case "recognize":
+      return 76;
+    case "lyrics":
+      return 84;
+    case "refine":
+      return 92;
+    case "weak_retry":
+      return 95;
+    case "timeline":
+      return 99;
+    case "reuse":
+      return 92;
+    default:
+      return 80;
+  }
+}
+
+function transcriptStageRate(stage: string | null | undefined, status: Job["status"] | undefined): number {
+  if (status === "queued") return 1.5;
+  switch ((stage ?? "").trim()) {
+    case "prepare":
+      return 2.2;
+    case "prepare_audio":
+      return 1.6;
+    case "recognize":
+      return 0.6;
+    case "lyrics":
+      return 1.0;
+    case "refine":
+      return 0.9;
+    case "weak_retry":
+      return 0.7;
+    case "timeline":
+      return 0.5;
+    case "reuse":
+      return 1.4;
+    default:
+      return 0.5;
+  }
+}
+
+function formatPreciseSeconds(value: number): string {
+  if (!Number.isFinite(value)) return "0.00s";
+  if (Math.abs(value) < 60) return `${value.toFixed(2)}s`;
+  const mins = Math.floor(value / 60);
+  const secs = (value - mins * 60).toFixed(2).padStart(5, "0");
+  return `${mins}:${secs}`;
+}
+
 function formatFixedSec(value: number): string {
   if (!Number.isFinite(value)) return "0.00";
   return value.toFixed(2);
+}
+
+function estimateTranscriptRuntimeLabel(mode: TranscriptMode, durationSec: number | null | undefined): string {
+  const duration = typeof durationSec === "number" && Number.isFinite(durationSec) ? durationSec : null;
+  if (duration === null || duration <= 0) {
+    return mode === "song" ? "about 2-4 min for lyric-heavy clips" : "about 1-3 min for most clips";
+  }
+  if (duration <= 45) {
+    return mode === "song" ? "about 1-2 min" : "usually under 1 min";
+  }
+  if (duration <= 180) {
+    return mode === "song" ? "about 2-4 min" : "about 1-3 min";
+  }
+  return mode === "song" ? "about 4-8+ min" : "about 3-6 min";
+}
+
+function transcriptModeDetail(mode: TranscriptMode): string {
+  if (mode === "song") return "Song mode spends extra time on lyric-safe passes.";
+  if (mode === "speech") return "Speech mode is the fastest reliable choice for talking clips.";
+  return "Auto may add time when it needs to detect speech vs. song.";
+}
+
+function estimateQuickEditRuntimeLabel(mode: TranscriptMode, durationSec: number | null | undefined, hasTranscript: boolean): string {
+  if (hasTranscript) return "usually under 1 min because transcript is ready";
+  return `${estimateTranscriptRuntimeLabel(mode, durationSec)} + caption render`;
+}
+
+function estimateExportRuntimeLabel(settings: ExportSettingsSnapshot, durationSec: number | null | undefined): string {
+  const duration = typeof durationSec === "number" && Number.isFinite(durationSec) ? durationSec : 0;
+  const qualityBoost = settings.quality === "max" || settings.resolution === "4k" ? 1.8 : settings.resolution === "1080p" ? 1.25 : 1;
+  const fpsBoost = settings.fps === 60 ? 1.25 : 1;
+  const estimatedSec = Math.max(30, duration * qualityBoost * fpsBoost);
+  if (estimatedSec < 75) return "about 1 min";
+  if (estimatedSec < 210) return "about 2-3 min";
+  if (estimatedSec < 420) return "about 4-7 min";
+  return "7+ min for this quality";
+}
+
+function parseDetailFloat(details: string | null | undefined, pattern: RegExp): number | null {
+  const match = details?.match(pattern);
+  if (!match?.[1]) return null;
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? value : null;
+}
+
+function parseDetailInt(details: string | null | undefined, pattern: RegExp): number | null {
+  const match = details?.match(pattern);
+  if (!match?.[1]) return null;
+  const value = Number.parseInt(match[1], 10);
+  return Number.isFinite(value) ? value : null;
+}
+
+function countCaptionOverlays(timeline: ProjectTimeline): number {
+  return timeline.tracks.reduce((total, track) => {
+    if (track.kind !== "video") return total;
+    return total + track.clips.reduce((clipTotal, clip) => clipTotal + (clip.text_overlays?.length ?? 0), 0);
+  }, 0);
+}
+
+function buildQuickEditSummary(
+  cutDetails: string | null,
+  captionDetails: string | null,
+  finalTimeline: ProjectTimeline
+): QuickEditSummary {
+  const removedDurationSec = parseDetailFloat(cutDetails, /Removed\s+([\d.]+)s/i);
+  const removedWordCount = parseDetailInt(cutDetails, /Removed\s+(\d+)\s+filler word/i);
+  const parsedCaptionBlocks = parseDetailInt(captionDetails, /Added\s+(\d+)\s+caption overlay/i);
+  const timelineCaptionBlocks = countCaptionOverlays(finalTimeline);
+  const captionsSkipped = captionDetails?.toLowerCase().startsWith("captions skipped") ?? false;
+  const captionBlockCount = parsedCaptionBlocks ?? (!captionsSkipped && timelineCaptionBlocks > 0 ? timelineCaptionBlocks : null);
+
+  return {
+    cutDetails,
+    captionDetails,
+    removedDurationSec,
+    removedWordCount,
+    captionBlockCount,
+    captionsAdded: captionBlockCount !== null && captionBlockCount > 0,
+    finalDurationSec: finalTimeline.duration_sec,
+    nextStep: "Review the preview, then add B-roll or export.",
+  };
+}
+
+function fallbackExportFilename(settings: ExportSettingsSnapshot): string {
+  const ratio = settings.aspectRatio.replace(":", "x");
+  return `export-${ratio}-${settings.resolution}.${settings.format}`;
 }
 
 function trimInlineText(value: string, maxLength = 32): string {
@@ -112,6 +302,34 @@ function assColorToCss(color: string | undefined, fallback: string): string {
   const rr = raw.slice(6, 8);
   return `#${rr}${gg}${bb}`;
 }
+
+function transcriptDisplayText(word: Pick<TranscriptWord, "text" | "display_text">, preferRomanized: boolean): string {
+  const romanized = typeof word.display_text === "string" ? word.display_text.trim() : "";
+  return preferRomanized && romanized ? romanized : word.text;
+}
+
+const SCRIPT_TAG_LABELS: Record<NonNullable<TranscriptWord["script_tag"]>, string> = {
+  latin: "Latin",
+  indic: "Indic",
+  arabic: "Arabic",
+  mixed: "Mixed",
+  other: "Other",
+};
+
+function hasRomanizedTranscript(words: TranscriptWord[] | null | undefined): boolean {
+  if (!words?.length) return false;
+  return words.some((word) => {
+    const romanized = typeof word.display_text === "string" ? word.display_text.trim() : "";
+    return !!romanized && romanized !== word.text;
+  });
+}
+
+type LivePreviewCaptionWord = {
+  text: string;
+  key: string;
+  isActive: boolean;
+  isPast: boolean;
+};
 
 function findFirstCaptionTimeSec(timeline: ProjectTimeline): number | null {
   let first: number | null = null;
@@ -321,6 +539,13 @@ function reasonCodeLabel(code: string): string {
   return code.replace(/_/g, " ");
 }
 
+function autoApplySkipReasonLabel(reason: string): string {
+  if (reason === "no_candidates") return "no candidates found";
+  if (reason === "needs_review") return "below confidence threshold";
+  if (reason === "materialize_failed") return "stock download failed";
+  return reason.replace(/_/g, " ");
+}
+
 function reviewStatusLabel(status: string): string {
   if (status === "approved") return "approved";
   if (status === "ready") return "ready";
@@ -364,11 +589,82 @@ function readReasonNumber(reason: Record<string, unknown> | undefined, key: stri
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function readReasonStringList(reason: Record<string, unknown> | undefined, key: string): string[] {
+  const value = reason?.[key];
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === "string" && !!item.trim())
+    .map((item) => item.trim());
+}
+
+function getSlotTranscriptText(
+  slot: BrollSlot,
+  wordsById: Map<string, TranscriptWord>,
+  allWords: TranscriptWord[],
+  preferRomanized: boolean,
+): string {
+  const anchorText = slot.anchor_word_ids
+    .map((wordId) => {
+      const word = wordsById.get(wordId);
+      if (!word) return "";
+      return transcriptDisplayText(word, preferRomanized).trim();
+    })
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+  if (anchorText) return anchorText;
+
+  return allWords
+    .filter((word) => word.start_sec < slot.end_sec && word.end_sec > slot.start_sec)
+    .map((word) => transcriptDisplayText(word, preferRomanized).trim())
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+}
+
+function buildBrollRerollPayload(englishGlossOverride?: string) {
+  const trimmed = englishGlossOverride?.trim();
+  return {
+    candidates_per_slot: 2,
+    include_project_assets: true,
+    include_external_sources: true,
+    ai_rerank: true,
+    ...(trimmed ? { english_gloss_override: trimmed } : {}),
+  };
+}
+
 function humanizeBrollMeta(value: string): string {
   return value.replace(/_/g, " ");
 }
 
-function buildSentenceBlocks(words: TranscriptWord[]): TextBlock[] {
+function buildSpeakerLegend(
+  words: TranscriptWord[]
+): Array<{ speakerId: string; label: string; slot: number }> {
+  const seen: string[] = [];
+  for (const word of words) {
+    if (word.speaker_id && !seen.includes(word.speaker_id)) {
+      seen.push(word.speaker_id);
+    }
+  }
+  return seen.map((speakerId, slot) => {
+    const label =
+      words.find((entry) => entry.speaker_id === speakerId)?.speaker_label ||
+      `Speaker ${slot + 1}`;
+    return { speakerId, label, slot };
+  });
+}
+
+function speakerSlotForWord(word: TranscriptWord, speakerIds: string[]): number | null {
+  if (!word.speaker_id) return null;
+  const index = speakerIds.indexOf(word.speaker_id);
+  return index >= 0 ? index : null;
+}
+
+function looksLikeDuetFilename(filename: string): boolean {
+  return /\bfeat(?:uring)?\.?\b|\bft\.?\b|\s&\s|\s+x\s+|\bduet\b/i.test(filename);
+}
+
+function buildSentenceBlocks(words: TranscriptWord[], preferRomanized = false): TextBlock[] {
   if (!words.length) return [];
   const blocks: TextBlock[] = [];
   let current: TranscriptWord[] = [];
@@ -379,7 +675,7 @@ function buildSentenceBlocks(words: TranscriptWord[]): TextBlock[] {
     blocks.push({
       id,
       wordIds: current.map((word) => word.id),
-      text: current.map((word) => word.text).join(" "),
+      text: current.map((word) => transcriptDisplayText(word, preferRomanized)).join(" "),
       startSec: current[0].start_sec,
       endSec: current[current.length - 1].end_sec
     });
@@ -474,11 +770,15 @@ function detectFillerWordIds(words: TranscriptWord[]): Set<string> {
 }
 
 // ── Undo / Redo history ──────────────────────────────────────────────
-type UndoEntry = { deletedIds: Set<string> };
+type UndoEntry =
+  | { kind: "selection"; deletedIds: Set<string> }
+  | { kind: "cut"; transcript: Transcript; timeline: ProjectTimeline };
 const MAX_UNDO = 80;
 
 interface WordProps {
   word: TranscriptWord;
+  displayText: string;
+  showRomanized: boolean;
   isDeleted: boolean;
   isSelected: boolean;
   isActive: boolean;
@@ -487,6 +787,7 @@ interface WordProps {
   isCurrentMatch: boolean;
   hasLowConfidence: boolean;
   isWeakRegionWord: boolean;
+  speakerSlot: number | null;
   activeWordRef: React.RefObject<HTMLButtonElement | null>;
   isDraggingRef: React.MutableRefObject<boolean>;
   dragStartWordIdRef: React.MutableRefObject<string | null>;
@@ -498,6 +799,8 @@ interface WordProps {
 
 const Word = React.memo(({
   word,
+  displayText,
+  showRomanized,
   isDeleted,
   isSelected,
   isActive,
@@ -506,6 +809,7 @@ const Word = React.memo(({
   isCurrentMatch,
   hasLowConfidence,
   isWeakRegionWord,
+  speakerSlot,
   activeWordRef,
   isDraggingRef,
   dragStartWordIdRef,
@@ -523,7 +827,10 @@ const Word = React.memo(({
     isSearchMatch ? "searchMatch" : "",
     isCurrentMatch ? "currentMatch" : "",
     hasLowConfidence ? "lowConfidence" : "",
-    isWeakRegionWord ? "weakRegion" : ""
+    isWeakRegionWord ? "weakRegion" : "",
+    speakerSlot === 0 ? "speakerA" : "",
+    speakerSlot === 1 ? "speakerB" : "",
+    speakerSlot !== null && speakerSlot >= 2 ? "speakerExtra" : ""
   ]
     .filter(Boolean)
     .join(" ");
@@ -534,6 +841,11 @@ const Word = React.memo(({
     typeof word.quality_score === "number" ? ` · quality ${(word.quality_score * 100).toFixed(0)}%` : "";
   const passHint = word.source_pass ? ` · ${word.source_pass}` : "";
   const labelHint = word.quality_label ? ` · ${word.quality_label}` : "";
+  const speakerHint = word.speaker_label ? ` · ${word.speaker_label}` : "";
+  const scriptHint = word.script_tag ? ` · script ${SCRIPT_TAG_LABELS[word.script_tag] ?? word.script_tag}` : "";
+  const languageHint = word.language_hint ? ` · lang ${word.language_hint}` : "";
+  const originalHint =
+    showRomanized && displayText !== word.text ? ` · original ${word.text}` : "";
 
   return (
     <button
@@ -554,9 +866,9 @@ const Word = React.memo(({
         }
       }}
       onDoubleClick={() => startEditing(word)}
-      title={`${formatSeconds(word.start_sec)} – ${formatSeconds(word.end_sec)}${confidenceHint}${qualityHint}${labelHint}${passHint}`}
+      title={`${formatPreciseSeconds(word.start_sec)} – ${formatPreciseSeconds(word.end_sec)}${speakerHint}${scriptHint}${languageHint}${originalHint}${confidenceHint}${qualityHint}${labelHint}${passHint}`}
     >
-      {word.text}
+      {displayText}
     </button>
   );
 });
@@ -565,23 +877,41 @@ function App() {
   const [project, setProject] = useState<Project | null>(null);
   const [media, setMedia] = useState<MediaAsset[]>([]);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
-  const [transcriptLanguage, setTranscriptLanguage] = useState("auto");
+  const [transcriptMode, setTranscriptMode] = useState<TranscriptMode>("auto");
+  const [transcriptLanguage, setTranscriptLanguage] = useState(() => {
+    try { return localStorage.getItem("clipmind_transcript_lang") || "auto"; } catch { return "auto"; }
+  });
+  const [translateTranscriptToEnglish, setTranslateTranscriptToEnglish] = useState(() => {
+    try { return localStorage.getItem("clipmind_transcript_translate_en") === "true"; } catch { return false; }
+  });
+  const [videoDragOver, setVideoDragOver] = useState(false);
+  const [transcriptStageStartedAtMs, setTranscriptStageStartedAtMs] = useState<number | null>(null);
+  const [transcriptStageBaseProgress, setTranscriptStageBaseProgress] = useState(0);
   const [transcript, setTranscript] = useState<Transcript | null>(null);
 
   const [deletedWordIds, setDeletedWordIds] = useState<Set<string>>(new Set());
   const [selectedWordIds, setSelectedWordIds] = useState<Set<string>>(new Set());
   const [anchorWordId, setAnchorWordId] = useState<string | null>(null);
+  const [weakReviewIndex, setWeakReviewIndex] = useState(0);
 
   // Undo / Redo
   const undoStack = useRef<UndoEntry[]>([]);
   const redoStack = useRef<UndoEntry[]>([]);
+  const [undoStackSize, setUndoStackSize] = useState(0);
+  const [redoStackSize, setRedoStackSize] = useState(0);
+  const [timelineCanUndo, setTimelineCanUndo] = useState(false);
+  const [timelineCanRedo, setTimelineCanRedo] = useState(false);
 
   // Inline editing
   const [editingWordId, setEditingWordId] = useState<string | null>(null);
   const [editingWordText, setEditingWordText] = useState("");
-  const [rangeEditText, setRangeEditText] = useState("");
+  const [editingCaptionOverlayId, setEditingCaptionOverlayId] = useState<string | null>(null);
+  const [editingCaptionText, setEditingCaptionText] = useState("");
+  const captionEditInputRef = useRef<HTMLInputElement | null>(null);
   const [updatingTranscriptRange, setUpdatingTranscriptRange] = useState(false);
+  const [showRomanizedTranscript, setShowRomanizedTranscript] = useState(false);
   const editInputRef = useRef<HTMLInputElement | null>(null);
+  const committingWordEditRef = useRef(false);
 
   // Search
   const [searchQuery, setSearchQuery] = useState("");
@@ -593,14 +923,36 @@ function App() {
 
   // Loading states
   const [creatingProject, setCreatingProject] = useState(false);
+  const [recentProjects, setRecentProjects] = useState<Project[]>([]);
+  const [projectsPanelOpen, setProjectsPanelOpen] = useState(false);
+  const [loadingProjects, setLoadingProjects] = useState(false);
+  const [openingProjectId, setOpeningProjectId] = useState<string | null>(null);
+  const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null);
+  const [submittingRenameId, setSubmittingRenameId] = useState<string | null>(null);
+  const [renameText, setRenameText] = useState("");
+  const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [newProjectName, setNewProjectName] = useState("");
+  const [showNewProjectInput, setShowNewProjectInput] = useState(false);
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
+  const newProjectInputRef = useRef<HTMLInputElement | null>(null);
   const [uploading, setUploading] = useState(false);
   const [generatingTranscript, setGeneratingTranscript] = useState(false);
   const [transcriptStartedAtMs, setTranscriptStartedAtMs] = useState<number | null>(null);
   const [transcriptElapsedSec, setTranscriptElapsedSec] = useState(0);
+  const [transcriptJob, setTranscriptJob] = useState<Job | null>(null);
+  const transcriptStageKeyRef = useRef<string | null>(null);
   const [applyingCut, setApplyingCut] = useState(false);
   const [queueingPreview, setQueueingPreview] = useState(false);
   const [runningAction, setRunningAction] = useState<VibeAction | null>(null);
   const [brollSlots, setBrollSlots] = useState<BrollSlot[]>([]);
+  const [brollConfig, setBrollConfig] = useState<BrollConfig | null>(null);
+  const [lastBrollAutoApplySkips, setLastBrollAutoApplySkips] = useState<Array<{
+    slot_id: string;
+    concept_text: string;
+    reason: string;
+    detail?: string | null;
+  }>>([]);
   const [loadingBrollSlots, setLoadingBrollSlots] = useState(false);
   const [suggestingBroll, setSuggestingBroll] = useState(false);
   const [autoApplyingBroll, setAutoApplyingBroll] = useState(false);
@@ -616,10 +968,12 @@ function App() {
   const [brollIntensity, setBrollIntensity] = useState<BrollIntensity>("medium");
   const [brollSuggestJob, setBrollSuggestJob] = useState<Job | null>(null);
   const [expandedBrollSlots, setExpandedBrollSlots] = useState<Record<string, boolean>>({});
+  const [brollMeaningDrafts, setBrollMeaningDrafts] = useState<Record<string, string>>({});
   const [activeFeatureTab, setActiveFeatureTab] = useState<FeatureTabId>("broll_studio");
   const [featureDrawerOpen, setFeatureDrawerOpen] = useState(false);
   const [selectedTimelineClip, setSelectedTimelineClip] = useState<InspectorTimelineSelection | null>(null);
   const [selectedBrollClipId, setSelectedBrollClipId] = useState<string | null>(null);
+  const [selectedBrollSlotId, setSelectedBrollSlotId] = useState<string | null>(null);
   const [selectedCaptionBlock, setSelectedCaptionBlock] = useState<InspectorCaptionSelection | null>(null);
   const [lockedLaneIds, setLockedLaneIds] = useState<Set<string>>(() => new Set());
 
@@ -638,10 +992,12 @@ function App() {
   const [exportResolution, setExportResolution] = useState<"720p" | "1080p" | "4k">("1080p");
   const [exportFps, setExportFps] = useState<24 | 30 | 60>(30);
   const [exportQuality, setExportQuality] = useState<"low" | "medium" | "high" | "max">("high");
-  const [previewFrameAspectRatio, setPreviewFrameAspectRatio] = useState<ExportAspectRatio>("16:9");
+  const [previewFrameAspectRatio, setPreviewFrameAspectRatio] = useState<ExportAspectRatio>("9:16");
   const [showExportFrameGuide, setShowExportFrameGuide] = useState(false);
   const [exportingVideo, setExportingVideo] = useState(false);
   const [exportJob, setExportJob] = useState<Job | null>(null);
+  const [exportCompletion, setExportCompletion] = useState<ExportCompletionSummary | null>(null);
+  const [downloadingExport, setDownloadingExport] = useState(false);
 
   const [previewJob, setPreviewJob] = useState<Job | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -654,16 +1010,29 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [backendStatus, setBackendStatus] = useState<"checking" | "ok" | "down">("checking");
+  const [quickEditing, setQuickEditing] = useState(false);
+  const [quickEditStage, setQuickEditStage] = useState("");
+  const [quickEditSummary, setQuickEditSummary] = useState<QuickEditSummary | null>(null);
+  const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
+
+  // Quick edit state machine phase ref — drives the useEffect pipeline
+  // "idle" | "transcribing" | "cutting" | "captioning" | "done"
+  const quickEditPhaseRef = useRef<"idle" | "transcribing" | "cutting" | "captioning" | "done">("idle");
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const lastAppliedSignatureRef = useRef<string>("");
   const lastAutoCutFailedSignatureRef = useRef<string | null>(null);
+  const latestDeletedWordIdsRef = useRef<Set<string>>(new Set());
   const pendingPreviewRefreshRef = useRef(false);
   const transcriptBoxRef = useRef<HTMLDivElement | null>(null);
   const activeWordRef = useRef<HTMLButtonElement | null>(null);
   const autoCreateAttemptedRef = useRef(false);
   const pendingCaptionSeekRef = useRef<{ jobId: string; targetSec: number } | null>(null);
-  const rafPendingRef = useRef(false);
+  const transcriptJobResultHandledRef = useRef<string | null>(null);
+  const lastTranscriptRequestRef = useRef<{ forceRegenerate: boolean }>({ forceRegenerate: false });
+  const playbackSyncFrameRef = useRef<number | null>(null);
+  const exportSettingsRef = useRef<ExportSettingsSnapshot | null>(null);
+  const exportCompletionHandledRef = useRef<string | null>(null);
 
   const videoAssets = useMemo(() => media.filter((asset) => asset.media_type === "video"), [media]);
 
@@ -671,6 +1040,50 @@ function App() {
     if (!selectedAssetId) return videoAssets[0] ?? null;
     return videoAssets.find((asset) => asset.id === selectedAssetId) ?? null;
   }, [selectedAssetId, videoAssets]);
+
+  const recentProjectItems = useMemo(
+    () => recentProjects.slice(0, 8),
+    [recentProjects]
+  );
+
+  const brollSetupWarning = useMemo(() => {
+    if (!brollConfig) return null;
+    if (videoAssets.length >= 2) return null;
+    if (brollConfig.stock_search_available) return null;
+    return {
+      title: "Limited B-roll sources",
+      detail:
+        "Only one video is uploaded and no Pexels/Pixabay API keys are configured on the server. Upload extra cutaway clips, or set PEXELS_API_KEY / PIXABAY_API_KEY for stock footage.",
+    };
+  }, [brollConfig, videoAssets.length]);
+
+  const selectedAssetDurationSec = useMemo(() => {
+    if (typeof selectedVideoAsset?.duration_sec === "number" && selectedVideoAsset.duration_sec > 0) {
+      return selectedVideoAsset.duration_sec;
+    }
+    return project?.timeline.duration_sec ?? null;
+  }, [project?.timeline.duration_sec, selectedVideoAsset?.duration_sec]);
+
+  const transcriptRuntimeHint = useMemo(
+    () => estimateTranscriptRuntimeLabel(transcriptMode, selectedAssetDurationSec),
+    [selectedAssetDurationSec, transcriptMode]
+  );
+
+  const quickEditRuntimeHint = useMemo(
+    () => estimateQuickEditRuntimeLabel(transcriptMode, selectedAssetDurationSec, !!transcript?.words?.length),
+    [selectedAssetDurationSec, transcript?.words?.length, transcriptMode]
+  );
+
+  const selectedBrollPlan = useMemo(() => {
+    if (!project || !transcript) return null;
+    return resolveBrollGenerationPlan(
+      project,
+      transcript,
+      brollIntensity,
+      brollAutoMode,
+      videoAssets.length
+    );
+  }, [brollAutoMode, brollIntensity, project, transcript, videoAssets.length]);
 
   const videoClips = useMemo<Clip[]>(() => {
     if (!project) return [];
@@ -774,6 +1187,15 @@ function App() {
     return index;
   }, [transcript]);
 
+  const transcriptHasRomanization = useMemo(
+    () => hasRomanizedTranscript(transcript?.words),
+    [transcript?.words]
+  );
+  const transcriptScriptSummary = useMemo(() => {
+    const tags = (transcript?.script_tags ?? []).filter(Boolean);
+    return tags.map((tag) => SCRIPT_TAG_LABELS[tag as keyof typeof SCRIPT_TAG_LABELS] ?? tag);
+  }, [transcript?.script_tags]);
+
   const timelineAssistWords = useMemo<TranscriptWord[]>(() => {
     if (!transcript) return [];
     return transcript.words
@@ -789,10 +1211,17 @@ function App() {
       .sort((a, b) => a.start_sec - b.start_sec);
   }, [transcript, videoClips]);
 
-  const sentenceBlocks = useMemo(() => buildSentenceBlocks(transcript?.words ?? []), [transcript?.words]);
+  const sentenceBlocks = useMemo(
+    () => buildSentenceBlocks(transcript?.words ?? [], showRomanizedTranscript),
+    [transcript?.words, showRomanizedTranscript]
+  );
   const paragraphBlocks = useMemo(() => buildParagraphBlocks(sentenceBlocks), [sentenceBlocks]);
 
   const deletedSignature = useMemo(() => Array.from(deletedWordIds).sort().join(","), [deletedWordIds]);
+
+  useEffect(() => {
+    latestDeletedWordIdsRef.current = new Set(deletedWordIds);
+  }, [deletedWordIds]);
 
   const keptWordIds = useMemo(() => {
     if (!transcript) return [] as string[];
@@ -823,9 +1252,25 @@ function App() {
     return transcript.regions.filter((region) => region.status !== "trusted");
   }, [transcript]);
 
+  const transcriptIssueWordIdSet = useMemo(() => {
+    const ids = new Set<string>();
+    transcriptIssueRegions.forEach((region) => {
+      region.word_ids.forEach((wordId) => ids.add(wordId));
+    });
+    return ids;
+  }, [transcriptIssueRegions]);
+
   useEffect(() => {
-    setRangeEditText(selectedTranscriptRange?.text ?? "");
-  }, [selectedTranscriptRange?.startWordId, selectedTranscriptRange?.endWordId, selectedTranscriptRange?.text]);
+    if (!transcriptHasRomanization) {
+      setShowRomanizedTranscript(false);
+      return;
+    }
+    setShowRomanizedTranscript(true);
+  }, [transcript?.id, transcriptHasRomanization]);
+
+  useEffect(() => {
+    setWeakReviewIndex(0);
+  }, [transcript?.id]);
 
   const lowConfidenceCount = useMemo(() => {
     if (!transcript) return 0;
@@ -838,6 +1283,26 @@ function App() {
     return lowConfidenceCount / transcript.words.length;
   }, [transcript, lowConfidenceCount]);
   const shouldWarnLowConfidence = lowConfidenceCount >= LOW_CONFIDENCE_WARN_MIN_COUNT && lowConfidenceRatio >= LOW_CONFIDENCE_WARN_RATIO;
+
+  const weakQualityCount = useMemo(() => {
+    if (!transcript) return 0;
+    return transcript.words.filter(
+      (word) => !deletedWordIds.has(word.id) && (word.quality_label === "weak" || transcriptIssueWordIdSet.has(word.id))
+    ).length;
+  }, [deletedWordIds, transcript, transcriptIssueWordIdSet]);
+
+  const transcriptReviewWordIds = useMemo(() => {
+    if (!transcript) return [] as string[];
+    return transcript.words
+      .filter((word) => {
+        const lowConfidence = typeof word.confidence === "number" && word.confidence < LOW_CONFIDENCE_THRESHOLD;
+        return !deletedWordIds.has(word.id) && (lowConfidence || word.quality_label === "weak" || transcriptIssueWordIdSet.has(word.id));
+      })
+      .map((word) => word.id);
+  }, [deletedWordIds, transcript, transcriptIssueWordIdSet]);
+
+  const reviewWordCount = transcriptReviewWordIds.length;
+  const lowConfidenceOnlyCount = Math.max(0, reviewWordCount - weakQualityCount);
 
   const selectedVideoAssetUrl = useMemo(() => {
     if (!selectedVideoAsset) return null;
@@ -902,6 +1367,55 @@ function App() {
     [exportJob?.progress]
   );
 
+  const transcriptActualProgress = useMemo(
+    () => Math.max(0, Math.min(100, Math.round(transcriptJob?.progress ?? 0))),
+    [transcriptJob?.progress]
+  );
+
+  const transcriptProgress = useMemo(() => {
+    const actual = transcriptActualProgress;
+    if (!transcriptJob || (transcriptJob.status !== "queued" && transcriptJob.status !== "running")) {
+      return actual;
+    }
+    if (transcriptStageStartedAtMs === null) {
+      return actual;
+    }
+    const elapsedSec = Math.max(0, Math.floor((Date.now() - transcriptStageStartedAtMs) / 1000));
+    const animated = transcriptStageBaseProgress + (elapsedSec * transcriptStageRate(transcriptJob.stage, transcriptJob.status));
+    const ceiling = transcriptStageCeiling(transcriptJob.stage, transcriptJob.status);
+    return Math.max(actual, Math.min(ceiling, Math.round(animated)));
+  }, [
+    transcriptActualProgress,
+    transcriptElapsedSec,
+    transcriptJob,
+    transcriptStageBaseProgress,
+    transcriptStageStartedAtMs,
+  ]);
+
+  const transcriptStageLabel = useMemo(() => {
+    const stage = (transcriptJob?.stage ?? "").trim();
+    switch (stage) {
+      case "prepare": return "Preparing audio file...";
+      case "prepare_audio": return "Isolating vocals from background music...";
+      case "recognize": return "Recognizing speech...";
+      case "lyrics": return "Detecting song lyrics...";
+      case "refine": return "Refining word timings...";
+      case "weak_retry": return "Re-analyzing unclear sections...";
+      case "timeline": return "Building timeline...";
+      case "reuse": return "Loading cached transcript...";
+      default: return null;
+    }
+  }, [transcriptJob?.stage]);
+
+  const transcriptStatusMessage = useMemo(() => {
+    if (!transcriptJob) return "";
+    if (transcriptJob.status === "completed") return "";
+    if (transcriptJob.status === "failed") return transcriptJob.error ?? "Transcript generation failed.";
+    if (transcriptStageLabel) return transcriptStageLabel;
+    if (transcriptJob.message?.trim()) return transcriptJob.message.trim();
+    return transcriptProgress > 0 ? `Generating transcript ${transcriptProgress}%` : "Preparing transcript...";
+  }, [transcriptJob, transcriptProgress, transcriptStageLabel]);
+
   const exportStatusMessage = useMemo(() => {
     if (!exportJob) return "";
     if (exportJob.message?.trim()) return exportJob.message.trim();
@@ -909,6 +1423,45 @@ function App() {
     if (exportJob.status === "failed") return exportJob.error ?? "Export failed.";
     return exportProgress > 0 ? `Rendering export ${exportProgress}%` : "Preparing export...";
   }, [exportJob, exportProgress]);
+
+  const syncVideoTimeOnce = useCallback(() => {
+    const element = videoRef.current;
+    if (!element) return;
+    const nextTime = element.currentTime;
+    setCurrentTimeSec((prev) => (Math.abs(prev - nextTime) >= 0.005 ? nextTime : prev));
+  }, []);
+
+  const syncVideoTimeIfPlaying = useCallback(() => {
+    const element = videoRef.current;
+    if (!element || element.paused || element.ended) return;
+    syncVideoTimeOnce();
+  }, [syncVideoTimeOnce]);
+
+  const stopPlaybackSync = useCallback(() => {
+    if (playbackSyncFrameRef.current !== null) {
+      window.cancelAnimationFrame(playbackSyncFrameRef.current);
+      playbackSyncFrameRef.current = null;
+    }
+  }, []);
+
+  const startPlaybackSync = useCallback(() => {
+    if (playbackSyncFrameRef.current !== null) return;
+    const tick = () => {
+      const element = videoRef.current;
+      if (!element) {
+        playbackSyncFrameRef.current = null;
+        return;
+      }
+      const nextTime = element.currentTime;
+      setCurrentTimeSec((prev) => (Math.abs(prev - nextTime) >= 0.005 ? nextTime : prev));
+      if (!element.paused && !element.ended) {
+        playbackSyncFrameRef.current = window.requestAnimationFrame(tick);
+      } else {
+        playbackSyncFrameRef.current = null;
+      }
+    };
+    playbackSyncFrameRef.current = window.requestAnimationFrame(tick);
+  }, []);
 
   useEffect(() => {
     const pending = pendingCaptionSeekRef.current;
@@ -934,6 +1487,8 @@ function App() {
     element.addEventListener("loadedmetadata", onLoadedMetadata, { once: true });
     return () => element.removeEventListener("loadedmetadata", onLoadedMetadata);
   }, [previewJob?.id, previewJob?.status, previewUrl]);
+
+  useEffect(() => stopPlaybackSync, [stopPlaybackSync]);
 
   // While a fresh preview is rendering, the visible player can still be the prior render.
   // In that state, keep transcript tracking on source-time so highlighting remains stable.
@@ -965,14 +1520,14 @@ function App() {
     return null;
   }, [transcript, deletedWordIds, transcriptPlaybackTimeSec, previewRenderBusy]);
 
-  const transcriptLanguageLabel = useMemo(
-    () => TRANSCRIPT_LANGUAGE_OPTIONS.find((option) => option.value === transcriptLanguage)?.label ?? "Language: Auto",
-    [transcriptLanguage]
-  );
-
   const shouldShowLiveCaptionOverlay =
-    (previewFrameAspectRatio === "16:9" && exportAspectRatio === "9:16") ||
-    (!previewShowsRenderedOutput && (previewRenderBusy || previewUpdateQueued || !previewUrl));
+    !previewShowsRenderedOutput &&
+    (
+      (previewFrameAspectRatio === "16:9" && exportAspectRatio === "9:16") ||
+      previewRenderBusy ||
+      previewUpdateQueued ||
+      !previewUrl
+    );
 
   const livePreviewCaption = useMemo(() => {
     if (!project) return null;
@@ -981,16 +1536,47 @@ function App() {
     if (!videoTrack) return null;
 
     const previewTimeSec = Math.max(0, currentTimeSec);
+    const usesTimelineTime = previewShowsRenderedOutput;
     for (const clip of videoTrack.clips) {
       const overlays = clip.text_overlays ?? [];
       if (!overlays.length) continue;
+      const speed = Math.max(clip.speed, 0.01);
       for (const overlay of overlays) {
-        const clipBaseSec = previewUrl ? clip.timeline_start_sec : clip.start_sec;
-        const startSec = clipBaseSec + overlay.start_sec;
-        const endSec = startSec + overlay.duration_sec;
+        const startSec = usesTimelineTime
+          ? clip.timeline_start_sec + (overlay.start_sec / speed)
+          : clip.start_sec + overlay.start_sec;
+        const endSec = usesTimelineTime
+          ? clip.timeline_start_sec + ((overlay.start_sec + overlay.duration_sec) / speed)
+          : clip.start_sec + overlay.start_sec + overlay.duration_sec;
         if (previewTimeSec < startSec || previewTimeSec > endSec) continue;
+
+        const rawWordTimings = Array.isArray(overlay.word_timings) ? overlay.word_timings : [];
+        const displayTokens = overlay.text.trim().split(/\s+/).filter(Boolean);
+        const captionWords: LivePreviewCaptionWord[] =
+          rawWordTimings.length > 0
+            ? rawWordTimings.map((word, index) => {
+              const sourceStartSec = Number.isFinite(word.start_sec) ? word.start_sec : startSec;
+              const sourceEndSec = Number.isFinite(word.end_sec) ? word.end_sec : sourceStartSec;
+              const wordStartSec = usesTimelineTime
+                ? clip.timeline_start_sec + (Math.max(sourceStartSec - clip.start_sec, 0) / speed)
+                : sourceStartSec;
+              const wordEndSec = usesTimelineTime
+                ? clip.timeline_start_sec + (Math.max(sourceEndSec - clip.start_sec, 0) / speed)
+                : sourceEndSec;
+              return {
+                text: displayTokens.length === rawWordTimings.length
+                  ? displayTokens[index]
+                  : String(word.text ?? "").trim() || displayTokens[index] || "",
+                key: `${overlay.id}-word-${index}`,
+                isActive: previewTimeSec >= wordStartSec && previewTimeSec <= wordEndSec,
+                isPast: previewTimeSec > wordEndSec,
+              };
+            }).filter((word) => word.text)
+            : [];
+
         return {
           text: overlay.text,
+          words: captionWords,
           fontName: overlay.font_name ?? "Arial",
           color: overlay.color,
           outlineColor: overlay.outline_color ?? "black@0.5",
@@ -1003,7 +1589,7 @@ function App() {
       }
     }
     return null;
-  }, [project, shouldShowLiveCaptionOverlay, previewUrl, currentTimeSec]);
+  }, [project, shouldShowLiveCaptionOverlay, previewShowsRenderedOutput, currentTimeSec]);
 
   const selectedTimelineClipDetails = useMemo(() => {
     if (!selectedTimelineClip) return null;
@@ -1114,12 +1700,36 @@ function App() {
     });
   }, [brollSlots]);
 
+  useEffect(() => {
+    setBrollMeaningDrafts((prev) => {
+      const next: Record<string, string> = {};
+      let changed = false;
+      for (const slot of brollSlots) {
+        if (prev[slot.id] !== undefined) {
+          next[slot.id] = prev[slot.id];
+          continue;
+        }
+        const gloss = readReasonText(slot.candidates[0]?.reason, "english_gloss");
+        next[slot.id] = gloss ?? "";
+        changed = true;
+      }
+      if (Object.keys(prev).length !== Object.keys(next).length) {
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [brollSlots]);
+
   // Search matches
   const searchMatchIds = useMemo(() => {
     if (!transcript || !searchQuery.trim()) return [] as string[];
     const q = searchQuery.toLowerCase().trim();
     return transcript.words
-      .filter((word) => word.text.toLowerCase().includes(q))
+      .filter((word) => {
+        const original = word.text.toLowerCase();
+        const romanized = typeof word.display_text === "string" ? word.display_text.toLowerCase() : "";
+        return original.includes(q) || romanized.includes(q);
+      })
       .map((word) => word.id);
   }, [transcript, searchQuery]);
 
@@ -1133,37 +1743,80 @@ function App() {
   }, [transcript]);
 
   // ── Undo/Redo helpers ──────────────────────────────────────────────
+  const syncLocalUndoRedoState = useCallback(() => {
+    setUndoStackSize(undoStack.current.length);
+    setRedoStackSize(redoStack.current.length);
+  }, []);
+
+  const applyProjectFromServer = useCallback((nextProject: Project) => {
+    setProject(nextProject);
+    setTimelineCanUndo(!!nextProject.timeline_can_undo);
+    setTimelineCanRedo(!!nextProject.timeline_can_redo);
+  }, []);
+
+  const resetEditorStateForProject = useCallback((nextProject: Project) => {
+    applyProjectFromServer(nextProject);
+    setMedia([]);
+    setSelectedAssetId(null);
+    setTranscript(null);
+    setDeletedWordIds(new Set());
+    setSelectedWordIds(new Set());
+    setAnchorWordId(null);
+    setWeakReviewIndex(0);
+    setPreviewJob(null);
+    setPreviewUrl(null);
+    setPreviewUpdateQueued(false);
+    pendingPreviewRefreshRef.current = false;
+    setCurrentTimeSec(0);
+    setExportJob(null);
+    setExportCompletion(null);
+    setQuickEditSummary(null);
+    quickEditPhaseRef.current = "idle";
+    setQuickEditing(false);
+    setQuickEditStage("");
+    setBrollSlots([]);
+    setLastBrollAutoApplySkips([]);
+    setBrollSuggestJob(null);
+    setBrollActionKey(null);
+    setBrollTimelineActionKey(null);
+    setBrollDraftStartById({});
+    setBrollDraftDurationById({});
+    setBrollDraftOpacityById({});
+    setExpandedBrollSlots({});
+    setBrollMeaningDrafts({});
+    setSelectedTimelineClip(null);
+    setSelectedBrollClipId(null);
+    setSelectedBrollSlotId(null);
+    setSelectedCaptionBlock(null);
+    setSearchQuery("");
+    setSearchMatchIndex(0);
+    setLockedLaneIds(readLockedLaneIds(nextProject.id));
+    lastAppliedSignatureRef.current = "";
+    lastAutoCutFailedSignatureRef.current = null;
+    transcriptJobResultHandledRef.current = null;
+    undoStack.current = [];
+    redoStack.current = [];
+    syncLocalUndoRedoState();
+  }, [applyProjectFromServer, syncLocalUndoRedoState]);
+
   const pushUndo = useCallback(() => {
-    undoStack.current.push({ deletedIds: new Set(deletedWordIds) });
+    undoStack.current.push({ kind: "selection", deletedIds: new Set(deletedWordIds) });
     if (undoStack.current.length > MAX_UNDO) undoStack.current.shift();
     redoStack.current = [];
-  }, [deletedWordIds]);
-
-  function undo() {
-    const entry = undoStack.current.pop();
-    if (!entry) return;
-    redoStack.current.push({ deletedIds: new Set(deletedWordIds) });
-    setDeletedWordIds(entry.deletedIds);
-  }
-
-  function redo() {
-    const entry = redoStack.current.pop();
-    if (!entry) return;
-    undoStack.current.push({ deletedIds: new Set(deletedWordIds) });
-    setDeletedWordIds(entry.deletedIds);
-  }
+    syncLocalUndoRedoState();
+  }, [deletedWordIds, syncLocalUndoRedoState]);
 
   // ── Core actions ───────────────────────────────────────────────────
-  async function refreshMedia(projectId: string) {
+  const refreshMedia = useCallback(async (projectId: string) => {
     const items = await api.listMedia(projectId);
     setMedia(items);
     const firstVideo = items.find((asset) => asset.media_type === "video");
     if (!selectedAssetId && firstVideo) {
       setSelectedAssetId(firstVideo.id);
     }
-  }
+  }, [selectedAssetId]);
 
-  async function refreshBrollSlots(projectId: string, transcriptId?: string) {
+  const refreshBrollSlots = useCallback(async (projectId: string, transcriptId?: string) => {
     if (!transcriptId) {
       setBrollSlots([]);
       return;
@@ -1177,15 +1830,27 @@ function App() {
     } finally {
       setLoadingBrollSlots(false);
     }
-  }
+  }, []);
 
-  async function queuePreview(
+  const refreshProjectList = useCallback(async () => {
+    setLoadingProjects(true);
+    try {
+      const projects = await api.listProjects();
+      setRecentProjects(projects);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoadingProjects(false);
+    }
+  }, []);
+
+  const queuePreview = useCallback(async (
     force = false,
     overrides?: {
       aspectRatio?: ExportAspectRatio;
       fps?: 24 | 30 | 60;
     }
-  ) {
+  ) => {
     if (!project || queueingPreview) return;
     if (!force && previewJob && (previewJob.status === "queued" || previewJob.status === "running")) {
       pendingPreviewRefreshRef.current = true;
@@ -1210,7 +1875,188 @@ function App() {
     } finally {
       setQueueingPreview(false);
     }
-  }
+  }, [project, queueingPreview, previewJob, exportAspectRatio, exportFps]);
+
+  const undo = useCallback(async () => {
+    const localEntry = undoStack.current[undoStack.current.length - 1];
+    if (localEntry?.kind === "selection") {
+      undoStack.current.pop();
+      redoStack.current.push({ kind: "selection", deletedIds: new Set(deletedWordIds) });
+      setDeletedWordIds(localEntry.deletedIds);
+      syncLocalUndoRedoState();
+      setNotice("Word selection restored.");
+      return;
+    }
+
+    if (project && timelineCanUndo) {
+      setError(null);
+      try {
+        const restored = await api.undo(project.id);
+        applyProjectFromServer(restored);
+        setNotice("Timeline edit undone.");
+        await queuePreview(true);
+        return;
+      } catch (err) {
+        setError((err as Error).message);
+        return;
+      }
+    }
+
+    const cutEntry = undoStack.current.pop();
+    if (!cutEntry || cutEntry.kind !== "cut" || !project || !transcript) {
+      if (cutEntry) undoStack.current.push(cutEntry);
+      syncLocalUndoRedoState();
+      return;
+    }
+
+    redoStack.current.push({
+      kind: "cut",
+      transcript,
+      timeline: project.timeline,
+    });
+    syncLocalUndoRedoState();
+    setError(null);
+    try {
+      const restored = await api.restoreTranscriptSnapshot(project.id, transcript.id, {
+        words: cutEntry.transcript.words,
+        timeline: cutEntry.timeline,
+      });
+      setTranscript(restored.transcript);
+      applyProjectFromServer({ ...project, timeline: restored.timeline });
+      setDeletedWordIds(new Set());
+      setSelectedWordIds(new Set());
+      setAnchorWordId(null);
+      lastAppliedSignatureRef.current = "";
+      lastAutoCutFailedSignatureRef.current = null;
+      setNotice("Transcript cut undone.");
+      await refreshBrollSlots(project.id, restored.transcript.id);
+      await queuePreview(true);
+    } catch (err) {
+      setError((err as Error).message);
+      undoStack.current.push(cutEntry);
+      redoStack.current.pop();
+      syncLocalUndoRedoState();
+    }
+  }, [
+    applyProjectFromServer,
+    deletedWordIds,
+    project,
+    queuePreview,
+    refreshBrollSlots,
+    syncLocalUndoRedoState,
+    timelineCanUndo,
+    transcript,
+  ]);
+
+  const redo = useCallback(async () => {
+    const localEntry = redoStack.current[redoStack.current.length - 1];
+    if (localEntry?.kind === "selection") {
+      redoStack.current.pop();
+      undoStack.current.push({ kind: "selection", deletedIds: new Set(deletedWordIds) });
+      setDeletedWordIds(localEntry.deletedIds);
+      syncLocalUndoRedoState();
+      setNotice("Word selection restored.");
+      return;
+    }
+
+    if (project && timelineCanRedo) {
+      setError(null);
+      try {
+        const restored = await api.redo(project.id);
+        applyProjectFromServer(restored);
+        setNotice("Timeline edit redone.");
+        await queuePreview(true);
+        return;
+      } catch (err) {
+        setError((err as Error).message);
+        return;
+      }
+    }
+
+    const cutEntry = redoStack.current.pop();
+    if (!cutEntry || cutEntry.kind !== "cut" || !project || !transcript) {
+      if (cutEntry) redoStack.current.push(cutEntry);
+      syncLocalUndoRedoState();
+      return;
+    }
+
+    undoStack.current.push({
+      kind: "cut",
+      transcript,
+      timeline: project.timeline,
+    });
+    syncLocalUndoRedoState();
+    setError(null);
+    try {
+      const restored = await api.restoreTranscriptSnapshot(project.id, transcript.id, {
+        words: cutEntry.transcript.words,
+        timeline: cutEntry.timeline,
+      });
+      setTranscript(restored.transcript);
+      applyProjectFromServer({ ...project, timeline: restored.timeline });
+      setDeletedWordIds(new Set());
+      setSelectedWordIds(new Set());
+      setAnchorWordId(null);
+      setNotice("Transcript cut redone.");
+      await refreshBrollSlots(project.id, restored.transcript.id);
+      await queuePreview(true);
+    } catch (err) {
+      setError((err as Error).message);
+      redoStack.current.push(cutEntry);
+      undoStack.current.pop();
+      syncLocalUndoRedoState();
+    }
+  }, [
+    applyProjectFromServer,
+    deletedWordIds,
+    project,
+    queuePreview,
+    refreshBrollSlots,
+    syncLocalUndoRedoState,
+    timelineCanRedo,
+    transcript,
+  ]);
+
+  const canUndoAction = undoStackSize > 0 || timelineCanUndo;
+  const canRedoAction = redoStackSize > 0 || timelineCanRedo;
+
+  const applyTranscriptGenerationResult = useCallback(async (response: TranscriptGenerateResponse) => {
+    if (!project) return;
+    setTranscript(response.transcript);
+    setProject((prev) => (prev ? { ...prev, timeline: response.timeline } : prev));
+    setDeletedWordIds(new Set());
+    setSelectedWordIds(new Set());
+    setAnchorWordId(null);
+    setWeakReviewIndex(0);
+    setBrollSlots([]);
+    setBrollTimelineActionKey(null);
+    setBrollDraftStartById({});
+    setBrollDraftDurationById({});
+    setBrollDraftOpacityById({});
+    setSelectedTimelineClip(null);
+    setSelectedBrollClipId(null);
+    setSelectedBrollSlotId(null);
+    setSelectedCaptionBlock(null);
+    lastAppliedSignatureRef.current = "";
+    undoStack.current = [];
+    redoStack.current = [];
+    syncLocalUndoRedoState();
+    const reuseNotice = response.reused_transcript
+      ? " (Reused cached transcript)"
+      : "";
+    const sourceText = (response.transcript.source || "").toLowerCase();
+    const lyricsNotice = sourceText.includes("lyrics_ref")
+      ? " Reference lyrics matched."
+      : "";
+
+    setNotice(
+      response.transcript.is_mock
+        ? `Transcript generated (fallback mode). Install faster-whisper for higher accuracy.${reuseNotice}`
+        : `Transcript generated with word timestamps.${lyricsNotice}${reuseNotice}`
+    );
+    await refreshBrollSlots(project.id, response.transcript.id);
+    await queuePreview();
+  }, [project, refreshBrollSlots, queuePreview]);
 
   async function applyTimelineOperations(
     operations: Array<{ op_type: string; params: Record<string, unknown>; source?: string }>,
@@ -1221,6 +2067,8 @@ function App() {
     try {
       const response = await api.applyOperations(project.id, operations);
       setProject((prev) => (prev ? { ...prev, timeline: response.timeline } : prev));
+      setTimelineCanUndo(!!response.timeline_can_undo);
+      setTimelineCanRedo(!!response.timeline_can_redo);
       if (options?.notice !== undefined) {
         setNotice(options.notice);
       }
@@ -1263,14 +2111,37 @@ function App() {
     setApplyingCut(true);
     setError(null);
     const previousDuration = project.timeline.duration_sec;
+    const undoEntry: UndoEntry = {
+      kind: "cut",
+      transcript,
+      timeline: project.timeline,
+    };
     try {
       const result = await api.applyTranscriptCut(project.id, transcript.id, keptIds, {
         contextSec: 0,
         mergeGapSec: 0.08,
         minRemovedSec: 0
       });
-      setProject((prev) => (prev ? { ...prev, timeline: result.timeline } : prev));
-      lastAppliedSignatureRef.current = signature;
+      const refreshedProject = await api.getProject(project.id);
+      applyProjectFromServer({ ...refreshedProject, timeline: result.timeline });
+      const latestTranscript = await api.getTranscript(project.id, transcript.id);
+      setTranscript(latestTranscript);
+      const remainingWordIds = new Set(latestTranscript.words.map((word) => word.id));
+      const stillPendingDeletedIds = new Set(
+        Array.from(latestDeletedWordIdsRef.current).filter((wordId) => remainingWordIds.has(wordId))
+      );
+      setDeletedWordIds(stillPendingDeletedIds);
+      setSelectedWordIds(new Set());
+      setAnchorWordId(null);
+      undoStack.current.push(undoEntry);
+      if (undoStack.current.length > MAX_UNDO) undoStack.current.shift();
+      redoStack.current.push({
+        kind: "cut",
+        transcript: latestTranscript,
+        timeline: result.timeline,
+      });
+      syncLocalUndoRedoState();
+      lastAppliedSignatureRef.current = "";
       const nextDuration = result.timeline.duration_sec;
       const deltaSec = Math.max(0, previousDuration - nextDuration);
       const deltaLabel = deltaSec >= 0.01
@@ -1292,38 +2163,58 @@ function App() {
     }
   }
 
+  async function openProject(projectId: string) {
+    if (!projectId || openingProjectId) return;
+    setOpeningProjectId(projectId);
+    setError(null);
+    try {
+      const nextProject = await api.getProject(projectId);
+      resetEditorStateForProject(nextProject);
+
+      const items = await api.listMedia(projectId);
+      setMedia(items);
+      const firstVideo = items.find((asset) => asset.media_type === "video") ?? null;
+      setSelectedAssetId(firstVideo?.id ?? null);
+      setPreviewUrl(firstVideo ? resolveMediaPath(firstVideo.storage_path) : null);
+
+      try {
+        const latestTranscript = await api.getTranscript(projectId);
+        setTranscript(latestTranscript);
+        await refreshBrollSlots(projectId, latestTranscript.id);
+      } catch {
+        setTranscript(null);
+        setBrollSlots([]);
+      }
+
+      setProjectsPanelOpen(false);
+      setNotice(`Opened ${nextProject.name || "project"}.`);
+      await refreshProjectList();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setOpeningProjectId(null);
+    }
+  }
+
   async function createProject(
-    name = BRAND.defaultProjectName,
-    options?: { silent?: boolean }
+    name: string = BRAND.defaultProjectName,
+    options?: { silent?: boolean; notice?: string | null }
   ) {
     const silent = !!options?.silent;
     setCreatingProject(true);
     setError(null);
     try {
       const created = await api.createProject(name.trim() || "Untitled Project");
-      setProject(created);
-      setMedia([]);
-      setSelectedAssetId(null);
-      setTranscript(null);
-      setDeletedWordIds(new Set());
-      setSelectedWordIds(new Set());
-      setAnchorWordId(null);
-      setPreviewJob(null);
-      setPreviewUrl(null);
-      setPreviewUpdateQueued(false);
-      setBrollSlots([]);
-      setBrollTimelineActionKey(null);
-      setBrollDraftStartById({});
-      setBrollDraftDurationById({});
-      setBrollDraftOpacityById({});
-      setSelectedTimelineClip(null);
-      setSelectedBrollClipId(null);
-      setSelectedCaptionBlock(null);
-      setLockedLaneIds(new Set());
-      undoStack.current = [];
-      redoStack.current = [];
-      setNotice(silent ? null : "Project created. Upload a video to start.");
+      resetEditorStateForProject(created);
+      setNotice(
+        options?.notice !== undefined
+          ? options.notice
+          : silent
+            ? WORKSPACE_READY_NOTICE
+            : "Project created. Upload a video to start.",
+      );
       await refreshMedia(created.id);
+      await refreshProjectList();
     } catch (err) {
       setError((err as Error).message);
       setNotice(null);
@@ -1332,18 +2223,121 @@ function App() {
     }
   }
 
+  async function handleRenameProject(projectId: string, newName: string) {
+    const trimmed = newName.trim();
+    if (!trimmed) return;
+    setSubmittingRenameId(projectId);
+    try {
+      const updated = await api.renameProject(projectId, trimmed);
+      // Update recent projects list in-place
+      setRecentProjects((prev) =>
+        prev.map((p) => (p.id === projectId ? { ...p, name: updated.name } : p))
+      );
+      // If this is the currently open project, update its name
+      if (project && project.id === projectId) {
+        setProject((prev) => (prev ? { ...prev, name: updated.name } : prev));
+      }
+      setNotice(`Renamed to "${updated.name}".`);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSubmittingRenameId(null);
+      setRenamingProjectId(null);
+      setRenameText("");
+    }
+  }
+
+  async function handleDeleteProject(projectId: string) {
+    setDeletingProjectId(projectId);
+    try {
+      await api.deleteProject(projectId);
+      setRecentProjects((prev) => prev.filter((p) => p.id !== projectId));
+      const wasCurrentProject = project && project.id === projectId;
+      if (wasCurrentProject) {
+        // Clear current project state without auto-creating a new one
+        setProject(null);
+        setMedia([]);
+        setTranscript(null);
+        setBrollSlots([]);
+        setSelectedAssetId(null);
+        setPreviewUrl(null);
+      }
+      setConfirmDeleteId(null);
+      // Refresh the list from the backend to get the true count
+      const updatedProjects = await api.listProjects();
+      setRecentProjects(updatedProjects);
+      if (wasCurrentProject) {
+        if (updatedProjects.length > 0) {
+          // Switch to the first remaining project instead of creating a new one
+          await openProject(updatedProjects[0].id);
+          setNotice("Project deleted. Switched to next project.");
+        } else {
+          // No projects left – let the existing useEffect auto-create one
+          autoCreateAttemptedRef.current = false;
+          setNotice("Project deleted.");
+          setProjectsPanelOpen(true);
+        }
+      } else {
+        setNotice("Project deleted.");
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setDeletingProjectId(null);
+    }
+  }
+
   async function uploadVideo(file: File) {
     if (!project) return;
     setUploading(true);
     setError(null);
+    setQuickEditSummary(null);
+    setExportCompletion(null);
     try {
       const uploaded = await api.uploadMedia(project.id, file);
       setMedia((prev) => [uploaded, ...prev]);
+      let addedToTimeline = false;
       if (uploaded.media_type === "video") {
         setSelectedAssetId(uploaded.id);
         setPreviewUrl(resolveMediaPath(uploaded.storage_path));
+        const durationSec = uploaded.duration_sec ?? 0;
+        const hasVideoClip = project.timeline.tracks.some(
+          (track) => track.kind === "video" && (track.clips ?? []).length > 0
+        );
+        if (!hasVideoClip && Number.isFinite(durationSec) && durationSec > 0) {
+          try {
+            const response = await api.applyOperations(project.id, [
+              {
+                op_type: "add_clip",
+                source: "ui",
+                params: {
+                  asset_id: uploaded.id,
+                  start_sec: 0,
+                  duration_sec: durationSec,
+                  timeline_start_sec: 0,
+                },
+              },
+            ]);
+            setProject((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    timeline: response.timeline,
+                    timeline_version: response.version,
+                    timeline_can_undo: response.timeline_can_undo,
+                    timeline_can_redo: response.timeline_can_redo,
+                  }
+                : prev
+            );
+            setTimelineCanUndo(!!response.timeline_can_undo);
+            setTimelineCanRedo(!!response.timeline_can_redo);
+            addedToTimeline = true;
+          } catch (timelineError) {
+            setError(`Video uploaded, but timeline setup failed: ${(timelineError as Error).message}`);
+          }
+        }
       }
-      setNotice("Video uploaded.");
+      setNotice(addedToTimeline ? "Video uploaded. Timeline ready." : "Video uploaded.");
     } catch (err) {
       setError((err as Error).message);
       setNotice(null);
@@ -1352,53 +2346,62 @@ function App() {
     }
   }
 
-  async function generateTranscript() {
-    if (!project || !selectedVideoAsset) return;
+  async function generateTranscript(options?: { forceRegenerate?: boolean }) {
+    if (!project || !selectedVideoAsset || generatingTranscript) {
+      return;
+    }
+    const forceRegenerate = !!options?.forceRegenerate;
+    lastTranscriptRequestRef.current = { forceRegenerate };
     const startedAtMs = Date.now();
     setGeneratingTranscript(true);
     setTranscriptStartedAtMs(startedAtMs);
     setTranscriptElapsedSec(0);
+    setTranscriptStageStartedAtMs(startedAtMs);
+    setTranscriptStageBaseProgress(0);
+    transcriptStageKeyRef.current = null;
+    setTranscriptJob(null);
+    transcriptJobResultHandledRef.current = null;
     setError(null);
-    setNotice("Transcript generation started.");
+    setNotice(
+      forceRegenerate
+        ? "Regenerating transcript from scratch..."
+        : "Transcript generation started.",
+    );
     try {
       const language = transcriptLanguage === "auto" ? undefined : transcriptLanguage;
-      const response = await api.generateTranscript(project.id, selectedVideoAsset.id, language, undefined);
-      setTranscript(response.transcript);
-      setProject((prev) => (prev ? { ...prev, timeline: response.timeline } : prev));
-      setDeletedWordIds(new Set());
-      setSelectedWordIds(new Set());
-      setAnchorWordId(null);
-      setBrollSlots([]);
-      setBrollTimelineActionKey(null);
-      setBrollDraftStartById({});
-      setBrollDraftDurationById({});
-      setBrollDraftOpacityById({});
-      setSelectedTimelineClip(null);
-      setSelectedBrollClipId(null);
-      setSelectedCaptionBlock(null);
-      lastAppliedSignatureRef.current = "";
-      undoStack.current = [];
-      redoStack.current = [];
-      const reuseNotice =
-        response.transcript.created_at !== undefined &&
-          Date.now() - new Date(response.transcript.created_at).getTime() > 60000
-          ? " (Reused existing transcript)"
-          : "";
-
-      setNotice(
-        response.transcript.is_mock
-          ? `Transcript generated (fallback mode). Install faster-whisper for higher accuracy.${reuseNotice}`
-          : `Transcript generated with word timestamps.${reuseNotice}`
+      const job = await api.generateTranscriptAsync(
+        project.id,
+        selectedVideoAsset.id,
+        transcriptMode,
+        language,
+        undefined,
+        translateTranscriptToEnglish,
+        { forceRegenerate },
       );
-      await refreshBrollSlots(project.id, response.transcript.id);
-      await queuePreview();
+      setTranscriptJob(job);
+      if (job.status === "completed") {
+        transcriptJobResultHandledRef.current = job.id;
+        const response = await api.getTranscriptGenerateResult(project.id, job.id);
+        await applyTranscriptGenerationResult(response);
+        setGeneratingTranscript(false);
+        setTranscriptStartedAtMs(null);
+        setTranscriptStageStartedAtMs(null);
+        setTranscriptStageBaseProgress(0);
+      }
     } catch (err) {
       setError((err as Error).message);
       setNotice(null);
-    } finally {
       setGeneratingTranscript(false);
       setTranscriptStartedAtMs(null);
+      setTranscriptStageStartedAtMs(null);
+      setTranscriptStageBaseProgress(0);
+    } finally {
+      setTranscriptElapsedSec(Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000)));
     }
+  }
+
+  function retryTranscriptGeneration() {
+    void generateTranscript(lastTranscriptRequestRef.current);
   }
 
   async function runVibeAction(action: VibeAction) {
@@ -1427,14 +2430,22 @@ function App() {
         const selectedStyle = CAPTION_STYLE_PRESETS.find((item) => item.id === captionStyle) ?? CAPTION_STYLE_PRESETS[0];
         options.style = selectedStyle.id;
         options.caption_styles = CAPTION_STYLE_CONFIG_BY_ID;
+        if (transcriptLanguage !== "auto") {
+          options.transcript_language = transcriptLanguage;
+        }
+        if (transcriptHasRomanization && showRomanizedTranscript) {
+          options.transliterate = true;
+        }
         if (transcript?.words?.length) {
           // Use exactly what user sees in transcript UI, including an in-progress inline edit.
+          // Filter out deleted words so captions are only generated for kept words.
           const pendingEditText = editingWordText.trim();
-          const subtitleWords: TranscriptWord[] = editingWordId && pendingEditText
+          const subtitleWords: TranscriptWord[] = (editingWordId && pendingEditText
             ? transcript.words.map((word) =>
               word.id === editingWordId ? { ...word, text: pendingEditText } : word
             )
-            : transcript.words;
+            : transcript.words
+          ).filter((word) => !deletedWordIds.has(word.id));
           options.words = subtitleWords;
         }
       }
@@ -1485,24 +2496,195 @@ function App() {
     }
   }
 
+  const currentExportSettings = useCallback((): ExportSettingsSnapshot => ({
+    format: exportFormat,
+    aspectRatio: exportAspectRatio,
+    resolution: exportResolution,
+    fps: exportFps,
+    quality: exportQuality,
+  }), [exportAspectRatio, exportFormat, exportFps, exportQuality, exportResolution]);
+
+  const exportRuntimeHint = useMemo(
+    () => estimateExportRuntimeLabel(currentExportSettings(), project?.timeline.duration_sec ?? selectedAssetDurationSec),
+    [currentExportSettings, project?.timeline.duration_sec, selectedAssetDurationSec]
+  );
+
+  const handleCompletedExport = useCallback(async (job: Job) => {
+    if (exportCompletionHandledRef.current === job.id) return;
+    exportCompletionHandledRef.current = job.id;
+
+    const settings = exportSettingsRef.current ?? currentExportSettings();
+    const fallbackFilename = fallbackExportFilename(settings);
+    let filename = fallbackFilename;
+    let downloadError: string | null = null;
+
+    if (job.output_path) {
+      try {
+        filename = await api.downloadJobOutput(job.id, fallbackFilename);
+        setNotice(`Export completed. Downloaded ${filename}.`);
+      } catch (err) {
+        downloadError = (err as Error).message;
+        setError(downloadError);
+        setNotice("Export completed. Download is ready to retry.");
+      }
+    } else {
+      setNotice("Export completed.");
+    }
+
+    setExportCompletion({
+      ...settings,
+      jobId: job.id,
+      filename,
+      outputPath: job.output_path,
+      downloadError,
+    });
+  }, [currentExportSettings]);
+
+  async function downloadCompletedExport() {
+    if (!exportCompletion?.jobId || !exportCompletion.outputPath || downloadingExport) return;
+    setDownloadingExport(true);
+    setError(null);
+    try {
+      const filename = await api.downloadJobOutput(
+        exportCompletion.jobId,
+        fallbackExportFilename(exportCompletion)
+      );
+      setExportCompletion((prev) => prev ? { ...prev, filename, downloadError: null } : prev);
+      setNotice(`Downloaded ${filename}.`);
+    } catch (err) {
+      const message = (err as Error).message;
+      setExportCompletion((prev) => prev ? { ...prev, downloadError: message } : prev);
+      setError(message);
+    } finally {
+      setDownloadingExport(false);
+    }
+  }
+
   async function exportVideo() {
     if (!project || exportingVideo) return;
+    const settings = currentExportSettings();
+    exportSettingsRef.current = settings;
+    exportCompletionHandledRef.current = null;
     setExportingVideo(true);
+    setExportCompletion(null);
     setError(null);
     try {
       const job = await api.renderExport(project.id, {
-        format: exportFormat,
-        aspect_ratio: exportAspectRatio,
-        resolution: exportResolution,
-        fps: exportFps,
-        quality: exportQuality,
+        format: settings.format,
+        aspect_ratio: settings.aspectRatio,
+        resolution: settings.resolution,
+        fps: settings.fps,
+        quality: settings.quality,
       });
       setExportJob(job);
-      setNotice(`Export started (${exportAspectRatio}, ${exportResolution}, ${exportFormat}). Job ID: ${job.id}`);
+      setNotice(`Export started (${settings.aspectRatio}, ${settings.resolution}, ${settings.format}). Job ID: ${job.id}`);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setExportingVideo(false);
+    }
+  }
+
+  // ── Quick Edit: one-click workflow (state-machine, no blocking loops) ──
+  // Phase 1: start transcription (or skip if transcript exists), set phase to "transcribing"
+  // Phase 2: useEffect below watches for transcript completion → runs auto-cut + captions inline
+  function quickEdit() {
+    if (!project || !selectedVideoAsset || quickEditing) return;
+    setError(null);
+    setQuickEditSummary(null);
+
+    if (transcript?.words?.length) {
+      // Transcript already exists — skip straight to cut+captions
+      quickEditPhaseRef.current = "cutting";
+      setQuickEditing(true);
+      setQuickEditStage("Removing pauses & filler...");
+      void runQuickEditCutAndCaptions();
+      return;
+    }
+
+    // Need to generate transcript first
+    quickEditPhaseRef.current = "transcribing";
+    setQuickEditing(true);
+    setQuickEditStage("Generating transcript...");
+    void generateTranscript();
+  }
+
+  // Called once transcript is available (either pre-existing or freshly generated)
+  async function runQuickEditCutAndCaptions() {
+    if (!project || !selectedVideoAsset) {
+      quickEditPhaseRef.current = "idle";
+      setQuickEditing(false);
+      setQuickEditStage("");
+      return;
+    }
+    let cutDetails: string | null = null;
+    let captionDetails: string | null = null;
+    let finalTimeline: ProjectTimeline = project.timeline;
+    try {
+      // Step A: Auto-cut pauses (fire-and-forget preview; returns quickly)
+      quickEditPhaseRef.current = "cutting";
+      setQuickEditStage("Removing pauses & filler...");
+      try {
+        const cutResponse = await api.applyVibeAction(project.id, "auto_cut_pauses", selectedVideoAsset.id, {});
+        cutDetails = cutResponse.details ?? "Auto-cut applied.";
+        finalTimeline = cutResponse.timeline;
+        setProject((prev) => (prev ? { ...prev, timeline: cutResponse.timeline } : prev));
+        // Accept the queued preview job from the backend
+        setPreviewJob(cutResponse.preview_job);
+        if (cutResponse.preview_job?.output_path) {
+          setPreviewUrl(resolveMediaPath(cutResponse.preview_job.output_path));
+        }
+        if (cutResponse.transcript_id) {
+          const latestTranscript = await api.getTranscript(project.id, cutResponse.transcript_id);
+          setTranscript(latestTranscript);
+        }
+      } catch {
+        // Auto-cut is non-fatal; some videos have no meaningful pauses
+        cutDetails = "Auto-cut skipped: no significant pauses detected.";
+        setNotice(cutDetails);
+      }
+
+      // Step B: Add captions with the selected style
+      quickEditPhaseRef.current = "captioning";
+      setQuickEditStage("Adding captions...");
+      try {
+        const selectedStyle = CAPTION_STYLE_PRESETS.find((item) => item.id === captionStyle) ?? CAPTION_STYLE_PRESETS[0];
+        const captionOptions: Record<string, unknown> = {
+          style: selectedStyle.id,
+          caption_styles: CAPTION_STYLE_CONFIG_BY_ID,
+        };
+        if (transcriptLanguage !== "auto") {
+          captionOptions.transcript_language = transcriptLanguage;
+        }
+        const captionResponse = await api.applyVibeAction(project.id, "add_subtitles", selectedVideoAsset.id, captionOptions);
+        captionDetails = captionResponse.details ?? "Captions added.";
+        finalTimeline = captionResponse.timeline;
+        setProject((prev) => (prev ? { ...prev, timeline: captionResponse.timeline } : prev));
+        setPreviewJob(captionResponse.preview_job);
+        if (captionResponse.preview_job?.output_path) {
+          setPreviewUrl(resolveMediaPath(captionResponse.preview_job.output_path));
+        }
+        setCaptionResultInfo(captionResponse.details ?? null);
+      } catch {
+        captionDetails = "Captions skipped: generate a transcript first or retry.";
+        setNotice(captionDetails);
+      }
+
+      quickEditPhaseRef.current = "done";
+      setQuickEditStage("");
+      const summary = buildQuickEditSummary(cutDetails, captionDetails, finalTimeline);
+      setQuickEditSummary(summary);
+      setNotice(
+        summary.captionsAdded
+          ? "Quick Edit complete: transcript cut and captions applied. Add B-roll separately in B-roll Studio when ready."
+          : "Quick Edit complete: transcript cut applied. Captions need another try."
+      );
+    } catch (err) {
+      setError((err as Error).message);
+      setQuickEditStage("");
+      quickEditPhaseRef.current = "idle";
+    } finally {
+      setQuickEditing(false);
     }
   }
 
@@ -1533,6 +2715,7 @@ function App() {
     if (!transcript) return;
     setSelectedTimelineClip(null);
     setSelectedBrollClipId(null);
+    setSelectedBrollSlotId(null);
     setSelectedCaptionBlock(null);
     if (!shiftHeld || !anchorWordId || !transcriptWordIndex.has(anchorWordId) || !transcriptWordIndex.has(wordId)) {
       setAnchorWordId(wordId);
@@ -1552,6 +2735,7 @@ function App() {
     if (!transcript) return;
     setSelectedTimelineClip(null);
     setSelectedBrollClipId(null);
+    setSelectedBrollSlotId(null);
     setSelectedCaptionBlock(null);
     const fromIdx = transcriptWordIndex.get(fromId) ?? 0;
     const toIdx = transcriptWordIndex.get(toId) ?? 0;
@@ -1561,10 +2745,53 @@ function App() {
     setSelectedWordIds(new Set(range));
   }, [transcript, transcriptWordIndex]);
 
-  const toggleBlock = useCallback((block: TextBlock) => {
+  const toggleBlock = useCallback(async (block: TextBlock) => {
     const allDeleted = block.wordIds.every((id) => deletedWordIds.has(id));
-    updateDeletedWords(block.wordIds, !allDeleted);
-  }, [deletedWordIds, updateDeletedWords]);
+    if (allDeleted) {
+      // Restoring a deleted block — use the undo-based path
+      updateDeletedWords(block.wordIds, false);
+      return;
+    }
+    // Deleting the block — directly call the backend so the video timeline
+    // is updated alongside the transcript panel.
+    if (!project || !transcript || updatingTranscriptRange) return;
+    const firstWordId = block.wordIds[0];
+    const lastWordId = block.wordIds[block.wordIds.length - 1];
+    if (!firstWordId || !lastWordId) return;
+    pushUndo();
+    setUpdatingTranscriptRange(true);
+    setError(null);
+    try {
+      const updated = await api.updateTranscriptRange(transcript.id, project.id, {
+        start_word_id: firstWordId,
+        end_word_id: lastWordId,
+        mode: "delete",
+      });
+      setTranscript(updated.transcript);
+      setProject((prev) => (prev ? { ...prev, timeline: updated.timeline } : prev));
+      // Clean up any local deleted/selected state for the removed words
+      setDeletedWordIds((prev) => {
+        const next = new Set(prev);
+        block.wordIds.forEach((id) => next.delete(id));
+        return next;
+      });
+      setSelectedWordIds((prev) => {
+        const next = new Set(prev);
+        block.wordIds.forEach((id) => next.delete(id));
+        return next;
+      });
+      lastAppliedSignatureRef.current = "";
+      undoStack.current = [];
+      redoStack.current = [];
+      setNotice(`Removed ${block.wordIds.length} word${block.wordIds.length === 1 ? "" : "s"} from transcript and video.`);
+      await refreshBrollSlots(project.id, updated.transcript.id);
+      await queuePreview(true);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setUpdatingTranscriptRange(false);
+    }
+  }, [deletedWordIds, updateDeletedWords, project, transcript, updatingTranscriptRange, pushUndo, refreshBrollSlots, queuePreview]);
 
   const seekToWord = useCallback((word: TranscriptWord) => {
     if (!videoRef.current) return;
@@ -1580,6 +2807,81 @@ function App() {
     setCurrentTimeSec(targetSec);
   }, [previewRenderBusy, videoClips]);
 
+  const scrollTranscriptWordIntoView = useCallback((wordId: string) => {
+    window.setTimeout(() => {
+      document.getElementById(`word-${wordId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 0);
+  }, []);
+
+  const focusTranscriptWordIds = useCallback((
+    wordIds: string[],
+    fallbackSourceSec?: number,
+    noticeMessage?: string,
+  ) => {
+    if (!transcript) {
+      if (typeof fallbackSourceSec === "number") seekToTranscriptTime(fallbackSourceSec);
+      return;
+    }
+    const validIds = wordIds.filter((wordId) => transcriptWordIndex.has(wordId));
+    setSelectedTimelineClip(null);
+    setSelectedCaptionBlock(null);
+    if (!validIds.length) {
+      if (typeof fallbackSourceSec === "number") seekToTranscriptTime(fallbackSourceSec);
+      if (noticeMessage) setNotice(noticeMessage);
+      return;
+    }
+    const firstWord = transcript.words[transcriptWordIndex.get(validIds[0]) ?? 0];
+    setSelectedWordIds(new Set(validIds));
+    setAnchorWordId(validIds[0]);
+    if (firstWord) {
+      seekToWord(firstWord);
+      scrollTranscriptWordIntoView(firstWord.id);
+    }
+    if (noticeMessage) setNotice(noticeMessage);
+  }, [scrollTranscriptWordIntoView, seekToTranscriptTime, seekToWord, transcript, transcriptWordIndex]);
+
+  const focusTranscriptRegion = useCallback((region: TranscriptRegion) => {
+    const regionWordIds = region.word_ids?.length
+      ? region.word_ids
+      : (transcript?.words ?? [])
+        .filter((word) => word.start_sec < region.end_sec && word.end_sec > region.start_sec)
+        .map((word) => word.id);
+    focusTranscriptWordIds(
+      regionWordIds,
+      region.start_sec,
+      `${transcriptRegionLabel(region)} transcript region selected.`
+    );
+  }, [focusTranscriptWordIds, transcript?.words]);
+
+  const reviewWeakWords = useCallback((index: number) => {
+    if (!transcriptReviewWordIds.length) return;
+    const boundedIndex = ((index % transcriptReviewWordIds.length) + transcriptReviewWordIds.length) % transcriptReviewWordIds.length;
+    const wordId = transcriptReviewWordIds[boundedIndex];
+    setWeakReviewIndex(boundedIndex);
+    focusTranscriptWordIds([wordId], undefined, `Reviewing word ${boundedIndex + 1} of ${transcriptReviewWordIds.length}.`);
+  }, [focusTranscriptWordIds, transcriptReviewWordIds]);
+
+  const reviewNextWeakWord = useCallback(() => {
+    if (!transcriptReviewWordIds.length) return;
+    const selectedReviewId = Array.from(selectedWordIds).find((wordId) => transcriptReviewWordIds.includes(wordId));
+    const currentIndex = selectedReviewId ? transcriptReviewWordIds.indexOf(selectedReviewId) : weakReviewIndex - 1;
+    reviewWeakWords(currentIndex + 1);
+  }, [reviewWeakWords, selectedWordIds, transcriptReviewWordIds, weakReviewIndex]);
+
+  const focusBrollSlot = useCallback((slot: BrollSlot, noticeMessage?: string) => {
+    setSelectedBrollSlotId(slot.id);
+    const wordIds = slot.anchor_word_ids.length
+      ? slot.anchor_word_ids
+      : (transcript?.words ?? [])
+        .filter((word) => word.start_sec < slot.end_sec && word.end_sec > slot.start_sec)
+        .map((word) => word.id);
+    focusTranscriptWordIds(
+      wordIds,
+      slot.start_sec,
+      noticeMessage ?? "B-roll transcript region selected."
+    );
+  }, [focusTranscriptWordIds, transcript?.words]);
+
   // ── Inline editing ─────────────────────────────────────────────────
   const startEditing = useCallback((word: TranscriptWord) => {
     setEditingWordId(word.id);
@@ -1587,37 +2889,101 @@ function App() {
     setTimeout(() => editInputRef.current?.focus(), 0);
   }, []);
 
-  const commitEdit = useCallback(() => {
+  const commitEdit = useCallback(async () => {
     if (!editingWordId || !transcript) {
       setEditingWordId(null);
       return;
     }
-    const trimmed = editingWordText.trim();
-    if (!trimmed) {
-      setEditingWordId(null);
+    if (committingWordEditRef.current) {
       return;
     }
-    // Update word text locally
-    setTranscript((prev) => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        words: prev.words.map((w) =>
-          w.id === editingWordId
-            ? { ...w, text: trimmed, quality_label: "trusted", quality_score: 1, source_pass: "manual" }
-            : w
-        ),
-        text: prev.words.map((w) => (w.id === editingWordId ? trimmed : w.text)).join(" ")
-      };
-    });
-    // Fire-and-forget backend update
-    if (project && transcript) {
-      api.updateWordText(transcript.id, editingWordId, trimmed, project.id).catch(() => {
-        /* ignore – local state is source of truth for now */
+    committingWordEditRef.current = true;
+    const trimmed = editingWordText.trim();
+    const projectId = project?.id ?? null;
+    const transcriptId = transcript.id;
+    const wordId = editingWordId;
+    try {
+      if (!trimmed) {
+        setEditingWordId(null);
+        setEditingWordText("");
+        if (!projectId) {
+          return;
+        }
+        setUpdatingTranscriptRange(true);
+        setError(null);
+        try {
+          const updated = await api.updateTranscriptRange(transcriptId, projectId, {
+            start_word_id: wordId,
+            end_word_id: wordId,
+            mode: "delete",
+          });
+          setTranscript(updated.transcript);
+          setProject((prev) => (prev ? { ...prev, timeline: updated.timeline } : prev));
+          setDeletedWordIds((prev) => {
+            if (!prev.has(wordId)) return prev;
+            const next = new Set(prev);
+            next.delete(wordId);
+            return next;
+          });
+          setSelectedWordIds((prev) => {
+            if (!prev.has(wordId)) return prev;
+            const next = new Set(prev);
+            next.delete(wordId);
+            return next;
+          });
+          setAnchorWordId((prev) => (prev === wordId ? null : prev));
+          undoStack.current = [];
+          redoStack.current = [];
+          setNotice("Word removed from transcript.");
+          await refreshBrollSlots(projectId, updated.transcript.id);
+          await queuePreview(true);
+        } catch (err) {
+          setError((err as Error).message);
+        } finally {
+          setUpdatingTranscriptRange(false);
+        }
+        return;
+      }
+
+      // Update word text locally
+      setTranscript((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          words: prev.words.map((w) =>
+            w.id === wordId
+              ? {
+                ...w,
+                text: trimmed,
+                display_text: null,
+                quality_label: "trusted",
+                quality_score: 1,
+                source_pass: "manual"
+              }
+              : w
+          ),
+          text: prev.words.map((w) => (w.id === wordId ? trimmed : w.text)).join(" ")
+        };
       });
+      setEditingWordId(null);
+      setEditingWordText("");
+      if (!projectId) {
+        return;
+      }
+      try {
+        const updated = await api.updateWordText(transcriptId, wordId, trimmed, projectId);
+        setTranscript(updated.transcript);
+        setProject((prev) => (prev ? { ...prev, timeline: updated.timeline } : prev));
+        await refreshBrollSlots(projectId, updated.transcript.id);
+        await queuePreview(true);
+      } catch (err) {
+        setError((err as Error).message);
+        setNotice("Word text updated locally, but transcript sync failed.");
+      }
+    } finally {
+      committingWordEditRef.current = false;
     }
-    setEditingWordId(null);
-  }, [editingWordId, transcript, editingWordText, project]);
+  }, [editingWordId, transcript, editingWordText, project?.id, refreshBrollSlots, queuePreview]);
 
   const cancelEdit = useCallback(() => {
     setEditingWordId(null);
@@ -1625,13 +2991,9 @@ function App() {
   }, []);
 
   const applyTranscriptRangeUpdate = useCallback(async (
-    mode: "replace" | "blank" | "preserve"
+    mode: "delete"
   ) => {
     if (!project || !transcript || !selectedTranscriptRange || updatingTranscriptRange) return;
-    if (mode === "replace" && !rangeEditText.trim()) {
-      setError("Range text cannot be empty.");
-      return;
-    }
     setUpdatingTranscriptRange(true);
     setError(null);
     try {
@@ -1639,37 +3001,63 @@ function App() {
         start_word_id: selectedTranscriptRange.startWordId,
         end_word_id: selectedTranscriptRange.endWordId,
         mode,
-        ...(mode === "replace" ? { text: rangeEditText.trim() } : {}),
       });
-      setTranscript(updated);
+      setTranscript(updated.transcript);
+      setProject((prev) => (prev ? { ...prev, timeline: updated.timeline } : prev));
       setDeletedWordIds(new Set());
       setSelectedWordIds(new Set());
       setAnchorWordId(null);
       undoStack.current = [];
       redoStack.current = [];
-      setNotice(
-        mode === "blank"
-          ? "Marked selected transcript range as instrumental/blank."
-          : mode === "preserve"
-            ? "Selected repeated line will be treated as trusted."
-            : "Updated selected transcript range."
-      );
-      await refreshBrollSlots(project.id, updated.id);
+      setNotice("Deleted selected transcript text.");
+      await refreshBrollSlots(project.id, updated.transcript.id);
+      await queuePreview(true);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setUpdatingTranscriptRange(false);
     }
-  }, [project, transcript, selectedTranscriptRange, updatingTranscriptRange, rangeEditText, refreshBrollSlots]);
+  }, [project, transcript, selectedTranscriptRange, updatingTranscriptRange, refreshBrollSlots, queuePreview]);
+
+  // Build a set of word IDs that start new sentences (after the first sentence)
+  const sentenceStartIds = useMemo(() => {
+    const ids = new Set<string>();
+    sentenceBlocks.forEach((block, idx) => {
+      if (idx > 0 && block.wordIds.length > 0) {
+        ids.add(block.wordIds[0]);
+      }
+    });
+    return ids;
+  }, [sentenceBlocks]);
+
+  const speakerLegend = useMemo(
+    () => (transcript ? buildSpeakerLegend(transcript.words) : []),
+    [transcript]
+  );
+  const speakerIds = useMemo(
+    () => speakerLegend.map((entry) => entry.speakerId),
+    [speakerLegend]
+  );
+  const selectedAssetLooksLikeDuet = useMemo(
+    () => Boolean(selectedVideoAsset?.filename && looksLikeDuetFilename(selectedVideoAsset.filename)),
+    [selectedVideoAsset]
+  );
 
   const transcriptWordNodes = useMemo(() => {
     if (!transcript) return null;
 
-    return transcript.words.map((word) => {
+    const nodes: React.ReactNode[] = [];
+    transcript.words.forEach((word) => {
+      // Insert a visual line break before sentence-starting words
+      if (sentenceStartIds.has(word.id)) {
+        nodes.push(<span key={`brk-${word.id}`} className="sentenceBreak" aria-hidden="true" />);
+      }
+
       const isDeleted = deletedWordIds.has(word.id);
+      const displayText = transcriptDisplayText(word, showRomanizedTranscript);
 
       if (editingWordId === word.id) {
-        return (
+        nodes.push(
           <input
             key={word.id}
             ref={editInputRef}
@@ -1685,6 +3073,7 @@ function App() {
             style={{ width: `${Math.max(editingWordText.length + 2, 4)}ch` }}
           />
         );
+        return;
       }
 
       const isSelected = selectedWordIds.has(word.id);
@@ -1694,12 +3083,15 @@ function App() {
       const isCurrentMatch = searchMatchIds[searchMatchIndex] === word.id;
       const hasLowConfidence =
         !isDeleted && typeof word.confidence === "number" && word.confidence < LOW_CONFIDENCE_THRESHOLD;
-      const isWeakRegionWord = !isDeleted && word.quality_label === "weak";
+      const isWeakRegionWord = !isDeleted && (word.quality_label === "weak" || transcriptIssueWordIdSet.has(word.id));
+      const speakerSlot = speakerSlotForWord(word, speakerIds);
 
-      return (
+      nodes.push(
         <Word
           key={word.id}
           word={word}
+          displayText={displayText}
+          showRomanized={showRomanizedTranscript}
           isDeleted={isDeleted}
           isSelected={isSelected}
           isActive={isActive}
@@ -1708,6 +3100,7 @@ function App() {
           isCurrentMatch={isCurrentMatch}
           hasLowConfidence={hasLowConfidence}
           isWeakRegionWord={isWeakRegionWord}
+          speakerSlot={speakerSlot}
           activeWordRef={activeWordRef}
           isDraggingRef={isDragging}
           dragStartWordIdRef={dragStartWordId}
@@ -1718,6 +3111,7 @@ function App() {
         />
       );
     });
+    return nodes;
   }, [
     transcript,
     deletedWordIds,
@@ -1732,6 +3126,10 @@ function App() {
     searchMatchIdSet,
     searchMatchIds,
     searchMatchIndex,
+    showRomanizedTranscript,
+    sentenceStartIds,
+    speakerIds,
+    transcriptIssueWordIdSet,
     selectWord,
     seekToWord,
     selectWordRange,
@@ -1782,6 +3180,7 @@ function App() {
   const clearEditorSelections = useCallback(() => {
     setSelectedTimelineClip(null);
     setSelectedBrollClipId(null);
+    setSelectedBrollSlotId(null);
     setSelectedCaptionBlock(null);
   }, []);
 
@@ -1794,9 +3193,7 @@ function App() {
 
   const handleTimelineSelectWordsInRange = useCallback((startSec: number, endSec: number) => {
     if (!transcript) return;
-    const ids = timelineAssistWords
-      .filter((w) => w.start_sec >= startSec && w.end_sec <= endSec)
-      .map((w) => w.id);
+    const ids = selectTranscriptWordIdsInRange(timelineAssistWords, startSec, endSec);
     setSelectedTimelineClip(null);
     setSelectedBrollClipId(null);
     setSelectedCaptionBlock(null);
@@ -1874,9 +3271,17 @@ function App() {
       } else {
         next.add(laneId);
       }
+      if (project?.id) {
+        writeLockedLaneIds(project.id, next);
+      }
       return next;
     });
-  }, []);
+  }, [project?.id]);
+
+  useEffect(() => {
+    if (!project?.id) return;
+    setLockedLaneIds(readLockedLaneIds(project.id));
+  }, [project?.id]);
 
   const handleTimelineMoveBrollClip = useCallback((clipId: string, timelineStartSec: number) => {
     if (brollTimelineActionKey) return;
@@ -1903,10 +3308,28 @@ function App() {
     void rerollBrollFromTimelineClip(clipId);
   }, [brollTimelineActionKey, brollActionKey]);
 
+  const findSlotForOverlayClip = useCallback((clip: Clip): BrollSlot | null => {
+    const clipStart = clip.timeline_start_sec;
+    const clipEnd = clip.timeline_start_sec + clipTimelineDurationSec(clip);
+    const ranked = brollSlots
+      .filter((slot) => !!slot.chosen_candidate_id)
+      .map((slot) => {
+        const chosen = slot.candidates.find((candidate) => candidate.id === slot.chosen_candidate_id) ?? null;
+        const assetMatch = chosen?.asset_id === clip.asset_id ? 1 : 0;
+        const overlap = Math.max(0, Math.min(slot.end_sec, clipEnd) - Math.max(slot.start_sec, clipStart));
+        const startDelta = Math.abs(slot.start_sec - clipStart);
+        const score = (assetMatch * 1000) + (overlap * 10) - startDelta;
+        return { slot, score };
+      })
+      .sort((a, b) => b.score - a.score);
+    return ranked[0]?.slot ?? null;
+  }, [brollSlots]);
+
   const handleTimelineSelectLaneClip = useCallback((selection: TimelineLaneClipSelection | null) => {
     setSelectedTimelineClip(selection);
     if (selection) {
       setSelectedBrollClipId(null);
+      setSelectedBrollSlotId(null);
       setSelectedCaptionBlock(null);
       setSelectedWordIds(new Set());
     }
@@ -1914,18 +3337,38 @@ function App() {
 
   const handleTimelineSelectBrollClip = useCallback((clipId: string | null) => {
     setSelectedBrollClipId(clipId);
+    if (!clipId) {
+      setSelectedBrollSlotId(null);
+      return;
+    }
     if (clipId) {
       setSelectedTimelineClip(null);
       setSelectedCaptionBlock(null);
-      setSelectedWordIds(new Set());
+      const clip = sortedOverlayClips.find((item) => item.id === clipId) ?? null;
+      const slot = clip ? findSlotForOverlayClip(clip) : null;
+      if (slot) {
+        focusBrollSlot(slot, "B-roll clip selected with its transcript region.");
+      } else if (clip && transcript) {
+        const ids = selectTranscriptWordIdsInRange(
+          timelineAssistWords,
+          clip.timeline_start_sec,
+          clip.timeline_start_sec + clipTimelineDurationSec(clip)
+        );
+        setSelectedBrollSlotId(null);
+        focusTranscriptWordIds(ids, undefined, "B-roll clip selected. No linked slot was found.");
+      } else {
+        setSelectedWordIds(new Set());
+        setSelectedBrollSlotId(null);
+      }
     }
-  }, []);
+  }, [findSlotForOverlayClip, focusBrollSlot, focusTranscriptWordIds, sortedOverlayClips, timelineAssistWords, transcript]);
 
   const handleTimelineSelectCaptionBlock = useCallback((selection: TimelineCaptionSelection | null) => {
     setSelectedCaptionBlock(selection);
     if (selection) {
       setSelectedTimelineClip(null);
       setSelectedBrollClipId(null);
+      setSelectedBrollSlotId(null);
       setSelectedWordIds(new Set());
     }
   }, []);
@@ -1964,6 +3407,27 @@ function App() {
       { notice: "Caption block trimmed." }
     );
   }, [applyTimelineOperations]);
+
+  const handleTimelineDeleteLaneClip = useCallback((selection: TimelineLaneClipSelection) => {
+    if (lockedLaneIds.has(selection.laneId)) return;
+    void applyTimelineOperations(
+      [{ op_type: "delete_clip", params: { clip: selection.clipId }, source: "ui" }],
+      { notice: `${selection.laneLabel} clip deleted.` }
+    ).then(() => setSelectedTimelineClip(null));
+  }, [applyTimelineOperations, lockedLaneIds]);
+
+  const handleTimelineSplitLaneClip = useCallback((selection: TimelineLaneClipSelection) => {
+    if (lockedLaneIds.has(selection.laneId)) return;
+    void applyTimelineOperations(
+      [{ op_type: "split_clip", params: { clip: selection.clipId, at_sec: Number(currentTimeSec.toFixed(3)) }, source: "ui" }],
+      { notice: `${selection.laneLabel} clip split at playhead.` }
+    );
+  }, [applyTimelineOperations, currentTimeSec, lockedLaneIds]);
+
+  const handleTimelineEditWord = useCallback((wordId: string) => {
+    const word = transcript?.words.find((w) => w.id === wordId);
+    if (word) startEditing(word);
+  }, [transcript, startEditing]);
 
   const deleteSelectedTimelineClip = useCallback(() => {
     if (!selectedTimelineClip) return;
@@ -2022,8 +3486,65 @@ function App() {
       { notice: "Caption block deleted." }
     ).then(() => {
       setSelectedCaptionBlock(null);
+      setEditingCaptionOverlayId(null);
+      setEditingCaptionText("");
     });
   }, [applyTimelineOperations, selectedCaptionBlock]);
+
+  const startCaptionEditing = useCallback((selection: TimelineCaptionSelection) => {
+    setEditingCaptionOverlayId(selection.overlayId);
+    setEditingCaptionText(selection.text);
+    setSelectedCaptionBlock({
+      overlayId: selection.overlayId,
+      clipId: selection.clipId,
+      laneId: selection.laneId,
+      laneLabel: selection.laneLabel,
+      text: selection.text,
+      style: selection.style,
+    });
+    setSelectedTimelineClip(null);
+    setSelectedBrollClipId(null);
+    setTimeout(() => captionEditInputRef.current?.focus(), 0);
+  }, []);
+
+  const commitCaptionEdit = useCallback(async () => {
+    if (!editingCaptionOverlayId || !selectedCaptionBlockDetails) {
+      setEditingCaptionOverlayId(null);
+      setEditingCaptionText("");
+      return;
+    }
+    const trimmed = editingCaptionText.trim();
+    const currentText = selectedCaptionBlockDetails.overlay.text;
+    if (!trimmed || trimmed === currentText) {
+      setEditingCaptionOverlayId(null);
+      setEditingCaptionText("");
+      return;
+    }
+    const overlayId = editingCaptionOverlayId;
+    const { clip } = selectedCaptionBlockDetails;
+    setEditingCaptionOverlayId(null);
+    setEditingCaptionText("");
+    await applyTimelineOperations(
+      [
+        {
+          op_type: "update_text_overlay",
+          params: {
+            clip: clip.id,
+            overlay: overlayId,
+            text: trimmed,
+          },
+          source: "ui",
+        },
+      ],
+      { notice: "Caption text updated.", forcePreview: true }
+    );
+    setSelectedCaptionBlock((prev) => (prev && prev.overlayId === overlayId ? { ...prev, text: trimmed } : prev));
+  }, [applyTimelineOperations, editingCaptionOverlayId, editingCaptionText, selectedCaptionBlockDetails]);
+
+  const cancelCaptionEdit = useCallback(() => {
+    setEditingCaptionOverlayId(null);
+    setEditingCaptionText("");
+  }, []);
 
   const setSelectedTimelineClipSpeed = useCallback((speed: number) => {
     if (!selectedTimelineClipDetails) return;
@@ -2168,6 +3689,23 @@ function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [featureDrawerOpen]);
 
+  // ? key to toggle keyboard shortcuts help
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      const tag = (event.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (event.key === "?" || (event.shiftKey && event.key === "/")) {
+        event.preventDefault();
+        setShowShortcutsHelp((prev) => !prev);
+      }
+      if (event.key === "Escape" && showShortcutsHelp) {
+        setShowShortcutsHelp(false);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showShortcutsHelp]);
+
   useEffect(() => {
     let active = true;
     void api
@@ -2184,12 +3722,43 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (backendStatus !== "ok") return;
+    let active = true;
+    void api
+      .getBrollConfig()
+      .then((config) => {
+        if (active) setBrollConfig(config);
+      })
+      .catch(() => {
+        if (active) setBrollConfig(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [backendStatus]);
+
+  useEffect(() => {
+    if (backendStatus !== "ok") return;
+    void refreshProjectList();
+  }, [backendStatus, refreshProjectList]);
+
+  useEffect(() => {
     if (project || creatingProject || autoCreateAttemptedRef.current || backendStatus === "down") {
       return;
     }
     autoCreateAttemptedRef.current = true;
     void createProject(BRAND.defaultProjectName, { silent: true });
   }, [project, creatingProject, backendStatus]);
+
+  // Auto-upload pending file from landing page drop zone
+  const pendingUploadHandledRef = useRef(false);
+  useEffect(() => {
+    if (!project || uploading || pendingUploadHandledRef.current) return;
+    const file = consumePendingUploadFile();
+    if (!file) return;
+    pendingUploadHandledRef.current = true;
+    void uploadVideo(file);
+  }, [project, uploading]);
 
   useEffect(() => {
     if (project?.name?.trim()) {
@@ -2210,17 +3779,113 @@ function App() {
     return () => window.clearInterval(interval);
   }, [generatingTranscript, transcriptStartedAtMs]);
 
+  const transcriptJobId = transcriptJob?.id;
+  const transcriptJobStatus = transcriptJob?.status;
+  useEffect(() => {
+    if (!generatingTranscript || !transcriptJob || (transcriptJob.status !== "queued" && transcriptJob.status !== "running")) {
+      transcriptStageKeyRef.current = null;
+      setTranscriptStageStartedAtMs(null);
+      setTranscriptStageBaseProgress(0);
+      return;
+    }
+
+    const nextKey = [
+      transcriptJob.id,
+      transcriptJob.status,
+      transcriptJob.stage ?? "",
+      transcriptJob.message ?? "",
+    ].join(":");
+    if (transcriptStageKeyRef.current === nextKey) {
+      return;
+    }
+
+    transcriptStageKeyRef.current = nextKey;
+    setTranscriptStageStartedAtMs(Date.now());
+    setTranscriptStageBaseProgress(Math.max(0, Math.min(100, Math.round(transcriptJob.progress ?? 0))));
+  }, [generatingTranscript, transcriptJob]);
+
+  useEffect(() => {
+    if (!project?.id || !transcriptJobId) return;
+
+    if (transcriptJobStatus === "completed") {
+      if (transcriptJobResultHandledRef.current === transcriptJobId) return;
+      transcriptJobResultHandledRef.current = transcriptJobId;
+      void (async () => {
+        try {
+          const response = await api.getTranscriptGenerateResult(project.id, transcriptJobId);
+          await applyTranscriptGenerationResult(response);
+        } catch (err) {
+          setError((err as Error).message);
+          setNotice(null);
+        } finally {
+          setGeneratingTranscript(false);
+          setTranscriptStartedAtMs(null);
+          setTranscriptStageStartedAtMs(null);
+          setTranscriptStageBaseProgress(0);
+        }
+      })();
+      return;
+    }
+
+    if (transcriptJobStatus === "failed") {
+      setGeneratingTranscript(false);
+      setTranscriptStartedAtMs(null);
+      setTranscriptStageStartedAtMs(null);
+      setTranscriptStageBaseProgress(0);
+      if (transcriptJob.error) {
+        setError(transcriptJob.error);
+      }
+      return;
+    }
+
+    if (transcriptJobStatus !== "queued" && transcriptJobStatus !== "running") {
+      return;
+    }
+
+    const interval = window.setInterval(async () => {
+      try {
+        const refreshed = await api.getJob(transcriptJobId);
+        setTranscriptJob(refreshed);
+      } catch {
+        // Ignore transient polling errors.
+      }
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [project?.id, transcriptJobId, transcriptJobStatus, transcriptJob?.error, applyTranscriptGenerationResult]);
+
   // Auto-apply cut debounce
   useEffect(() => {
     if (!project || !transcript) return;
     if (applyingCut) return;
+    if (deletedWordIds.size === 0) return;
     if (deletedSignature === lastAppliedSignatureRef.current) return;
     if (deletedSignature === lastAutoCutFailedSignatureRef.current) return;
     const handle = window.setTimeout(() => {
       void applyCut(deletedSignature, keptWordIds);
     }, 450);
     return () => window.clearTimeout(handle);
-  }, [project?.id, transcript?.id, deletedSignature, keptWordIds, applyingCut]);
+  }, [project?.id, transcript?.id, deletedWordIds.size, deletedSignature, keptWordIds, applyingCut]);
+
+  // Quick edit pipeline continuation — when transcript generation completes while in quickEdit
+  // "transcribing" phase, automatically advance to cut+captions
+  useEffect(() => {
+    if (quickEditPhaseRef.current !== "transcribing") return;
+    if (generatingTranscript) return; // still in progress
+
+    if (!transcript?.words?.length) {
+      // Transcript generation finished but no words — it failed or was empty
+      quickEditPhaseRef.current = "idle";
+      setQuickEditing(false);
+      setQuickEditStage("");
+      return;
+    }
+
+    // Transcript just became available — advance to cut+captions
+    quickEditPhaseRef.current = "cutting";
+    setQuickEditStage("Removing pauses & filler...");
+    void runQuickEditCutAndCaptions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [generatingTranscript, transcript?.words?.length]);
 
   // Preview polling — deps stabilized to [id, status] to prevent interval restart storms
   const previewJobId = previewJob?.id;
@@ -2291,15 +3956,7 @@ function App() {
       try {
         const refreshed = await api.getJob(exportJobId);
         setExportJob(refreshed);
-        if (refreshed.status === "completed" && refreshed.output_path) {
-          try {
-            const fallbackFilename = `export.${exportFormat}`;
-            const downloadedFilename = await api.downloadJobOutput(refreshed.id, fallbackFilename);
-            setNotice(`Export completed. Downloaded ${downloadedFilename}.`);
-          } catch (err) {
-            setError((err as Error).message);
-          }
-        } else if (refreshed.status === "failed") {
+        if (refreshed.status === "failed") {
           setError(refreshed.error ?? "Export video failed.");
         }
       } catch {
@@ -2307,7 +3964,16 @@ function App() {
       }
     }, 1000);
     return () => window.clearInterval(interval);
-  }, [exportJobId, exportJobStatus, exportFormat]);
+  }, [exportJobId, exportJobStatus]);
+
+  useEffect(() => {
+    if (exportJob?.status === "completed") {
+      void handleCompletedExport(exportJob);
+    }
+    if (exportJob?.status === "failed" && exportJob.error) {
+      setError(exportJob.error);
+    }
+  }, [exportJob, handleCompletedExport]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -2332,7 +3998,20 @@ function App() {
         }
       }
 
-      if (!isEditableTarget && !editingWordId && (event.key === "Delete" || event.key === "Backspace")) {
+      if (!isEditableTarget && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+        const player = videoRef.current;
+        if (player) {
+          event.preventDefault();
+          const step = event.shiftKey ? 1 : 5;
+          const next = event.key === "ArrowLeft"
+            ? Math.max(0, player.currentTime - step)
+            : Math.min(player.duration || Infinity, player.currentTime + step);
+          player.currentTime = next;
+          setCurrentTimeSec(next);
+        }
+      }
+
+      if (!isEditableTarget && !editingWordId && !editingCaptionOverlayId && (event.key === "Delete" || event.key === "Backspace")) {
         event.preventDefault();
         if (selectedCaptionBlock) {
           deleteSelectedCaptionBlock();
@@ -2360,22 +4039,24 @@ function App() {
 
       if (event.key === "z" && (event.ctrlKey || event.metaKey) && !event.shiftKey) {
         event.preventDefault();
-        undo();
+        void undo();
       }
 
       if (event.key === "z" && (event.ctrlKey || event.metaKey) && event.shiftKey) {
         event.preventDefault();
-        redo();
+        void redo();
       }
 
       if (event.key === "y" && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
-        redo();
+        void redo();
       }
 
       if (event.key === "Escape") {
         if (editingWordId) {
           cancelEdit();
+        } else if (editingCaptionOverlayId) {
+          cancelCaptionEdit();
         } else {
           setSelectedWordIds(new Set());
           setAnchorWordId(null);
@@ -2391,10 +4072,14 @@ function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
+    cancelCaptionEdit,
+    cancelEdit,
     clearEditorSelections,
     deleteSelectedCaptionBlock,
     deleteSelectedTimelineClip,
+    editingCaptionOverlayId,
     editingWordId,
+    redo,
     removeBrollClipById,
     selectedBrollClipId,
     selectedCaptionBlock,
@@ -2402,6 +4087,7 @@ function App() {
     selectedWordIds,
     splitSelectedTimelineClip,
     transcript,
+    undo,
     updateDeletedWords,
   ]);
 
@@ -2490,16 +4176,33 @@ function App() {
         include_external_sources: plan.includeExternalSources,
         ai_rerank: plan.aiRerank,
         clear_existing_overlay: true,
-        fallback_to_top_candidate: false,
+        fallback_to_top_candidate: brollAutoMode === "fast",
         min_confidence: plan.minConfidence,
         overlay_opacity: 0.85,
       });
       setBrollSlots(response.slots);
+      setLastBrollAutoApplySkips(response.skipped_slot_summaries ?? []);
       setProject((prev) => (prev ? { ...prev, timeline: response.timeline } : prev));
       await refreshMedia(project.id);
-      setNotice(
-        `Auto-applied B-roll: ${response.auto_chosen_slots} chosen, ${response.synced_clip_count} synced, ${response.skipped_slots} skipped (threshold ${(response.confidence_threshold * 100).toFixed(0)}%).`
-      );
+      let noticeText =
+        `Auto-applied B-roll: ${response.auto_chosen_slots} chosen, ${response.synced_clip_count} synced to timeline.`;
+      if (response.skipped_slots > 0) {
+        noticeText += ` ${response.skipped_slots} slot${response.skipped_slots === 1 ? "" : "s"} skipped — review below in B-roll Studio.`;
+        const summaries = response.skipped_slot_summaries ?? [];
+        if (summaries.length > 0) {
+          const preview = summaries
+            .slice(0, 2)
+            .map((item) => autoApplySkipReasonLabel(item.reason))
+            .join(", ");
+          noticeText += ` Reasons: ${preview}${summaries.length > 2 ? ", ..." : ""}.`;
+        }
+      } else {
+        noticeText += ` Confidence threshold ${(response.confidence_threshold * 100).toFixed(0)}%.`;
+      }
+      if (brollAutoMode === "fast") {
+        noticeText += " Fast mode uses best available match when confidence is low.";
+      }
+      setNotice(noticeText);
       await queuePreview();
     } catch (err) {
       setError((err as Error).message);
@@ -2545,12 +4248,11 @@ function App() {
     setBrollActionKey(`reroll:${slotId}`);
     setError(null);
     try {
-      const updated = await api.rerollBrollSlot(project.id, slotId, {
-        candidates_per_slot: 2,
-        include_project_assets: true,
-        include_external_sources: true,
-        ai_rerank: true,
-      });
+      const updated = await api.rerollBrollSlot(
+        project.id,
+        slotId,
+        buildBrollRerollPayload(brollMeaningDrafts[slotId]),
+      );
       const nextCount = updated.candidates.length;
       const addedCount = Math.max(0, nextCount - previousCount);
       setBrollSlots((prev) => prev.map((slot) => (slot.id === slotId ? updated : slot)));
@@ -2627,23 +4329,6 @@ function App() {
     return sortedOverlayClips.find((clip) => clip.id === clipId) ?? null;
   }
 
-  function findSlotForOverlayClip(clip: Clip): BrollSlot | null {
-    const clipStart = clip.timeline_start_sec;
-    const clipEnd = clip.timeline_start_sec + clipTimelineDurationSec(clip);
-    const ranked = brollSlots
-      .filter((slot) => !!slot.chosen_candidate_id)
-      .map((slot) => {
-        const chosen = slot.candidates.find((candidate) => candidate.id === slot.chosen_candidate_id) ?? null;
-        const assetMatch = chosen?.asset_id === clip.asset_id ? 1 : 0;
-        const overlap = Math.max(0, Math.min(slot.end_sec, clipEnd) - Math.max(slot.start_sec, clipStart));
-        const startDelta = Math.abs(slot.start_sec - clipStart);
-        const score = (assetMatch * 1000) + (overlap * 10) - startDelta;
-        return { slot, score };
-      })
-      .sort((a, b) => b.score - a.score);
-    return ranked[0]?.slot ?? null;
-  }
-
   async function rerollBrollFromTimelineClip(clipId: string) {
     if (!project || brollActionKey) return;
     const clip = getOverlayClipById(clipId);
@@ -2660,12 +4345,11 @@ function App() {
       const localNext = slot.candidates.find((candidate) => candidate.id !== slot.chosen_candidate_id);
       const updatedSlot = localNext
         ? slot
-        : await api.rerollBrollSlot(project.id, slot.id, {
-          candidates_per_slot: 2,
-          include_project_assets: true,
-          include_external_sources: true,
-          ai_rerank: true,
-        });
+        : await api.rerollBrollSlot(
+          project.id,
+          slot.id,
+          buildBrollRerollPayload(brollMeaningDrafts[slot.id]),
+        );
 
       if (!localNext) {
         setBrollSlots((prev) => prev.map((item) => (item.id === slot.id ? updatedSlot : item)));
@@ -2881,15 +4565,11 @@ function App() {
         <>
           <header className="topBar">
             <div className="headerLogos">
-              <PlaySquare size={28} className="headerIcon" />
-              <div>
-                <p className="eyebrow">{BRAND.editorEyebrow}</p>
+              <BrandLogo variant="header" linkTo="/" />
+              <div className="headerProjectTitle">
+                <span className="headerProjectDivider" aria-hidden="true">/</span>
                 <h1>{BRAND.loadingTitle}</h1>
               </div>
-            </div>
-            <div className="statusPill">
-              <span className="statusIndicator" style={{ background: backendStatus === "ok" ? "var(--success)" : "var(--danger)" }}></span>
-              Backend: {backendStatus}
             </div>
           </header>
 
@@ -2911,21 +4591,23 @@ function App() {
           </section>
 
           {error && <div className="message error">{error}</div>}
-          {notice && <div className="message notice">{notice}</div>}
+          {notice && (
+            <div
+              className={`message notice${notice === WORKSPACE_READY_NOTICE ? " workspaceReadyNotice" : ""}`}
+            >
+              {notice}
+            </div>
+          )}
         </>
       ) : (
         <>
           <header className="topBar">
             <div className="headerLogos">
-              <PlaySquare size={28} className="headerIcon" />
-              <div>
-                <p className="eyebrow">{BRAND.editorEyebrow}</p>
+              <BrandLogo variant="header" linkTo="/" />
+              <div className="headerProjectTitle">
+                <span className="headerProjectDivider" aria-hidden="true">/</span>
                 <h1>{project.name || BRAND.editorName}</h1>
               </div>
-            </div>
-            <div className="statusPill">
-              <span className="statusIndicator" style={{ background: backendStatus === "ok" ? "var(--success)" : "var(--danger)" }}></span>
-              Backend: {backendStatus}
             </div>
           </header>
 
@@ -2947,34 +4629,457 @@ function App() {
               {uploading ? "Uploading..." : "Upload Video"}
             </label>
 
-            <button className="primaryBtn" onClick={generateTranscript} disabled={!selectedVideoAsset || generatingTranscript}>
-              <Wand2 size={16} />
-              {generatingTranscript ? `Generating ${formatSeconds(transcriptElapsedSec)}...` : "Generate"}
+            <button
+              type="button"
+              onClick={() => {
+                setProjectsPanelOpen((open) => !open);
+                void refreshProjectList();
+              }}
+              title="Open an existing local project"
+            >
+              <FolderOpen size={14} />
+              Projects
             </button>
+
+            <button
+              className="primaryBtn quickEditBtn"
+              onClick={() => quickEdit()}
+              disabled={!selectedVideoAsset || quickEditing || generatingTranscript || !!runningAction}
+              title={`One-click: Transcribe, auto-cut pauses/fillers, add captions. Estimated time: ${quickEditRuntimeHint}. B-roll is separate in B-roll Studio.`}
+            >
+              <Zap size={16} />
+              {quickEditing ? quickEditStage || "Quick Editing..." : "Quick Edit"}
+            </button>
+
             <button
               className="primaryBtn"
               onClick={() => void exportVideo()}
               disabled={!project || exportingVideo}
             >
+              <Download size={14} />
               {exportingVideo ? "Exporting..." : "Export"}
             </button>
-            <button onClick={() => setFeatureDrawerOpen(true)}>
-              Tools
+            <button onClick={() => openFeatureDrawer("captions")} title="Caption styles & settings">
+              <Captions size={14} />
+              Captions
+            </button>
+            <button onClick={() => openFeatureDrawer("broll_studio")} title="B-roll studio">
+              <Clapperboard size={14} />
+              B-roll
+            </button>
+            <button onClick={() => openFeatureDrawer("ai_actions")} title="AI editing tools">
+              <Sparkles size={14} />
+              AI Tools
+            </button>
+            <button
+              className="shortcutsHelpBtn"
+              onClick={() => setShowShortcutsHelp(true)}
+              title="Keyboard shortcuts (?)"
+            >
+              <Keyboard size={16} />
             </button>
             <p className="muted creatorTopMeta">
               <span>{selectedVideoAsset ? selectedVideoAsset.filename : "No video selected"}</span>
-              <span>{transcriptLanguageLabel}</span>
               <span>{formatSeconds(project.timeline.duration_sec)}</span>
+              {selectedVideoAsset && <span>Quick Edit estimate: {quickEditRuntimeHint}</span>}
             </p>
           </section>
 
+          {projectsPanelOpen && (
+            <section className="projectReopenPanel card" aria-label="Recent projects">
+              <div className="projectReopenHeader">
+                <div>
+                  <p className="inspectorEyebrow">Local workspace</p>
+                  <h2>Recent projects</h2>
+                </div>
+                <div className="projectHeaderActions">
+                  <button type="button" onClick={() => void refreshProjectList()} disabled={loadingProjects} title="Refresh project list">
+                    <RefreshCw size={13} className={loadingProjects ? "spin" : ""} />
+                    {loadingProjects ? "Refreshing..." : "Refresh"}
+                  </button>
+                  <button
+                    type="button"
+                    className="primaryBtn newProjectBtn"
+                    onClick={() => {
+                      setShowNewProjectInput(true);
+                      setNewProjectName("");
+                      setTimeout(() => newProjectInputRef.current?.focus(), 50);
+                    }}
+                    disabled={creatingProject}
+                    title="Create a new project"
+                  >
+                    <Plus size={14} />
+                    New
+                  </button>
+                </div>
+              </div>
+
+              {showNewProjectInput && (
+                <div className="newProjectInputRow">
+                  <input
+                    ref={newProjectInputRef}
+                    type="text"
+                    className="controlInput newProjectInput"
+                    placeholder="Project name..."
+                    value={newProjectName}
+                    onChange={(e) => setNewProjectName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        const name = newProjectName.trim() || BRAND.defaultProjectName;
+                        setShowNewProjectInput(false);
+                        void createProject(name);
+                      }
+                      if (e.key === "Escape") {
+                        setShowNewProjectInput(false);
+                        setNewProjectName("");
+                      }
+                    }}
+                    disabled={creatingProject}
+                  />
+                  <button
+                    type="button"
+                    className="primaryBtn"
+                    disabled={creatingProject}
+                    onClick={() => {
+                      const name = newProjectName.trim() || BRAND.defaultProjectName;
+                      setShowNewProjectInput(false);
+                      void createProject(name);
+                    }}
+                  >
+                    {creatingProject ? "Creating..." : "Create"}
+                  </button>
+                  <button
+                    type="button"
+                    className="projectActionBtnClose"
+                    onClick={() => {
+                      setShowNewProjectInput(false);
+                      setNewProjectName("");
+                    }}
+                    title="Cancel"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              )}
+
+              {recentProjectItems.length === 0 ? (
+                <p className="muted projectReopenEmpty">No saved projects found yet.</p>
+              ) : (
+                <div className="projectReopenList">
+                  {recentProjectItems.map((item) => {
+                    const isCurrent = item.id === project.id;
+                    const isRenaming = renamingProjectId === item.id;
+                    const isSubmittingRename = submittingRenameId === item.id;
+                    const videoClipCount = item.timeline.tracks
+                      .filter((track) => track.kind === "video")
+                      .reduce((count, track) => count + (track.clips?.length ?? 0), 0);
+                    const showConfirmDelete = confirmDeleteId === item.id;
+                    const isDeleting = deletingProjectId === item.id;
+
+                    return (
+                      <div
+                        key={item.id}
+                        className={`projectReopenItem ${isCurrent ? "active" : ""} ${showConfirmDelete ? "danger" : ""}`}
+                      >
+                        {/* Rename mode */}
+                        {isRenaming ? (
+                          <div className="projectRenameRow">
+                            <input
+                              ref={renameInputRef}
+                              type="text"
+                              className="controlInput projectRenameInput"
+                              value={renameText}
+                              onChange={(e) => setRenameText(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  void handleRenameProject(item.id, renameText);
+                                }
+                                if (e.key === "Escape") {
+                                  setRenamingProjectId(null);
+                                  setRenameText("");
+                                }
+                              }}
+                              disabled={isSubmittingRename}
+                            />
+                            <button
+                              type="button"
+                              className="projectActionBtnConfirm"
+                              onClick={() => void handleRenameProject(item.id, renameText)}
+                              disabled={isSubmittingRename || !renameText.trim()}
+                              title="Save name"
+                            >
+                              <Check size={13} />
+                            </button>
+                            <button
+                              type="button"
+                              className="projectActionBtnClose"
+                              onClick={() => {
+                                setRenamingProjectId(null);
+                                setRenameText("");
+                              }}
+                              title="Cancel"
+                            >
+                              <X size={13} />
+                            </button>
+                          </div>
+                        ) : showConfirmDelete ? (
+                          /* Delete confirmation mode */
+                          <div className="projectDeleteConfirm">
+                            <p className="projectDeleteWarning">
+                              Delete "<strong>{item.name || "Untitled"}</strong>"? This cannot be undone.
+                            </p>
+                            <div className="projectDeleteActions">
+                              <button
+                                type="button"
+                                className="projectDeleteConfirmBtn"
+                                onClick={() => void handleDeleteProject(item.id)}
+                                disabled={isDeleting}
+                              >
+                                <Trash2 size={13} />
+                                {isDeleting ? "Deleting..." : "Yes, Delete"}
+                              </button>
+                              <button
+                                type="button"
+                                className="projectActionBtnClose"
+                                onClick={() => setConfirmDeleteId(null)}
+                                disabled={isDeleting}
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          /* Normal display mode */
+                          <>
+                            <div
+                              className="projectReopenClickArea"
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => {
+                                if (!isCurrent && !openingProjectId) {
+                                  void openProject(item.id);
+                                }
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" && !isCurrent && !openingProjectId) {
+                                  void openProject(item.id);
+                                }
+                              }}
+                              title={isCurrent ? "This project is already open" : "Open this project"}
+                            >
+                              <span className="projectReopenName">{item.name || "Untitled Project"}</span>
+                              <span className="projectReopenMeta">
+                                {formatSeconds(item.timeline.duration_sec)} · {videoClipCount} clip{videoClipCount === 1 ? "" : "s"}
+                                {isCurrent ? " · current" : ""}
+                              </span>
+                            </div>
+                            <div className="projectItemActions">
+                              {openingProjectId === item.id ? (
+                                <span className="projectReopenAction">Opening...</span>
+                              ) : isCurrent ? (
+                                <span className="projectReopenAction current">Current</span>
+                              ) : (
+                                <span className="projectReopenAction">Open</span>
+                              )}
+                              <button
+                                type="button"
+                                className="projectActionBtn"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setRenamingProjectId(item.id);
+                                  setRenameText(item.name || "");
+                                  setTimeout(() => renameInputRef.current?.focus(), 50);
+                                }}
+                                title="Rename project"
+                                disabled={!!openingProjectId || !!deletingProjectId}
+                              >
+                                <Pencil size={13} />
+                              </button>
+                              <button
+                                type="button"
+                                className="projectActionBtn danger"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setConfirmDeleteId(item.id);
+                                }}
+                                title="Delete project"
+                                disabled={!!openingProjectId || !!deletingProjectId}
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          )}
+
           {error && <div className="message error">{error}</div>}
-          {notice && <div className="message notice">{notice}</div>}
+          {notice && (
+            <div
+              className={`message notice${notice === WORKSPACE_READY_NOTICE ? " workspaceReadyNotice" : ""}`}
+            >
+              {notice}
+            </div>
+          )}
+          {quickEditSummary && (
+            <section className="completionCard quickEditSummaryCard" aria-live="polite">
+              <div className="completionCardHeader">
+                <span className="completionCardIcon">
+                  <Check size={16} strokeWidth={2.4} aria-hidden="true" />
+                </span>
+                <div>
+                  <h2>Quick Edit complete</h2>
+                  <p>Clean cut is ready for review{quickEditSummary.captionsAdded ? " with captions applied." : "."}</p>
+                </div>
+              </div>
+              <div className="completionStats">
+                {quickEditSummary.removedDurationSec !== null && (
+                  <span>
+                    <strong>{formatFixedSec(quickEditSummary.removedDurationSec)}s</strong>
+                    <small>removed</small>
+                  </span>
+                )}
+                {quickEditSummary.removedWordCount !== null && (
+                  <span>
+                    <strong>{quickEditSummary.removedWordCount}</strong>
+                    <small>filler word{quickEditSummary.removedWordCount === 1 ? "" : "s"}</small>
+                  </span>
+                )}
+                <span>
+                  <strong>
+                    {quickEditSummary.captionBlockCount !== null
+                      ? quickEditSummary.captionBlockCount
+                      : quickEditSummary.captionsAdded
+                        ? "Added"
+                        : "Skipped"}
+                  </strong>
+                  <small>captions</small>
+                </span>
+                <span>
+                  <strong>{formatSeconds(quickEditSummary.finalDurationSec)}</strong>
+                  <small>final length</small>
+                </span>
+              </div>
+              <div className="completionDetails">
+                {quickEditSummary.cutDetails && <span>{quickEditSummary.cutDetails}</span>}
+                {quickEditSummary.captionDetails && <span>{quickEditSummary.captionDetails}</span>}
+              </div>
+              <p className="completionNextStep">
+                <strong>Next:</strong> {quickEditSummary.nextStep}
+              </p>
+            </section>
+          )}
+          {exportCompletion && (
+            <section className="completionCard exportCompletionCard" aria-live="polite">
+              <div className="completionCardHeader">
+                <span className="completionCardIcon">
+                  <Check size={16} strokeWidth={2.4} aria-hidden="true" />
+                </span>
+                <div>
+                  <h2>Export complete</h2>
+                  <p>Your video rendered successfully and is ready to share.</p>
+                </div>
+              </div>
+              <div className="completionStats">
+                <span>
+                  <strong>{exportCompletion.format.toUpperCase()}</strong>
+                  <small>format</small>
+                </span>
+                <span>
+                  <strong>{exportCompletion.aspectRatio}</strong>
+                  <small>aspect</small>
+                </span>
+                <span>
+                  <strong>{exportCompletion.resolution}</strong>
+                  <small>resolution</small>
+                </span>
+                <span>
+                  <strong>{exportCompletion.fps}</strong>
+                  <small>fps</small>
+                </span>
+              </div>
+              <div className="exportCompletionFooter">
+                <span className="exportCompletionFilename">{exportCompletion.filename}</span>
+                {exportCompletion.outputPath && (
+                  <button
+                    className="primaryBtn exportDownloadBtn"
+                    type="button"
+                    onClick={() => void downloadCompletedExport()}
+                    disabled={downloadingExport}
+                  >
+                    <Download size={14} aria-hidden="true" />
+                    {downloadingExport ? "Downloading..." : "Download again"}
+                  </button>
+                )}
+              </div>
+              {exportCompletion.downloadError && (
+                <p className="completionWarning">Download did not start automatically: {exportCompletion.downloadError}</p>
+              )}
+            </section>
+          )}
           <section className="editorMainGrid">
             <section className="panel card editorPreviewDock">
               <div className="workspacePreviewBlock">
                 <h2>Video Preview</h2>
-                {!previewSource && <p className="muted">Upload a video to preview.</p>}
+                {!previewSource && (
+                  <div
+                    className={`onboardingDropZone ${videoDragOver ? "dragover" : ""}`}
+                    onDragOver={(e) => { e.preventDefault(); setVideoDragOver(true); }}
+                    onDragLeave={() => setVideoDragOver(false)}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      setVideoDragOver(false);
+                      const file = e.dataTransfer.files[0];
+                      if (file?.type.startsWith("video/")) {
+                        void uploadVideo(file);
+                      }
+                    }}
+                  >
+                    <FileVideo size={40} className="onboardingIcon" />
+                    <h3 className="onboardingTitle">Get started in 3 steps</h3>
+                    <div className="onboardingSteps">
+                      <div className="onboardingStep">
+                        <span className="stepNum">1</span>
+                        <span>Upload or drag a video here</span>
+                      </div>
+                      <div className="onboardingStep">
+                        <span className="stepNum">2</span>
+                        <span>Generate transcript — edit by text</span>
+                      </div>
+                      <div className="onboardingStep">
+                        <span className="stepNum">3</span>
+                        <span>Quick Edit: Cut + Captions</span>
+                      </div>
+                    </div>
+                    <label className="uploadBtn primaryBtn onboardingUploadBtn">
+                      <input
+                        type="file"
+                        accept="video/*"
+                        disabled={uploading}
+                        onChange={(event) => {
+                          const file = event.target.files?.[0];
+                          if (file) void uploadVideo(file);
+                          event.currentTarget.value = "";
+                        }}
+                      />
+                      <UploadCloud size={16} />
+                      {uploading ? "Uploading..." : "Choose Video"}
+                    </label>
+                    <p className="muted onboardingHint">
+                      Or press{" "}
+                      <span className="inlineIconLabel">
+                        <Zap size={12} aria-hidden="true" />
+                        Quick Edit
+                      </span>{" "}
+                      for transcript cut + captions (B-roll is optional in B-roll Studio)
+                    </p>
+                  </div>
+                )}
                 {previewSource && (
                   <div
                     className={`previewStage previewStage${previewFrameAspectRatio === "9:16" ? "Portrait" : "Landscape"}`}
@@ -2985,17 +5090,19 @@ function App() {
                       src={previewSource}
                       controls
                       crossOrigin="anonymous"
-                      className="previewVideo"
-                      onTimeUpdate={(event) => {
-                        const time = event.currentTarget.currentTime;
-                        if (!rafPendingRef.current) {
-                          rafPendingRef.current = true;
-                          requestAnimationFrame(() => {
-                            rafPendingRef.current = false;
-                            setCurrentTimeSec(time);
-                          });
-                        }
-                      }}
+	                      className="previewVideo"
+	                      onLoadedMetadata={() => setCurrentTimeSec(0)}
+	                      onPlay={startPlaybackSync}
+	                      onPause={() => {
+	                        stopPlaybackSync();
+	                        syncVideoTimeOnce();
+	                      }}
+	                      onSeeked={syncVideoTimeOnce}
+	                      onEnded={() => {
+	                        stopPlaybackSync();
+	                        syncVideoTimeOnce();
+	                      }}
+	                      onTimeUpdate={syncVideoTimeIfPlaying}
                       onError={(e) => console.error("Video preview error:", e)}
                     />
                     {livePreviewCaption && (
@@ -3038,7 +5145,22 @@ function App() {
                             background: "transparent",
                           }}
                         >
-                          {livePreviewCaption.text}
+                          {livePreviewCaption.words.length > 0
+                            ? livePreviewCaption.words.map((word, index) => (
+                              <React.Fragment key={word.key}>
+                                {index > 0 ? " " : null}
+                                <span
+                                  className={[
+                                    "livePreviewCaptionWord",
+                                    word.isActive ? "active" : "",
+                                    word.isPast ? "past" : "",
+                                  ].filter(Boolean).join(" ")}
+                                >
+                                  {word.text}
+                                </span>
+                              </React.Fragment>
+                            ))
+                            : livePreviewCaption.text}
                         </span>
                       </div>
                     )}
@@ -3061,7 +5183,7 @@ function App() {
                   </div>
                 )}
                 <div className="previewMeta">
-                  <span>Playhead: {formatSeconds(currentTimeSec)}</span>
+                  <span>Playhead: {formatPreciseSeconds(currentTimeSec)}</span>
                   <span>Preview: {previewStatusText}</span>
                   <span>Editor frame: {previewFrameAspectRatio}</span>
                   {showExportFrameGuide && previewFrameAspectRatio === "16:9" && exportAspectRatio === "9:16" && <span>Portrait export guide on</span>}
@@ -3098,7 +5220,203 @@ function App() {
 
             <main className="twoPanel">
               <section className="panel card panelTranscript">
-                <h2>Transcript Panel</h2>
+                <div className="transcriptPanelHead">
+                  <div>
+                    <h2>Transcript Panel</h2>
+                    <p className="muted transcriptPanelMeta">
+                      Pick the language, generate the transcript, then edit word-by-word with exact timings.
+                    </p>
+                    {selectedAssetLooksLikeDuet && (
+                      <p className="duetHint muted">
+                        Multi-voice song detected — speaker labels are enabled when diarization runs.
+                      </p>
+                    )}
+                    {speakerLegend.length > 1 && (
+                      <div className="speakerLegend" aria-label="Speaker legend">
+                        {speakerLegend.map((entry) => (
+                          <span
+                            key={entry.speakerId}
+                            className={`speakerLegendItem ${
+                              entry.slot === 0
+                                ? "speakerA"
+                                : entry.slot === 1
+                                  ? "speakerB"
+                                  : "speakerExtra"
+                            }`}
+                          >
+                            {entry.label}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  {transcriptHasRomanization && (
+                    <div className="transcriptViewToggle" role="group" aria-label="Transcript display mode">
+                      <button
+                        type="button"
+                        className={!showRomanizedTranscript ? "active" : ""}
+                        onClick={() => setShowRomanizedTranscript(false)}
+                        title="Show transcript in original script"
+                      >
+                        <span className="scriptHint" aria-hidden="true">ಅ</span> Original
+                      </button>
+                      <button
+                        type="button"
+                        className={showRomanizedTranscript ? "active" : ""}
+                        onClick={() => setShowRomanizedTranscript(true)}
+                        title="Show transcript in Roman/Latin characters"
+                      >
+                        <span className="scriptHint" aria-hidden="true">A</span> Romanized
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <div className="transcriptControlBar">
+                  <label className="transcriptControlField">
+                    <span>Transcript Mode</span>
+                    <select
+                      value={transcriptMode}
+                      disabled={generatingTranscript}
+                      onChange={(event) => setTranscriptMode(event.target.value as TranscriptMode)}
+                      title="Auto adapts to the clip. Song mode prefers lyric-safe transcription."
+                    >
+                      {TRANSCRIPT_MODE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="transcriptControlField">
+                    <span>Transcript Language</span>
+                    <select
+                      value={transcriptLanguage}
+                      disabled={generatingTranscript}
+                      onChange={(event) => { setTranscriptLanguage(event.target.value); try { localStorage.setItem("clipmind_transcript_lang", event.target.value); } catch {} }}
+                      title="Choose transcript language (Auto uses model detection)"
+                    >
+                      {TRANSCRIPT_LANGUAGE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="transcriptToggleField">
+                    <input
+                      type="checkbox"
+                      checked={translateTranscriptToEnglish}
+                      disabled={generatingTranscript}
+                      onChange={(event) => {
+                        const checked = event.target.checked;
+                        setTranslateTranscriptToEnglish(checked);
+                        try { localStorage.setItem("clipmind_transcript_translate_en", String(checked)); } catch {}
+                      }}
+                    />
+                    <span>Translate transcript to English</span>
+                  </label>
+                  <button
+                    className="primaryBtn transcriptGenerateBtn"
+                    onClick={() => void generateTranscript()}
+                    disabled={!selectedVideoAsset || generatingTranscript}
+                  >
+                    <Wand2 size={16} />
+                    {generatingTranscript ? `Generating ${transcriptProgress}%` : "Generate Transcript"}
+                  </button>
+                  {transcript && (
+                    <button
+                      type="button"
+                      className="transcriptRegenerateBtn"
+                      onClick={() => void generateTranscript({ forceRegenerate: true })}
+                      disabled={!selectedVideoAsset || generatingTranscript}
+                      title="Run full speech recognition again (ignores cached transcript)"
+                    >
+                      <RefreshCw size={16} />
+                      Regenerate
+                    </button>
+                  )}
+                </div>
+                <p className="muted transcriptEstimateHint">
+                  Estimated transcript time: <strong>{transcriptRuntimeHint}</strong>. {transcriptModeDetail(transcriptMode)}
+                  {translateTranscriptToEnglish ? " Output will be translated to English." : ""}
+                  {transcriptJob?.status === "running" && transcriptStageLabel ? ` Current stage: ${transcriptStageLabel}` : ""}
+                </p>
+                {transcriptJob && (generatingTranscript || transcriptJob.status === "failed") && (
+                  <div className="transcriptJobCard" aria-live="polite">
+                    <div className="transcriptJobTop">
+                      <span className={`transcriptJobBadge ${transcriptJob.status}`}>{transcriptJob.status}</span>
+                      <span className="transcriptJobProgress">{transcriptProgress}%</span>
+                      <span className="transcriptJobElapsed">{formatSeconds(transcriptElapsedSec)}</span>
+                    </div>
+                    <div className="jobProgressBar" aria-hidden="true">
+                      <span className="jobProgressFill" style={{ width: `${transcriptProgress}%` }} />
+                    </div>
+                    <p className="transcriptJobMessage">
+                      {transcriptJob.status === "completed" ? (
+                        <>
+                          <Check size={14} aria-hidden="true" />
+                          <span>Transcript ready.</span>
+                        </>
+                      ) : (
+                        transcriptStatusMessage
+                      )}
+                    </p>
+                    {transcriptJob.status === "failed" && (
+                      <div className="jobRetryRow">
+                        <button
+                          type="button"
+                          className="jobRetryBtn"
+                          onClick={retryTranscriptGeneration}
+                          disabled={!selectedVideoAsset || generatingTranscript}
+                        >
+                          <RefreshCw size={14} aria-hidden="true" />
+                          Retry transcript
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {transcript?.language && !generatingTranscript && (
+                  <div className="detectedLanguageBadge" title="Detected transcript language">
+                    <span className="detectedLanguageLabel">
+                      <Globe size={12} aria-hidden="true" />
+                      Detected:
+                    </span>
+                    <span className="detectedLanguageValue">
+                      {transcript.language.charAt(0).toUpperCase() + transcript.language.slice(1)}
+                    </span>
+                    {transcript.source?.toLowerCase().includes("lyrics_ref") ? (
+                      <span className="detectedLanguageHint"> · Reference lyrics</span>
+                    ) : transcript.source?.toLowerCase().includes("groq") ? (
+                      <span className="detectedLanguageHint"> · Raw ASR</span>
+                    ) : null}
+                    {transcriptLanguage === "auto" && (
+                      <button
+                        type="button"
+                        className="lockLanguageBtn"
+                        title={`Pin language to ${transcript.language} for future transcriptions`}
+                        onClick={() => { setTranscriptLanguage(transcript.language!); try { localStorage.setItem("clipmind_transcript_lang", transcript.language!); } catch {} }}
+                      >
+                        Pin
+                      </button>
+                    )}
+                  </div>
+                )}
+                {!!transcript && transcript.mixed_script && transcriptScriptSummary.length > 1 && (
+                  <div
+                    className="detectedLanguageBadge transcriptScriptBadge"
+                    title="Transcript contains more than one script family. This is common in mixed-language or code-switched videos."
+                  >
+                    <span className="detectedLanguageLabel">
+                      <Globe size={12} aria-hidden="true" />
+                      Script mix:
+                    </span>
+                    <span className="detectedLanguageValue">
+                      {transcriptScriptSummary.join(" + ")}
+                    </span>
+                    <span className="detectedLanguageHint"> · review mixed-language regions carefully</span>
+                  </div>
+                )}
                 <div className="featureLauncher">
                   {FEATURE_TAB_ITEMS.map(({ id, label, icon: Icon }) => (
                     <button
@@ -3119,15 +5437,32 @@ function App() {
                       <strong>Shift+click</strong> range &nbsp;·&nbsp;
                       <strong>Drag</strong> to select &nbsp;·&nbsp;
                       <strong>Double-click</strong> to edit text &nbsp;·&nbsp;
-                      <strong>Del/⌫</strong> delete &nbsp;·&nbsp;
+                      <strong>Del/Backspace</strong> delete &nbsp;·&nbsp;
                       <strong>Ctrl+Z</strong> undo
                     </p>
 
-                    {transcript.is_mock && <p className="warning">Fallback transcript active; install faster-whisper for accurate speech text.</p>}
-                    {shouldWarnLowConfidence && (
-                      <p className="warning">
-                        {lowConfidenceCount} low-confidence word{lowConfidenceCount === 1 ? "" : "s"} (~{(lowConfidenceRatio * 100).toFixed(0)}%).
-                      </p>
+                    {transcript.is_mock && <p className="warning">Cloud transcription failed — check your API keys (GROQ_API_KEY / SARVAM_API_KEY) and network, then regenerate.</p>}
+                    {reviewWordCount > 0 && (
+                      <div className={`transcriptReviewCard ${shouldWarnLowConfidence ? "warningTone" : ""}`}>
+                        <div>
+                          <strong>
+                            {reviewWordCount} weak/uncertain word{reviewWordCount === 1 ? "" : "s"} to review
+                          </strong>
+                          <p>
+                            {weakQualityCount > 0 ? `${weakQualityCount} weak-label` : "No weak-label"} ·{" "}
+                            {lowConfidenceOnlyCount > 0 ? `${lowConfidenceOnlyCount} low-confidence` : "confidence looks stable"}
+                            {lowConfidenceCount > 0 ? ` · ${(lowConfidenceRatio * 100).toFixed(0)}% of transcript below confidence target` : ""}
+                          </p>
+                        </div>
+                        <div className="transcriptReviewActions">
+                          <button type="button" onClick={() => reviewWeakWords(weakReviewIndex)}>
+                            Review weak words
+                          </button>
+                          <button type="button" onClick={reviewNextWeakWord}>
+                            Next weak word
+                          </button>
+                        </div>
+                      </div>
                     )}
                     {transcriptIssueRegions.length > 0 && (
                       <div className="transcriptRegionSummary">
@@ -3141,7 +5476,7 @@ function App() {
                               key={`${region.status}-${region.start_sec}-${region.end_sec}-${index}`}
                               type="button"
                               className={`transcriptRegionChip ${region.status}`}
-                              onClick={() => seekToTranscriptTime(region.start_sec)}
+                              onClick={() => focusTranscriptRegion(region)}
                               title={`${transcriptRegionLabel(region)} · ${formatSeconds(region.start_sec)} – ${formatSeconds(region.end_sec)}${region.reason ? ` · ${region.reason}` : ""}`}
                             >
                               <span>{transcriptRegionLabel(region)}</span>
@@ -3174,17 +5509,37 @@ function App() {
                       {searchQuery && (
                         <span className="searchCount">
                           {searchMatchIds.length ? `${searchMatchIndex + 1}/${searchMatchIds.length}` : "0 matches"}
-                          <button className="searchNav" onClick={() => navigateSearch(-1)} title="Previous">▲</button>
-                          <button className="searchNav" onClick={() => navigateSearch(1)} title="Next">▼</button>
+                          <button className="searchNav" onClick={() => navigateSearch(-1)} title="Previous" aria-label="Previous match">
+                            <ChevronUp size={12} aria-hidden="true" />
+                          </button>
+                          <button className="searchNav" onClick={() => navigateSearch(1)} title="Next" aria-label="Next match">
+                            <ChevronDown size={12} aria-hidden="true" />
+                          </button>
                         </span>
                       )}
                     </div>
+                    {selectedTranscriptRange && (
+                      <div className="transcriptSelectionMeta">
+                        <span>{selectedTranscriptRange.wordCount} word{selectedTranscriptRange.wordCount === 1 ? "" : "s"} selected</span>
+                        <span>
+                          {formatPreciseSeconds(selectedTranscriptRange.startSec)} - {formatPreciseSeconds(selectedTranscriptRange.endSec)}
+                        </span>
+                      </div>
+                    )}
 
                     {/* ── Action toolbar ────────────────────────────── */}
                     <div className="wordActions toolbar">
                       <button onClick={markSelectionDeleted} disabled={!selectedWordIds.size} title="Delete selected words">
                         <Trash2 size={14} strokeWidth={1.9} aria-hidden="true" />
                         <span>Delete</span>
+                      </button>
+                      <button
+                        onClick={() => void applyTranscriptRangeUpdate("delete")}
+                        disabled={!selectedTranscriptRange || updatingTranscriptRange}
+                        title="Remove selected text from transcript without cutting the timeline"
+                      >
+                        <Trash2 size={14} strokeWidth={1.9} aria-hidden="true" />
+                        <span>{updatingTranscriptRange ? "Deleting..." : "Delete Text"}</span>
                       </button>
                       <button onClick={restoreSelection} disabled={!selectedWordIds.size} title="Restore selected words">
                         <RotateCcw size={14} strokeWidth={1.9} aria-hidden="true" />
@@ -3203,11 +5558,11 @@ function App() {
                         </span>
                       </button>
                       <div className="toolbarSep" />
-                      <button onClick={undo} disabled={!undoStack.current.length} title="Undo (Ctrl+Z)">
+                      <button onClick={() => void undo()} disabled={!canUndoAction} title="Undo (Ctrl+Z)">
                         <Undo2 size={14} strokeWidth={1.9} aria-hidden="true" />
                         <span>Undo</span>
                       </button>
-                      <button onClick={redo} disabled={!redoStack.current.length} title="Redo (Ctrl+Shift+Z)">
+                      <button onClick={() => void redo()} disabled={!canRedoAction} title="Redo (Ctrl+Shift+Z)">
                         <Redo2 size={14} strokeWidth={1.9} aria-hidden="true" />
                         <span>Redo</span>
                       </button>
@@ -3223,46 +5578,6 @@ function App() {
                         )}
                       </button>
                     </div>
-
-                    {selectedTranscriptRange && (
-                      <div className="rangeEditor">
-                        <div className="rangeEditorHeader">
-                          <strong>Range Edit</strong>
-                          <span>
-                            {selectedTranscriptRange.wordCount} word{selectedTranscriptRange.wordCount === 1 ? "" : "s"} · {formatSeconds(selectedTranscriptRange.startSec)} – {formatSeconds(selectedTranscriptRange.endSec)}
-                          </span>
-                        </div>
-                        <textarea
-                          value={rangeEditText}
-                          onChange={(e) => setRangeEditText(e.target.value)}
-                          rows={2}
-                          placeholder="Rewrite the selected lyric or dialogue range"
-                        />
-                        <div className="rangeEditorActions">
-                          <button
-                            type="button"
-                            onClick={() => void applyTranscriptRangeUpdate("replace")}
-                            disabled={updatingTranscriptRange || !rangeEditText.trim()}
-                          >
-                            {updatingTranscriptRange ? "Saving..." : "Replace Range"}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void applyTranscriptRangeUpdate("blank")}
-                            disabled={updatingTranscriptRange}
-                          >
-                            Mark Instrumental
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void applyTranscriptRangeUpdate("preserve")}
-                            disabled={updatingTranscriptRange}
-                          >
-                            Preserve Repeat
-                          </button>
-                        </div>
-                      </div>
-                    )}
 
                     {/* ── Interactive word grid ─────────────────────── */}
                     <div
@@ -3324,7 +5639,7 @@ function App() {
                           const selected = videoAssets.find((asset) => asset.id === nextId);
                           if (selected) {
                             setPreviewUrl(resolveMediaPath(selected.storage_path));
-                          }
+  }
                         }}
                       >
                         {!videoAssets.length && <option value="">No uploaded videos</option>}
@@ -3335,28 +5650,121 @@ function App() {
                         ))}
                       </select>
                     </label>
-                    <label>
-                      Transcript Language
-                      <select
-                        value={transcriptLanguage}
-                        disabled={generatingTranscript}
-                        onChange={(event) => setTranscriptLanguage(event.target.value)}
-                        title="Choose transcript language (Auto uses model detection)"
-                      >
-                        {TRANSCRIPT_LANGUAGE_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
                     <p className="inspectorStats">
                       {project.timeline.resolution.width}x{project.timeline.resolution.height} · {Math.round(project.timeline.fps)} fps · {formatSeconds(project.timeline.duration_sec)}
                     </p>
                   </div>
 
-                  {(selectedTimelineClipDetails || selectedCaptionBlockDetails) && (
+                  {(selectedTimelineClipDetails || selectedCaptionBlockDetails || selectedBrollClip) && (
                     <div className="creatorSelectionCard">
+                      {selectedBrollClip && (() => {
+                        const clip = selectedBrollClip;
+                        const clipBusy = isBrollTimelineClipBusy(clip.id);
+                        const clipDuration = clipTimelineDurationSec(clip);
+                        const clipOpacity = typeof clip.broll_opacity === "number" ? clip.broll_opacity : 1;
+                        const draftStart = brollDraftStartById[clip.id] ?? formatFixedSec(clip.timeline_start_sec);
+                        const draftDuration = brollDraftDurationById[clip.id] ?? formatFixedSec(clipDuration);
+                        const draftOpacity = brollDraftOpacityById[clip.id] ?? clipOpacity;
+                        const source = mediaById.get(clip.asset_id);
+                        return (
+                          <>
+                            <div className="creatorSelectionHead">
+                              <div>
+                                <p className="inspectorEyebrow">B-roll Inspector</p>
+                                <h4>{source?.filename ?? clip.asset_id}</h4>
+                              </div>
+                              <button
+                                type="button"
+                                className="secondaryBtn dangerBtn"
+                                disabled={clipBusy}
+                                onClick={() => void removeBrollClipById(clip.id)}
+                              >
+                                Remove
+                              </button>
+                            </div>
+                            <p className="muted">
+                              {formatSeconds(clip.timeline_start_sec)} start · {formatSeconds(clipDuration)} duration ·{" "}
+                              {(draftOpacity * 100).toFixed(0)}% opacity
+                            </p>
+                            <div className="creatorSelectionFields">
+                              <label>
+                                Start (sec)
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step={0.05}
+                                  value={draftStart}
+                                  disabled={clipBusy}
+                                  onChange={(event) =>
+                                    setBrollDraftStartById((prev) => ({ ...prev, [clip.id]: event.target.value }))
+                                  }
+                                  onBlur={() => void commitBrollStart(clip)}
+                                  onKeyDown={(event) => {
+                                    if (event.key === "Enter") event.currentTarget.blur();
+                                  }}
+                                />
+                              </label>
+                              <label>
+                                Duration (sec)
+                                <input
+                                  type="number"
+                                  min={0.1}
+                                  step={0.05}
+                                  value={draftDuration}
+                                  disabled={clipBusy}
+                                  onChange={(event) =>
+                                    setBrollDraftDurationById((prev) => ({ ...prev, [clip.id]: event.target.value }))
+                                  }
+                                  onBlur={() => void commitBrollDuration(clip)}
+                                  onKeyDown={(event) => {
+                                    if (event.key === "Enter") event.currentTarget.blur();
+                                  }}
+                                />
+                              </label>
+                              <label>
+                                Opacity {(draftOpacity * 100).toFixed(0)}%
+                                <input
+                                  type="range"
+                                  min={0}
+                                  max={1}
+                                  step={0.01}
+                                  value={draftOpacity}
+                                  disabled={clipBusy}
+                                  onChange={(event) =>
+                                    setBrollDraftOpacityById((prev) => ({
+                                      ...prev,
+                                      [clip.id]: Number(event.target.value),
+                                    }))
+                                  }
+                                  onMouseUp={(event) =>
+                                    void commitBrollOpacity(clip, Number(event.currentTarget.value))
+                                  }
+                                  onTouchEnd={(event) =>
+                                    void commitBrollOpacity(clip, Number(event.currentTarget.value))
+                                  }
+                                />
+                              </label>
+                            </div>
+                            <div className="creatorSelectionActions">
+                              <button
+                                type="button"
+                                className="secondaryBtn"
+                                onClick={() => handleTimelineSeek(clip.timeline_start_sec)}
+                              >
+                                Jump to Clip
+                              </button>
+                              <button
+                                type="button"
+                                className="secondaryBtn"
+                                disabled={clipBusy || !!brollActionKey}
+                                onClick={() => void rerollBrollFromTimelineClip(clip.id)}
+                              >
+                                {brollActionKey === `reroll-clip:${clip.id}` ? "Rerolling..." : "Re-roll"}
+                              </button>
+                            </div>
+                          </>
+                        );
+                      })()}
                       {selectedTimelineClipDetails && (
                         <>
                           <div className="creatorSelectionHead">
@@ -3422,7 +5830,7 @@ function App() {
                           <div className="creatorSelectionHead">
                             <div>
                               <p className="inspectorEyebrow">Caption Inspector</p>
-                              <h4>{trimInlineText(selectedCaptionBlockDetails.overlay.text, 72)}</h4>
+                              <h4>Caption Block</h4>
                             </div>
                             <button
                               type="button"
@@ -3432,6 +5840,41 @@ function App() {
                               Delete Caption
                             </button>
                           </div>
+                          <label className="creatorSelectionFields">
+                            Caption text
+                            <textarea
+                              rows={3}
+                              value={
+                                editingCaptionOverlayId === selectedCaptionBlockDetails.overlay.id
+                                  ? editingCaptionText
+                                  : selectedCaptionBlockDetails.overlay.text
+                              }
+                              onChange={(event) => {
+                                if (editingCaptionOverlayId !== selectedCaptionBlockDetails.overlay.id) {
+                                  startCaptionEditing({
+                                    overlayId: selectedCaptionBlockDetails.overlay.id,
+                                    clipId: selectedCaptionBlockDetails.clip.id,
+                                    laneId: selectedCaptionBlockDetails.lane.id,
+                                    laneLabel: selectedCaptionBlockDetails.lane.label,
+                                    text: selectedCaptionBlockDetails.overlay.text,
+                                    style: selectedCaptionBlockDetails.overlay.style,
+                                  });
+                                }
+                                setEditingCaptionText(event.target.value);
+                              }}
+                              onBlur={() => void commitCaptionEdit()}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter" && !event.shiftKey) {
+                                  event.preventDefault();
+                                  void commitCaptionEdit();
+                                }
+                                if (event.key === "Escape") {
+                                  event.preventDefault();
+                                  cancelCaptionEdit();
+                                }
+                              }}
+                            />
+                          </label>
                           <p className="muted">
                             Lower-third safe area · {formatSeconds(selectedCaptionBlockDetails.timelineStartSec)} start ·{" "}
                             {formatSeconds(selectedCaptionBlockDetails.durationSec)} duration
@@ -3523,7 +5966,7 @@ function App() {
                                       style={{
                                         color: primaryHex,
                                         fontFamily: style.config.font_name.replace("-", " ") + ", sans-serif",
-                                        fontSize: `${Math.min(style.config.font_size * 0.55, 14)}px`,
+                                        fontSize: `${Math.min(style.config.font_size * 0.7, 18)}px`,
                                         textShadow: style.config.shadow > 0 ? `0 1px ${style.config.shadow}px rgba(0,0,0,0.7)` : "none",
                                         WebkitTextStroke: style.config.outline_width > 0 ? `${Math.min(style.config.outline_width * 0.3, 1)}px rgba(0,0,0,0.5)` : "none",
                                       }}
@@ -3597,7 +6040,9 @@ function App() {
                     {activeFeatureTab === "export" && (
                       <section className="aiPanel exportPanel active">
                         <h3>Export Video</h3>
-                        <p className="muted">Render your final video. Choose format, resolution, and quality.</p>
+                        <p className="muted">
+                          Render your final video. Estimated render time: <strong>{exportRuntimeHint}</strong>.
+                        </p>
                         <div className="exportSettings">
                           <div className="exportField">
                             <label className="exportLabel">Aspect Ratio</label>
@@ -3688,6 +6133,19 @@ function App() {
                               <span className="jobProgressFill" style={{ width: `${exportProgress}%` }} />
                             </div>
                             <span className="exportJobMessage">{exportStatusMessage}</span>
+                            {exportJob.status === "failed" && (
+                              <div className="jobRetryRow">
+                                <button
+                                  type="button"
+                                  className="jobRetryBtn"
+                                  onClick={() => void exportVideo()}
+                                  disabled={!project || exportingVideo}
+                                >
+                                  <RefreshCw size={14} aria-hidden="true" />
+                                  Retry export
+                                </button>
+                              </div>
+                            )}
                           </div>
                         )}
                         <div className="exportGuideRow">
@@ -3726,7 +6184,28 @@ function App() {
                     {activeFeatureTab === "broll_studio" && (
                       <section className="aiPanel brollPanel brollStudio active">
                         <h3>B-roll Studio</h3>
-                        <p className="muted">Generate visual cutaway suggestions from transcript chunks. Transcript edits stay unchanged.</p>
+                        <p className="muted">
+                          Add cutaway visuals after your transcript edit. Quick Edit does not include B-roll — use this studio when you are ready.
+                        </p>
+                        {brollSetupWarning && (
+                          <div className="brollSetupBanner" role="status">
+                            <strong>{brollSetupWarning.title}</strong>
+                            <p>{brollSetupWarning.detail}</p>
+                          </div>
+                        )}
+                        {lastBrollAutoApplySkips.length > 0 && (
+                          <div className="brollSkipSummary">
+                            <strong>{lastBrollAutoApplySkips.length} slot{lastBrollAutoApplySkips.length === 1 ? "" : "s"} skipped in last auto-apply</strong>
+                            <ul>
+                              {lastBrollAutoApplySkips.slice(0, 4).map((item) => (
+                                <li key={item.slot_id}>
+                                  {trimInlineText(item.concept_text || "Untitled slot", 48)} — {autoApplySkipReasonLabel(item.reason)}
+                                  {item.detail ? `: ${item.detail}` : ""}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
                         <div className="wordActions">
                           <button
                             className="primaryBtn"
@@ -3847,6 +6326,16 @@ function App() {
                             </select>
                           </div>
                         </div>
+                        {selectedBrollPlan && (
+                          <div className="brollPlanCard">
+                            <strong>{selectedBrollPlan.modeLabel} estimate: {selectedBrollPlan.runtimeHint}</strong>
+                            <span>
+                              Plans up to {selectedBrollPlan.maxSlots} slot{selectedBrollPlan.maxSlots === 1 ? "" : "s"} ·{" "}
+                              {selectedBrollPlan.includeExternalSources ? "stock search on" : "local clips only"} ·{" "}
+                              {selectedBrollPlan.aiRerank ? "AI rerank on" : "fast ranking"}
+                            </span>
+                          </div>
+                        )}
                         <p className="muted brollMeta">
                           Mode: {brollAutoMode} · Slots: {brollSlots.length} · Ready: {brollSlots.filter((slot) => slot.review_status === "ready" || slot.review_status === "approved").length} ·
                           Needs review: {brollSlots.filter((slot) => (slot.review_status ?? "needs_review") === "needs_review").length} · Timeline overlay clips: {overlayClips.length}
@@ -3872,12 +6361,19 @@ function App() {
                             const chosenCandidate = slot.candidates.find((candidate) => candidate.id === slot.chosen_candidate_id) ?? null;
                             const primaryCandidate = chosenCandidate ?? slot.candidates[0] ?? null;
                             const primaryReason = primaryCandidate?.reason;
-                            const anchorText = slot.anchor_word_ids
-                              .map((wordId) => transcriptWordsById.get(wordId)?.text?.trim() ?? "")
-                              .filter((word) => !!word)
-                              .join(" ")
-                              .trim();
-                            const slotContextText = anchorText || slot.concept_text || "general scene";
+                            const heardText = getSlotTranscriptText(
+                              slot,
+                              transcriptWordsById,
+                              transcript?.words ?? [],
+                              showRomanizedTranscript,
+                            );
+                            const englishGloss = readReasonText(primaryReason, "english_gloss");
+                            const searchQueries = readReasonStringList(primaryReason, "search_queries");
+                            const meaningDraft = brollMeaningDrafts[slot.id] ?? "";
+                            const hasMeaningDraft = !!meaningDraft.trim();
+                            const weakNeedsMeaningHint = (slot.weak_reason_codes ?? []).some((code) =>
+                              code === "specificity_low" || code === "confidence_low" || code === "semantic_weak",
+                            );
                             const slotMeta = [
                               readReasonText(primaryReason, "section_label"),
                               readReasonText(primaryReason, "shot_style")
@@ -3899,13 +6395,44 @@ function App() {
                               <article
                                 key={slot.id}
                                 className={`brollSlotCard ${slot.status} ${slot.locked ? "locked" : ""} ${slot.chosen_candidate_id ? "hasChosen" : ""
-                                  }`}
+                                  } ${selectedBrollSlotId === slot.id ? "focused" : ""}`}
                               >
                                 <div className="brollSlotHead">
-                                  <span className="brollTime">{formatSeconds(slot.start_sec)}-{formatSeconds(slot.end_sec)}</span>
+                                  <button
+                                    type="button"
+                                    className="brollTime brollFocusTime"
+                                    onClick={() => focusBrollSlot(slot)}
+                                    title="Highlight the related transcript words"
+                                  >
+                                    {formatSeconds(slot.start_sec)}-{formatSeconds(slot.end_sec)}
+                                  </button>
                                   <span className={`brollStatus ${slot.review_status ?? "needs_review"}`}>{reviewStatusLabel(slot.review_status ?? "needs_review")}</span>
                                 </div>
-                                <p className="brollConcept">{slot.concept_text || "general scene"}</p>
+                                <p className="brollHeardText">
+                                  <span className="brollContextLabel">Heard</span>
+                                  {heardText ? `"${heardText}"` : "No transcript words in this range"}
+                                </p>
+                                {englishGloss && (
+                                  <p className="brollMeaningText">
+                                    <span className="brollContextLabel">Means (English)</span>
+                                    {englishGloss}
+                                  </p>
+                                )}
+                                <p className="brollSearchText">
+                                  <span className="brollContextLabel">Search</span>
+                                  {slot.concept_text || "general scene"}
+                                </p>
+                                {!!searchQueries.length && (
+                                  <p className="brollQueryText muted">
+                                    <span className="brollContextLabel">Queries</span>
+                                    {searchQueries.slice(0, 4).join(" · ")}
+                                  </p>
+                                )}
+                                {weakNeedsMeaningHint && (
+                                  <p className="brollWeakHint muted">
+                                    Generic stock match — edit meaning below and re-roll.
+                                  </p>
+                                )}
                                 {!!slotMeta && <p className="muted brollPlanMeta">{slotMeta}</p>}
                                 <p className="muted brollReviewMeta">
                                   Intent: {slot.visual_intent ?? "support"}{slot.review_summary ? ` · ${slot.review_summary}` : ""}
@@ -3915,9 +6442,25 @@ function App() {
                                     {(slot.weak_reason_codes ?? []).map((code) => reasonCodeLabel(code)).join(" · ")}
                                   </p>
                                 )}
-                                {!!anchorText && (
-                                  <p className="brollAnchorText">"{slotContextText}"</p>
-                                )}
+                                <label className="brollMeaningField">
+                                  <span className="brollContextLabel">Correct meaning (English)</span>
+                                  <textarea
+                                    className="brollMeaningInput"
+                                    rows={2}
+                                    value={meaningDraft}
+                                    placeholder="If wrong, describe what this line means in English..."
+                                    disabled={!!brollActionKey || slot.locked}
+                                    onChange={(event) =>
+                                      setBrollMeaningDrafts((prev) => ({
+                                        ...prev,
+                                        [slot.id]: event.target.value,
+                                      }))
+                                    }
+                                  />
+                                  <span className="brollMeaningPersistHint">
+                                    Saved in this review session and used on re-roll.
+                                  </span>
+                                </label>
                                 {chosenCandidate && (
                                   <p className="brollChosen">
                                     Chosen: {chosenCandidate.source_label ?? chosenCandidate.asset_id ?? "candidate"}
@@ -3984,10 +6527,21 @@ function App() {
                                 <div className="brollSlotActions">
                                   <button
                                     type="button"
+                                    onClick={() => focusBrollSlot(slot)}
+                                    disabled={!transcript}
+                                  >
+                                    Focus words
+                                  </button>
+                                  <button
+                                    type="button"
                                     onClick={() => void rerollBroll(slot.id)}
                                     disabled={!!brollActionKey || slot.locked}
                                   >
-                                    {brollActionKey === `reroll:${slot.id}` ? "Rerolling..." : "Re-roll"}
+                                    {brollActionKey === `reroll:${slot.id}`
+                                      ? "Rerolling..."
+                                      : hasMeaningDraft
+                                        ? "Re-roll with this meaning"
+                                        : "Re-roll"}
                                   </button>
                                   <button
                                     type="button"
@@ -4106,6 +6660,25 @@ function App() {
                                   </button>
                                   <button
                                     type="button"
+                                    disabled={clipBusy}
+                                    onClick={() => {
+                                      const slot = findSlotForOverlayClip(clip);
+                                      if (slot) {
+                                        focusBrollSlot(slot, "Timeline B-roll clip selected with its transcript region.");
+                                      } else {
+                                        const ids = selectTranscriptWordIdsInRange(
+                                          timelineAssistWords,
+                                          clip.timeline_start_sec,
+                                          clip.timeline_start_sec + clipTimelineDurationSec(clip)
+                                        );
+                                        focusTranscriptWordIds(ids, undefined, "Highlighted transcript words under this B-roll clip.");
+                                      }
+                                    }}
+                                  >
+                                    Words
+                                  </button>
+                                  <button
+                                    type="button"
                                     disabled={clipBusy || !!brollActionKey}
                                     onClick={() => void rerollBrollFromTimelineClip(clip.id)}
                                   >
@@ -4169,10 +6742,71 @@ function App() {
             onSelectCaptionBlock={handleTimelineSelectCaptionBlock}
             onMoveCaptionBlock={handleTimelineMoveCaptionBlock}
             onTrimCaptionBlock={handleTimelineTrimCaptionBlock}
+            onEditWord={handleTimelineEditWord}
+            onStartEditCaption={startCaptionEditing}
+            editingCaptionId={editingCaptionOverlayId}
+            editingCaptionText={editingCaptionText}
+            onCaptionTextChange={setEditingCaptionText}
+            onCommitCaptionEdit={() => void commitCaptionEdit()}
+            onCancelCaptionEdit={cancelCaptionEdit}
+            captionEditInputRef={captionEditInputRef}
+            onDeleteLaneClip={handleTimelineDeleteLaneClip}
+            onSplitLaneClip={handleTimelineSplitLaneClip}
             brollEditBusy={!!brollTimelineActionKey}
           />
 
         </>
+      )}
+
+      {/* Keyboard Shortcuts Help Modal */}
+      {showShortcutsHelp && (
+        <div className="shortcutsOverlay" onClick={() => setShowShortcutsHelp(false)}>
+          <div className="shortcutsModal" onClick={(e) => e.stopPropagation()}>
+            <div className="shortcutsHeader">
+              <h3><Keyboard size={20} /> Keyboard Shortcuts</h3>
+              <button onClick={() => setShowShortcutsHelp(false)} className="shortcutsClose">&times;</button>
+            </div>
+            <div className="shortcutsGrid">
+              <div className="shortcutGroup">
+                <h4>Playback</h4>
+                <div className="shortcutRow"><kbd>Space</kbd><span>Play / Pause</span></div>
+                <div className="shortcutRow"><kbd>←</kbd> <kbd>→</kbd><span>Seek ±5 seconds</span></div>
+                <div className="shortcutRow"><kbd>Shift+←</kbd> <kbd>Shift+→</kbd><span>Seek ±1 second</span></div>
+              </div>
+              <div className="shortcutGroup">
+                <h4>Transcript Editing</h4>
+                <div className="shortcutRow"><kbd>Click</kbd><span>Select word &amp; seek</span></div>
+                <div className="shortcutRow"><kbd>Shift+Click</kbd><span>Select range</span></div>
+                <div className="shortcutRow"><kbd>Shift/Alt+Drag</kbd><span>Range-select by time</span></div>
+                <div className="shortcutRow"><kbd>Double-click</kbd><span>Edit word text (transcript or TXT track)</span></div>
+                <div className="shortcutRow"><kbd>Del</kbd> / <kbd>Backspace</kbd><span>Delete selection / clip / caption</span></div>
+                <div className="shortcutRow"><kbd>Ctrl+Z</kbd><span>Undo</span></div>
+                <div className="shortcutRow"><kbd>Ctrl+Y</kbd> / <kbd>Ctrl+Shift+Z</kbd><span>Redo</span></div>
+                <div className="shortcutRow"><kbd>Esc</kbd><span>Deselect all</span></div>
+              </div>
+              <div className="shortcutGroup">
+                <h4>Timeline Clips</h4>
+                <div className="shortcutRow"><kbd>Click clip</kbd><span>Select clip</span></div>
+                <div className="shortcutRow"><kbd>Drag clip</kbd><span>Move clip</span></div>
+                <div className="shortcutRow"><kbd>Drag edge</kbd><span>Trim clip in / out</span></div>
+                <div className="shortcutRow"><kbd>S</kbd><span>Split selected clip at playhead</span></div>
+                <div className="shortcutRow"><kbd>Right-click</kbd><span>Context menu (split / delete / jump)</span></div>
+                <div className="shortcutRow"><kbd>Ctrl+Scroll</kbd><span>Zoom in / out</span></div>
+              </div>
+              <div className="shortcutGroup">
+                <h4>Search</h4>
+                <div className="shortcutRow"><kbd>Ctrl+F</kbd><span>Search transcript</span></div>
+                <div className="shortcutRow"><kbd>Enter</kbd><span>Next match</span></div>
+                <div className="shortcutRow"><kbd>Shift+Enter</kbd><span>Previous match</span></div>
+                <div className="shortcutRow"><kbd>Esc</kbd><span>Clear search</span></div>
+              </div>
+              <div className="shortcutGroup">
+                <h4>General</h4>
+                <div className="shortcutRow"><kbd>?</kbd><span>Toggle this help</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

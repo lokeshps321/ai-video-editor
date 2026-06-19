@@ -12,23 +12,127 @@ from .models import MediaAsset
 _WORD_RE = re.compile(r"[A-Za-z0-9']+")
 _CAP_PHRASE_RE = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})\b")
 _FOCUS_STOPWORDS = {
-    "a", "an", "and", "are", "as", "at", "be", "been", "being", "but", "by", "can", "did", "do",
-    "does", "for", "from", "had", "has", "have", "if", "in", "into", "is", "it", "its", "just",
-    "like", "of", "on", "or", "our", "so", "that", "the", "their", "them", "there", "these",
-    "they", "this", "those", "to", "up", "use", "using", "was", "we", "were", "what", "when",
-    "where", "which", "who", "with", "you", "your", "here", "now", "yeah", "ok", "okay", "got",
-    "going", "go", "back", "last", "round", "team", "new",
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "been",
+    "being",
+    "but",
+    "by",
+    "can",
+    "did",
+    "do",
+    "does",
+    "for",
+    "from",
+    "had",
+    "has",
+    "have",
+    "if",
+    "in",
+    "into",
+    "is",
+    "it",
+    "its",
+    "just",
+    "like",
+    "of",
+    "on",
+    "or",
+    "our",
+    "so",
+    "that",
+    "the",
+    "their",
+    "them",
+    "there",
+    "these",
+    "they",
+    "this",
+    "those",
+    "to",
+    "up",
+    "use",
+    "using",
+    "was",
+    "we",
+    "were",
+    "what",
+    "when",
+    "where",
+    "which",
+    "who",
+    "with",
+    "you",
+    "your",
+    "here",
+    "now",
+    "yeah",
+    "ok",
+    "okay",
+    "got",
+    "going",
+    "go",
+    "back",
+    "last",
+    "round",
+    "team",
+    "new",
 }
 _GENERIC_SOURCE_TERMS = {
-    "clip", "clips", "footage", "hd", "library", "media", "pexels", "pixabay", "project",
-    "stock", "video", "videos",
+    "clip",
+    "clips",
+    "footage",
+    "hd",
+    "library",
+    "media",
+    "pexels",
+    "pixabay",
+    "project",
+    "stock",
+    "video",
+    "videos",
 }
 _VISUAL_INTENT_QUERY_MODES: dict[str, dict[str, float]] = {
-    "literal_demo": {"literal": 1.0, "process": 0.76, "environment": 0.5, "reaction": 0.42, "abstract": 0.3},
-    "process_step": {"process": 1.0, "literal": 0.82, "environment": 0.56, "reaction": 0.36, "abstract": 0.28},
-    "environment_context": {"environment": 1.0, "literal": 0.62, "reaction": 0.58, "process": 0.48, "abstract": 0.42},
-    "reaction_payoff": {"reaction": 1.0, "literal": 0.72, "environment": 0.54, "process": 0.38, "abstract": 0.34},
-    "abstract_support": {"abstract": 1.0, "environment": 0.72, "reaction": 0.48, "literal": 0.34, "process": 0.28},
+    "literal_demo": {
+        "literal": 1.0,
+        "process": 0.76,
+        "environment": 0.5,
+        "reaction": 0.42,
+        "abstract": 0.3,
+    },
+    "process_step": {
+        "process": 1.0,
+        "literal": 0.82,
+        "environment": 0.56,
+        "reaction": 0.36,
+        "abstract": 0.28,
+    },
+    "environment_context": {
+        "environment": 1.0,
+        "literal": 0.62,
+        "reaction": 0.58,
+        "process": 0.48,
+        "abstract": 0.42,
+    },
+    "reaction_payoff": {
+        "reaction": 1.0,
+        "literal": 0.72,
+        "environment": 0.54,
+        "process": 0.38,
+        "abstract": 0.34,
+    },
+    "abstract_support": {
+        "abstract": 1.0,
+        "environment": 0.72,
+        "reaction": 0.48,
+        "literal": 0.34,
+        "process": 0.28,
+    },
 }
 
 CandidateRow = tuple[str, str | None, str | None, str | None, float, dict[str, object]]
@@ -163,11 +267,44 @@ def _talking_head_risk(text: str) -> float:
 
 def _infer_visual_intent(chunk_text: str, concept_text: str) -> str:
     lower = f"{chunk_text} {concept_text}".lower()
-    if any(term in lower for term in ("result", "results", "success", "growth", "revenue", "celebration", "win")):
+    if any(
+        term in lower
+        for term in (
+            "result",
+            "results",
+            "success",
+            "growth",
+            "revenue",
+            "celebration",
+            "win",
+        )
+    ):
         return "reaction_payoff"
-    if any(term in lower for term in ("how to", "workflow", "process", "step", "screen", "dashboard", "tutorial")):
+    if any(
+        term in lower
+        for term in (
+            "how to",
+            "workflow",
+            "process",
+            "step",
+            "screen",
+            "dashboard",
+            "tutorial",
+        )
+    ):
         return "process_step"
-    if any(term in lower for term in ("office", "studio", "street", "warehouse", "factory", "meeting", "workspace")):
+    if any(
+        term in lower
+        for term in (
+            "office",
+            "studio",
+            "street",
+            "warehouse",
+            "factory",
+            "meeting",
+            "workspace",
+        )
+    ):
         return "environment_context"
     if any(term in lower for term in ("hook", "opening", "intro", "outro")):
         return "abstract_support"
@@ -182,16 +319,26 @@ def _intent_alignment_score(
     content_overlap: float,
     talking_head_risk: float,
 ) -> float:
-    mode_scores = _VISUAL_INTENT_QUERY_MODES.get(visual_intent, _VISUAL_INTENT_QUERY_MODES["literal_demo"])
+    mode_scores = _VISUAL_INTENT_QUERY_MODES.get(
+        visual_intent, _VISUAL_INTENT_QUERY_MODES["literal_demo"]
+    )
     normalized_mode = query_mode.strip().lower()
     base = mode_scores.get(normalized_mode, 0.48 if not normalized_mode else 0.34)
     if normalized_mode in {"literal", "process"} and content_overlap >= 0.16:
         base += 0.12
     if normalized_mode == "reaction" and semantic_score >= 0.34:
         base += 0.08
-    if normalized_mode == "abstract" and visual_intent == "abstract_support" and semantic_score >= 0.32:
+    if (
+        normalized_mode == "abstract"
+        and visual_intent == "abstract_support"
+        and semantic_score >= 0.32
+    ):
         base += 0.1
-    if talking_head_risk >= 0.6 and normalized_mode in {"literal", "process"} and visual_intent != "reaction_payoff":
+    if (
+        talking_head_risk >= 0.6
+        and normalized_mode in {"literal", "process"}
+        and visual_intent != "reaction_payoff"
+    ):
         base -= 0.12
     return _clamp(base, 0.0, 1.0)
 
@@ -206,10 +353,27 @@ def _specificity_score(
 ) -> float:
     if not content_tokens and not query_tokens:
         return 0.0
-    descriptive_terms = {token for token in content_tokens if token not in _GENERIC_SOURCE_TERMS}
-    slot_hit_ratio = len(slot_token_set.intersection(content_tokens)) / max(min(len(slot_token_set), 4), 1) if slot_token_set else 0.0
-    concept_hit_ratio = len(concept_token_set.intersection(content_tokens)) / max(min(len(concept_token_set), 3), 1) if concept_token_set else slot_hit_ratio
-    query_hit_ratio = len(slot_token_set.intersection(query_tokens)) / max(min(len(slot_token_set), 4), 1) if slot_token_set and query_tokens else 0.0
+    descriptive_terms = {
+        token for token in content_tokens if token not in _GENERIC_SOURCE_TERMS
+    }
+    slot_hit_ratio = (
+        len(slot_token_set.intersection(content_tokens))
+        / max(min(len(slot_token_set), 4), 1)
+        if slot_token_set
+        else 0.0
+    )
+    concept_hit_ratio = (
+        len(concept_token_set.intersection(content_tokens))
+        / max(min(len(concept_token_set), 3), 1)
+        if concept_token_set
+        else slot_hit_ratio
+    )
+    query_hit_ratio = (
+        len(slot_token_set.intersection(query_tokens))
+        / max(min(len(slot_token_set), 4), 1)
+        if slot_token_set and query_tokens
+        else 0.0
+    )
     keyword_ratio = min(len(keyword_hits), 3) / 3 if keyword_hits else 0.0
     descriptor_ratio = len(descriptive_terms) / max(len(content_tokens), 1)
     return _clamp(
@@ -243,7 +407,10 @@ def _source_quality_score(
         base += 0.08
     if talking_head_risk >= 0.6:
         base -= 0.16
-    if source_type in {"generated_video", "generated_image_video"} and specificity_score < 0.45:
+    if (
+        source_type in {"generated_video", "generated_image_video"}
+        and specificity_score < 0.45
+    ):
         base -= 0.12
     return _clamp(base, 0.0, 1.0)
 
@@ -256,7 +423,10 @@ def _load_spacy_nlp() -> object | None:
         return None
     for model_name in ("en_core_web_sm", "xx_ent_wiki_sm"):
         try:
-            return spacy.load(model_name, disable=["tagger", "parser", "lemmatizer", "attribute_ruler"])
+            return spacy.load(
+                model_name,
+                disable=["tagger", "parser", "lemmatizer", "attribute_ruler"],
+            )
         except Exception:
             continue
     return None
@@ -293,7 +463,15 @@ def extract_entities(text: str) -> list[str]:
     try:
         doc = nlp(text)
         for ent in doc.ents:
-            if ent.label_ not in {"PERSON", "ORG", "GPE", "LOC", "EVENT", "PRODUCT", "WORK_OF_ART"}:
+            if ent.label_ not in {
+                "PERSON",
+                "ORG",
+                "GPE",
+                "LOC",
+                "EVENT",
+                "PRODUCT",
+                "WORK_OF_ART",
+            }:
                 continue
             value = ent.text.strip()
             if len(value) >= 2:
@@ -327,7 +505,9 @@ def expand_broll_queries(
     if concept_text.strip():
         queries.append(concept_text.strip())
     if concept_tokens:
-        normalized_tokens = [token.strip().lower() for token in concept_tokens if token.strip()]
+        normalized_tokens = [
+            token.strip().lower() for token in concept_tokens if token.strip()
+        ]
         if normalized_tokens:
             queries.append(" ".join(normalized_tokens[:4]))
             queries.append(" ".join(normalized_tokens[:3]))
@@ -362,7 +542,7 @@ def expand_broll_queries(
     return deduped
 
 
-@lru_cache(maxsize=4)
+@lru_cache(maxsize=1)
 def _load_embedder(model_name: str, device: str) -> object | None:
     try:
         from sentence_transformers import SentenceTransformer  # type: ignore
@@ -382,7 +562,9 @@ def _encode_embeddings(texts: list[str]) -> list[list[float]] | None:
     if embedder is None:
         return None
     try:
-        matrix = embedder.encode(texts, normalize_embeddings=True, convert_to_numpy=True)
+        matrix = embedder.encode(
+            texts, normalize_embeddings=True, convert_to_numpy=True
+        )
     except Exception:
         return None
     vectors: list[list[float]] = []
@@ -473,7 +655,9 @@ def _candidate_text(
     if duration is None and asset is not None:
         duration = _safe_float(asset.duration_sec)
     text = " ".join(str(item).strip() for item in values if str(item).strip())
-    content_text = " ".join(str(item).strip() for item in content_values if str(item).strip())
+    content_text = " ".join(
+        str(item).strip() for item in content_values if str(item).strip()
+    )
     return text, content_text, query_text, duration
 
 
@@ -491,13 +675,24 @@ def _with_ai_metadata(
     payload = _copy_reason(reason)
     payload["ai_status"] = ai_status
     payload["confidence"] = round(_clamp(confidence, 0.0, 1.0), 3)
-    payload["score_breakdown"] = {key: round(_clamp(value, 0.0, 1.0), 3) for key, value in score_breakdown.items()}
+    payload["score_breakdown"] = {
+        key: round(_clamp(value, 0.0, 1.0), 3) for key, value in score_breakdown.items()
+    }
     payload["entities"] = entity_hits[:8]
     payload["weak_reason_codes"] = list(weak_reason_codes or [])
-    return (source_type, asset_id, source_url, source_label, round(_clamp(score, 0.0, 0.99), 3), payload)
+    return (
+        source_type,
+        asset_id,
+        source_url,
+        source_label,
+        round(_clamp(score, 0.0, 0.99), 3),
+        payload,
+    )
 
 
-def _fallback_rows(candidates: list[CandidateRow], ai_status: str) -> list[CandidateRow]:
+def _fallback_rows(
+    candidates: list[CandidateRow], ai_status: str
+) -> list[CandidateRow]:
     prepared: list[CandidateRow] = []
     for row in candidates:
         score = _clamp(float(row[4]), 0.0, 0.99)
@@ -534,10 +729,18 @@ def rerank_broll_candidates(
 
     slot_entities = extract_entities(chunk_text)
     slot_entities_lower = [item.lower() for item in slot_entities]
-    slot_token_set = _focus_tokens(f"{chunk_text} {concept_text} {' '.join(concept_tokens)} {' '.join(slot_entities)}")
+    slot_token_set = _focus_tokens(
+        f"{chunk_text} {concept_text} {' '.join(concept_tokens)} {' '.join(slot_entities)}"
+    )
     if not slot_token_set:
-        slot_token_set = set(_tokenize(f"{chunk_text} {concept_text} {' '.join(concept_tokens)} {' '.join(slot_entities)}"))
-    resolved_visual_intent = (visual_intent or "").strip().lower() or _infer_visual_intent(chunk_text, concept_text)
+        slot_token_set = set(
+            _tokenize(
+                f"{chunk_text} {concept_text} {' '.join(concept_tokens)} {' '.join(slot_entities)}"
+            )
+        )
+    resolved_visual_intent = (
+        visual_intent or ""
+    ).strip().lower() or _infer_visual_intent(chunk_text, concept_text)
 
     docs: list[_CandidateDoc] = []
     for row in candidates:
@@ -551,7 +754,9 @@ def rerank_broll_candidates(
             reason=parsed_reason,
             asset=asset,
         )
-        if settings.broll_blocklist_terms and _contains_blocked_term(text, settings.broll_blocklist_terms):
+        if settings.broll_blocklist_terms and _contains_blocked_term(
+            text, settings.broll_blocklist_terms
+        ):
             continue
         docs.append(
             _CandidateDoc(
@@ -595,26 +800,55 @@ def rerank_broll_candidates(
         crop_score = _clamp(_safe_float(doc.reason.get("crop_score")) or 0.45, 0.0, 1.0)
         query_mode = str(doc.reason.get("query_mode") or "").strip().lower()
         talking_head_risk = _talking_head_risk(doc.text)
-        content_overlap = _token_overlap_score(slot_token_set, doc.content_tokens or doc.tokens) if slot_token_set else 0.0
-        query_overlap = _token_overlap_score(slot_token_set, doc.query_tokens) if slot_token_set else 0.0
+        content_overlap = (
+            _token_overlap_score(slot_token_set, doc.content_tokens or doc.tokens)
+            if slot_token_set
+            else 0.0
+        )
+        query_overlap = (
+            _token_overlap_score(slot_token_set, doc.query_tokens)
+            if slot_token_set
+            else 0.0
+        )
         if has_embeddings:
-            semantic_score = _cosine_from_normalized(slot_vector, candidate_vectors[idx])
+            semantic_score = _cosine_from_normalized(
+                slot_vector, candidate_vectors[idx]
+            )
         else:
             semantic_score = max(content_overlap, query_overlap * 0.85)
 
-        entity_hits = [entity for entity in doc.entities if entity.lower() in slot_entities_lower]
+        entity_hits = [
+            entity for entity in doc.entities if entity.lower() in slot_entities_lower
+        ]
         if not entity_hits:
-            entity_hits = [entity for entity in slot_entities if entity.lower() in doc.text.lower()]
-        entity_score = len({item.lower() for item in entity_hits}) / max(len(slot_entities), 1) if slot_entities else 0.0
+            entity_hits = [
+                entity for entity in slot_entities if entity.lower() in doc.text.lower()
+            ]
+        entity_score = (
+            len({item.lower() for item in entity_hits}) / max(len(slot_entities), 1)
+            if slot_entities
+            else 0.0
+        )
 
-        concept_overlap = _token_overlap_score(concept_token_set, doc.content_tokens or doc.tokens) if concept_token_set else 0.0
+        concept_overlap = (
+            _token_overlap_score(concept_token_set, doc.content_tokens or doc.tokens)
+            if concept_token_set
+            else 0.0
+        )
         keyword_hits = doc.reason.get("keyword_hits", [])
         keyword_hit_score = (
-            min(len(keyword_hits), max(len(concept_tokens), 1)) / max(len(concept_tokens), 1)
+            min(len(keyword_hits), max(len(concept_tokens), 1))
+            / max(len(concept_tokens), 1)
             if isinstance(keyword_hits, list) and concept_tokens
             else 0.0
         )
-        metadata_score = _clamp((0.5 * concept_overlap) + (0.2 * keyword_hit_score) + (0.3 * doc.base_score), 0.0, 1.0)
+        metadata_score = _clamp(
+            (0.5 * concept_overlap)
+            + (0.2 * keyword_hit_score)
+            + (0.3 * doc.base_score),
+            0.0,
+            1.0,
+        )
         duration_score = _duration_fit(doc.duration_sec, slot_duration_sec)
         mode_alignment = _intent_alignment_score(
             visual_intent=resolved_visual_intent,
@@ -658,10 +892,17 @@ def rerank_broll_candidates(
         if specificity_score < 0.35 and content_overlap < 0.12:
             specificity_penalty = 0.82
         talking_head_penalty = 1.0
-        if resolved_visual_intent in {"process_step", "literal_demo", "environment_context"} and talking_head_risk >= 0.6:
+        if (
+            resolved_visual_intent
+            in {"process_step", "literal_demo", "environment_context"}
+            and talking_head_risk >= 0.6
+        ):
             talking_head_penalty = 0.76
         generated_penalty = 1.0
-        if str(doc.row[0]) in {"generated_video", "generated_image_video"} and semantic_score < 0.46:
+        if (
+            str(doc.row[0]) in {"generated_video", "generated_image_video"}
+            and semantic_score < 0.46
+        ):
             generated_penalty = 0.78
 
         final_score = _clamp(

@@ -12,10 +12,13 @@ os.environ.setdefault("UPLOAD_DIR", "/tmp/prompt_video_editor_uploads")
 os.environ.setdefault("RENDER_DIR", "/tmp/prompt_video_editor_renders")
 os.environ.setdefault("TMP_DIR", "/tmp/prompt_video_editor_tmp")
 os.environ.setdefault("BROLL_LLM_ENABLED", "false")
+# Disable pre-compute vocal isolation for test performance
+os.environ.setdefault("TRANSCRIBE_VOCAL_ISOLATION_PRECOMPUTE", "false")
 
 from fastapi.testclient import TestClient
 
 from app.broll_external_service import ExternalBrollCandidate
+from app.config import get_settings
 from app.database import engine
 from app.main import app
 from app.models import BrollCandidate
@@ -42,7 +45,9 @@ def _upload_video(client: TestClient, project_id: str, filename: str) -> str:
     return response.json()["id"]
 
 
-def _fake_transcript(_path: str, _duration_sec: float, language_hint: str | None = None) -> TranscriptPayload:
+def _fake_transcript(
+    _path: str, _duration_sec: float, language_hint: str | None = None
+) -> TranscriptPayload:
     _ = language_hint
     words = [
         TranscriptWordPayload(id="w1", text="building", start_sec=0.0, end_sec=0.2),
@@ -67,7 +72,9 @@ def _fake_transcript(_path: str, _duration_sec: float, language_hint: str | None
     )
 
 
-def _fake_long_transcript(_path: str, _duration_sec: float, language_hint: str | None = None) -> TranscriptPayload:
+def _fake_long_transcript(
+    _path: str, _duration_sec: float, language_hint: str | None = None
+) -> TranscriptPayload:
     _ = language_hint
     segments = [
         "viral opening hook camera",
@@ -152,10 +159,17 @@ def _audio_clip_count(timeline: dict[str, object]) -> int:
     return 0
 
 
-def test_broll_suggest_choose_reject_and_transcript_safety(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("app.broll_planner_service._cloud_plan", lambda **_: (None, None))
+def test_broll_suggest_choose_reject_and_transcript_safety(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.broll_planner_service._cloud_plan", lambda **_: (None, None)
+    )
     monkeypatch.setattr("app.routers.media.probe_duration_seconds", lambda _: 10.0)
-    monkeypatch.setattr("app.routers.media.probe_stream_flags", lambda _: {"has_video": True, "has_audio": True})
+    monkeypatch.setattr(
+        "app.routers.media.probe_stream_flags",
+        lambda _: {"has_video": True, "has_audio": True},
+    )
     monkeypatch.setattr("app.routers.transcript.generate_transcript", _fake_transcript)
 
     with TestClient(app) as client:
@@ -172,14 +186,22 @@ def test_broll_suggest_choose_reject_and_transcript_safety(monkeypatch: pytest.M
 
         suggest_res = client.post(
             f"/api/v1/broll/suggest?project_id={project_id}",
-            json={"max_slots": 3, "candidates_per_slot": 2, "include_external_sources": False, "ai_rerank": False},
+            json={
+                "max_slots": 3,
+                "candidates_per_slot": 2,
+                "include_external_sources": False,
+                "ai_rerank": False,
+            },
         )
         assert suggest_res.status_code == 200
         suggest_payload = suggest_res.json()
         assert suggest_payload["transcript_id"] == transcript_id
         assert suggest_payload["created_slots"] >= 1
         assert len(suggest_payload["slots"]) == suggest_payload["created_slots"]
-        assert all((slot["end_sec"] - slot["start_sec"]) <= 2.05 for slot in suggest_payload["slots"])
+        assert all(
+            (slot["end_sec"] - slot["start_sec"]) <= 2.05
+            for slot in suggest_payload["slots"]
+        )
         assert "review_status" in suggest_payload["slots"][0]
 
         first_slot = suggest_payload["slots"][0]
@@ -213,15 +235,22 @@ def test_broll_suggest_choose_reject_and_transcript_safety(monkeypatch: pytest.M
         assert rejected_slot["status"] == "rejected"
         assert rejected_slot["chosen_candidate_id"] is None
 
-        transcript_res = client.get(f"/api/v1/transcript?project_id={project_id}&transcript_id={transcript_id}")
+        transcript_res = client.get(
+            f"/api/v1/transcript?project_id={project_id}&transcript_id={transcript_id}"
+        )
         assert transcript_res.status_code == 200
         assert len(transcript_res.json()["words"]) == 12
 
 
 def test_broll_suggest_replace_existing_toggle(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("app.broll_planner_service._cloud_plan", lambda **_: (None, None))
+    monkeypatch.setattr(
+        "app.broll_planner_service._cloud_plan", lambda **_: (None, None)
+    )
     monkeypatch.setattr("app.routers.media.probe_duration_seconds", lambda _: 10.0)
-    monkeypatch.setattr("app.routers.media.probe_stream_flags", lambda _: {"has_video": True, "has_audio": True})
+    monkeypatch.setattr(
+        "app.routers.media.probe_stream_flags",
+        lambda _: {"has_video": True, "has_audio": True},
+    )
     monkeypatch.setattr("app.routers.transcript.generate_transcript", _fake_transcript)
 
     with TestClient(app) as client:
@@ -280,11 +309,20 @@ def test_broll_suggest_requires_transcript() -> None:
         assert "Transcript not found" in suggest_res.text
 
 
-def test_broll_plan_endpoint_persists_balanced_plan(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("app.broll_planner_service._cloud_plan", lambda **_: (None, None))
+def test_broll_plan_endpoint_persists_balanced_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.broll_planner_service._cloud_plan", lambda **_: (None, None)
+    )
     monkeypatch.setattr("app.routers.media.probe_duration_seconds", lambda _: 120.0)
-    monkeypatch.setattr("app.routers.media.probe_stream_flags", lambda _: {"has_video": True, "has_audio": True})
-    monkeypatch.setattr("app.routers.transcript.generate_transcript", _fake_long_transcript)
+    monkeypatch.setattr(
+        "app.routers.media.probe_stream_flags",
+        lambda _: {"has_video": True, "has_audio": True},
+    )
+    monkeypatch.setattr(
+        "app.routers.transcript.generate_transcript", _fake_long_transcript
+    )
 
     with TestClient(app) as client:
         project_id = _create_project(client, "Broll Planner Coverage")
@@ -324,18 +362,29 @@ def test_broll_plan_endpoint_persists_balanced_plan(monkeypatch: pytest.MonkeyPa
         assert coverage_by_section["payoff"] >= 1
         assert coverage_by_section["payoff"] + coverage_by_section["outro"] >= 1
 
-        fetch_res = client.get(f"/api/v1/broll/plans/{plan['id']}?project_id={project_id}")
+        fetch_res = client.get(
+            f"/api/v1/broll/plans/{plan['id']}?project_id={project_id}"
+        )
         assert fetch_res.status_code == 200
         fetched = fetch_res.json()
         assert fetched["id"] == plan["id"]
         assert len(fetched["beats"]) == len(plan["beats"])
 
 
-def test_broll_suggest_uses_planner_for_late_video_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("app.broll_planner_service._cloud_plan", lambda **_: (None, None))
+def test_broll_suggest_uses_planner_for_late_video_coverage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.broll_planner_service._cloud_plan", lambda **_: (None, None)
+    )
     monkeypatch.setattr("app.routers.media.probe_duration_seconds", lambda _: 120.0)
-    monkeypatch.setattr("app.routers.media.probe_stream_flags", lambda _: {"has_video": True, "has_audio": True})
-    monkeypatch.setattr("app.routers.transcript.generate_transcript", _fake_long_transcript)
+    monkeypatch.setattr(
+        "app.routers.media.probe_stream_flags",
+        lambda _: {"has_video": True, "has_audio": True},
+    )
+    monkeypatch.setattr(
+        "app.routers.transcript.generate_transcript", _fake_long_transcript
+    )
 
     with TestClient(app) as client:
         project_id = _create_project(client, "Broll Planner Suggest")
@@ -366,12 +415,20 @@ def test_broll_suggest_uses_planner_for_late_video_coverage(monkeypatch: pytest.
         start_times = [float(slot["start_sec"]) for slot in payload["slots"]]
         assert max(start_times) > 90.0
         assert any(start > 55.0 for start in start_times)
-        assert any(slot["review_status"] in {"ready", "needs_review"} for slot in payload["slots"])
+        assert any(
+            slot["review_status"] in {"ready", "needs_review"}
+            for slot in payload["slots"]
+        )
 
 
-def test_broll_external_candidate_can_be_materialized_on_choose(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_broll_external_candidate_can_be_materialized_on_choose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr("app.routers.media.probe_duration_seconds", lambda _: 10.0)
-    monkeypatch.setattr("app.routers.media.probe_stream_flags", lambda _: {"has_video": True, "has_audio": True})
+    monkeypatch.setattr(
+        "app.routers.media.probe_stream_flags",
+        lambda _: {"has_video": True, "has_audio": True},
+    )
     monkeypatch.setattr("app.routers.transcript.generate_transcript", _fake_transcript)
 
     monkeypatch.setattr(
@@ -386,10 +443,15 @@ def test_broll_external_candidate_can_be_materialized_on_choose(monkeypatch: pyt
             )
         ],
     )
-    monkeypatch.setattr("app.routers.broll.probe_stream_flags", lambda _: {"has_video": True, "has_audio": False})
+    monkeypatch.setattr(
+        "app.routers.broll.probe_stream_flags",
+        lambda _: {"has_video": True, "has_audio": False},
+    )
     monkeypatch.setattr("app.routers.broll.probe_duration_seconds", lambda _: 4.2)
 
-    def _fake_download_external_video(project_id: str, _url: str) -> tuple[str, str, str]:
+    def _fake_download_external_video(
+        project_id: str, _url: str
+    ) -> tuple[str, str, str]:
         project_dir = storage.upload_root / project_id
         project_dir.mkdir(parents=True, exist_ok=True)
         destination = project_dir / "external-demo.mp4"
@@ -397,7 +459,9 @@ def test_broll_external_candidate_can_be_materialized_on_choose(monkeypatch: pyt
         relative = str(destination.resolve().relative_to(storage.upload_root))
         return (str(destination.resolve()), relative, "video/mp4")
 
-    monkeypatch.setattr("app.routers.broll._download_external_video", _fake_download_external_video)
+    monkeypatch.setattr(
+        "app.routers.broll._download_external_video", _fake_download_external_video
+    )
 
     with TestClient(app) as client:
         project_id = _create_project(client, "Broll External Materialize")
@@ -416,7 +480,14 @@ def test_broll_external_candidate_can_be_materialized_on_choose(monkeypatch: pyt
         )
         assert suggest_res.status_code == 200
         slot = suggest_res.json()["slots"][0]
-        external = next((cand for cand in slot["candidates"] if cand["source_type"] == "pexels_video"), None)
+        external = next(
+            (
+                cand
+                for cand in slot["candidates"]
+                if cand["source_type"] == "pexels_video"
+            ),
+            None,
+        )
         assert external is not None
         assert external["asset_id"] is None
 
@@ -430,7 +501,9 @@ def test_broll_external_candidate_can_be_materialized_on_choose(monkeypatch: pyt
         )
         assert choose_res.status_code == 200
         chosen_slot = choose_res.json()
-        chosen = next(cand for cand in chosen_slot["candidates"] if cand["id"] == external["id"])
+        chosen = next(
+            cand for cand in chosen_slot["candidates"] if cand["id"] == external["id"]
+        )
         assert chosen["asset_id"]
         assert chosen_slot["status"] == "chosen"
 
@@ -449,7 +522,10 @@ def test_broll_external_materialize_reuses_existing_asset_for_same_source_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("app.routers.media.probe_duration_seconds", lambda _: 10.0)
-    monkeypatch.setattr("app.routers.media.probe_stream_flags", lambda _: {"has_video": True, "has_audio": True})
+    monkeypatch.setattr(
+        "app.routers.media.probe_stream_flags",
+        lambda _: {"has_video": True, "has_audio": True},
+    )
     monkeypatch.setattr("app.routers.transcript.generate_transcript", _fake_transcript)
 
     external_url = "https://example.com/reuse-demo.mp4"
@@ -465,15 +541,22 @@ def test_broll_external_materialize_reuses_existing_asset_for_same_source_url(
             )
         ],
     )
-    monkeypatch.setattr("app.routers.broll.probe_stream_flags", lambda _: {"has_video": True, "has_audio": False})
+    monkeypatch.setattr(
+        "app.routers.broll.probe_stream_flags",
+        lambda _: {"has_video": True, "has_audio": False},
+    )
     monkeypatch.setattr("app.routers.broll.probe_duration_seconds", lambda _: 4.2)
     monkeypatch.setattr("app.routers.broll._detect_focus_track", lambda _: None)
     monkeypatch.setattr("app.routers.broll._detect_focus_x_ratio", lambda _: None)
-    monkeypatch.setattr("app.routers.broll._analyze_center_visual_risk", lambda _: (0.4, 0.1, "low"))
+    monkeypatch.setattr(
+        "app.routers.broll._analyze_center_visual_risk", lambda _: (0.4, 0.1, "low")
+    )
 
     download_calls: list[str] = []
 
-    def _fake_download_external_video(project_id: str, source_url: str) -> tuple[str, str, str]:
+    def _fake_download_external_video(
+        project_id: str, source_url: str
+    ) -> tuple[str, str, str]:
         download_calls.append(source_url)
         project_dir = storage.upload_root / project_id
         project_dir.mkdir(parents=True, exist_ok=True)
@@ -482,7 +565,9 @@ def test_broll_external_materialize_reuses_existing_asset_for_same_source_url(
         relative = str(destination.resolve().relative_to(storage.upload_root))
         return (str(destination.resolve()), relative, "video/mp4")
 
-    monkeypatch.setattr("app.routers.broll._download_external_video", _fake_download_external_video)
+    monkeypatch.setattr(
+        "app.routers.broll._download_external_video", _fake_download_external_video
+    )
 
     with TestClient(app) as client:
         project_id = _create_project(client, "Broll External Reuse")
@@ -501,7 +586,14 @@ def test_broll_external_materialize_reuses_existing_asset_for_same_source_url(
         )
         assert suggest_res.status_code == 200
         slot = suggest_res.json()["slots"][0]
-        external = next((cand for cand in slot["candidates"] if cand["source_type"] == "pexels_video"), None)
+        external = next(
+            (
+                cand
+                for cand in slot["candidates"]
+                if cand["source_type"] == "pexels_video"
+            ),
+            None,
+        )
         assert external is not None
         assert external["source_url"] == external_url
 
@@ -529,7 +621,9 @@ def test_broll_external_materialize_reuses_existing_asset_for_same_source_url(
         )
         assert choose_first.status_code == 200
         first_slot = choose_first.json()
-        first_candidate = next(cand for cand in first_slot["candidates"] if cand["id"] == external["id"])
+        first_candidate = next(
+            cand for cand in first_slot["candidates"] if cand["id"] == external["id"]
+        )
         assert first_candidate["asset_id"]
 
         choose_duplicate = client.post(
@@ -538,7 +632,9 @@ def test_broll_external_materialize_reuses_existing_asset_for_same_source_url(
         )
         assert choose_duplicate.status_code == 200
         duplicate_slot = choose_duplicate.json()
-        duplicate_candidate = next(cand for cand in duplicate_slot["candidates"] if cand["id"] == duplicate_id)
+        duplicate_candidate = next(
+            cand for cand in duplicate_slot["candidates"] if cand["id"] == duplicate_id
+        )
         assert duplicate_candidate["asset_id"] == first_candidate["asset_id"]
 
         media_after = client.get(f"/api/v1/media?project_id={project_id}")
@@ -555,10 +651,15 @@ def test_broll_external_materialize_reuses_existing_asset_for_same_source_url(
 
 def test_broll_ai_rerank_toggle_and_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.routers.media.probe_duration_seconds", lambda _: 10.0)
-    monkeypatch.setattr("app.routers.media.probe_stream_flags", lambda _: {"has_video": True, "has_audio": True})
+    monkeypatch.setattr(
+        "app.routers.media.probe_stream_flags",
+        lambda _: {"has_video": True, "has_audio": True},
+    )
     monkeypatch.setattr("app.routers.transcript.generate_transcript", _fake_transcript)
 
-    def _raise_if_called(**_: object) -> list[tuple[str, str | None, str | None, str | None, float, dict[str, object]]]:
+    def _raise_if_called(
+        **_: object,
+    ) -> list[tuple[str, str | None, str | None, str | None, float, dict[str, object]]]:
         raise RuntimeError("rerank should not be called when ai_rerank=false")
 
     monkeypatch.setattr("app.routers.broll.rerank_broll_candidates", _raise_if_called)
@@ -576,28 +677,35 @@ def test_broll_ai_rerank_toggle_and_metadata(monkeypatch: pytest.MonkeyPatch) ->
 
         suggest_res = client.post(
             f"/api/v1/broll/suggest?project_id={project_id}",
-            json={"max_slots": 1, "candidates_per_slot": 2, "include_external_sources": False, "ai_rerank": False},
+            json={
+                "max_slots": 1,
+                "candidates_per_slot": 2,
+                "include_external_sources": False,
+                "ai_rerank": False,
+            },
         )
         assert suggest_res.status_code == 200
 
     monkeypatch.setattr(
         "app.routers.broll.rerank_broll_candidates",
-        lambda **kwargs: [
-            (
-                kwargs["candidates"][0][0],
-                kwargs["candidates"][0][1],
-                kwargs["candidates"][0][2],
-                kwargs["candidates"][0][3],
-                0.93,
-                {
-                    **kwargs["candidates"][0][5],
-                    "confidence": 0.88,
-                    "score_breakdown": {"semantic": 0.9, "entity": 0.7},
-                    "entities": ["Elon Musk"],
-                },
-            )
-        ]
-        + kwargs["candidates"][1:],
+        lambda **kwargs: (
+            [
+                (
+                    kwargs["candidates"][0][0],
+                    kwargs["candidates"][0][1],
+                    kwargs["candidates"][0][2],
+                    kwargs["candidates"][0][3],
+                    0.93,
+                    {
+                        **kwargs["candidates"][0][5],
+                        "confidence": 0.88,
+                        "score_breakdown": {"semantic": 0.9, "entity": 0.7},
+                        "entities": ["Elon Musk"],
+                    },
+                )
+            ]
+            + kwargs["candidates"][1:]
+        ),
     )
 
     with TestClient(app) as client:
@@ -613,7 +721,12 @@ def test_broll_ai_rerank_toggle_and_metadata(monkeypatch: pytest.MonkeyPatch) ->
 
         suggest_res = client.post(
             f"/api/v1/broll/suggest?project_id={project_id}",
-            json={"max_slots": 1, "candidates_per_slot": 2, "include_external_sources": False, "ai_rerank": True},
+            json={
+                "max_slots": 1,
+                "candidates_per_slot": 2,
+                "include_external_sources": False,
+                "ai_rerank": True,
+            },
         )
         assert suggest_res.status_code == 200
         payload = suggest_res.json()
@@ -623,9 +736,14 @@ def test_broll_ai_rerank_toggle_and_metadata(monkeypatch: pytest.MonkeyPatch) ->
         assert candidate["entities"] == ["Elon Musk"]
 
 
-def test_broll_auto_apply_syncs_and_can_undo_in_one_step(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_broll_auto_apply_syncs_and_can_undo_in_one_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr("app.routers.media.probe_duration_seconds", lambda _: 10.0)
-    monkeypatch.setattr("app.routers.media.probe_stream_flags", lambda _: {"has_video": True, "has_audio": True})
+    monkeypatch.setattr(
+        "app.routers.media.probe_stream_flags",
+        lambda _: {"has_video": True, "has_audio": True},
+    )
     monkeypatch.setattr("app.routers.transcript.generate_transcript", _fake_transcript)
 
     with TestClient(app) as client:
@@ -663,9 +781,14 @@ def test_broll_auto_apply_syncs_and_can_undo_in_one_step(monkeypatch: pytest.Mon
         assert _overlay_clip_count(undo_res.json()["timeline"]) == 0
 
 
-def test_broll_slot_reroll_adds_variants_without_resetting_choice(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_broll_slot_reroll_adds_variants_without_resetting_choice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr("app.routers.media.probe_duration_seconds", lambda _: 10.0)
-    monkeypatch.setattr("app.routers.media.probe_stream_flags", lambda _: {"has_video": True, "has_audio": True})
+    monkeypatch.setattr(
+        "app.routers.media.probe_stream_flags",
+        lambda _: {"has_video": True, "has_audio": True},
+    )
     monkeypatch.setattr("app.routers.transcript.generate_transcript", _fake_transcript)
 
     request_count = {"value": 0}
@@ -683,11 +806,18 @@ def test_broll_slot_reroll_adds_variants_without_resetting_choice(monkeypatch: p
             )
         ]
 
-    monkeypatch.setattr("app.routers.broll.search_external_broll_candidates", _fake_external_candidates)
-    monkeypatch.setattr("app.routers.broll.probe_stream_flags", lambda _: {"has_video": True, "has_audio": False})
+    monkeypatch.setattr(
+        "app.routers.broll.search_external_broll_candidates", _fake_external_candidates
+    )
+    monkeypatch.setattr(
+        "app.routers.broll.probe_stream_flags",
+        lambda _: {"has_video": True, "has_audio": False},
+    )
     monkeypatch.setattr("app.routers.broll.probe_duration_seconds", lambda _: 4.2)
 
-    def _fake_download_external_video(project_id: str, source_url: str) -> tuple[str, str, str]:
+    def _fake_download_external_video(
+        project_id: str, source_url: str
+    ) -> tuple[str, str, str]:
         stem = source_url.rsplit("/", 1)[-1].replace(".mp4", "")
         project_dir = storage.upload_root / project_id
         project_dir.mkdir(parents=True, exist_ok=True)
@@ -696,7 +826,9 @@ def test_broll_slot_reroll_adds_variants_without_resetting_choice(monkeypatch: p
         relative = str(destination.resolve().relative_to(storage.upload_root))
         return (str(destination.resolve()), relative, "video/mp4")
 
-    monkeypatch.setattr("app.routers.broll._download_external_video", _fake_download_external_video)
+    monkeypatch.setattr(
+        "app.routers.broll._download_external_video", _fake_download_external_video
+    )
 
     with TestClient(app) as client:
         project_id = _create_project(client, "Broll Slot Reroll")
@@ -750,7 +882,11 @@ def test_broll_slot_reroll_adds_variants_without_resetting_choice(monkeypatch: p
         assert rerolled_slot["status"] == "chosen"
         assert rerolled_slot["chosen_candidate_id"] == first_candidate["id"]
         assert len(rerolled_slot["candidates"]) >= 2
-        source_urls = {item["source_url"] for item in rerolled_slot["candidates"] if item["source_url"]}
+        source_urls = {
+            item["source_url"]
+            for item in rerolled_slot["candidates"]
+            if item["source_url"]
+        }
         assert "https://example.com/reroll-1.mp4" in source_urls
         assert "https://example.com/reroll-2.mp4" in source_urls
 
@@ -759,9 +895,14 @@ def test_broll_slot_reroll_adds_variants_without_resetting_choice(monkeypatch: p
         assert len(media_after_reroll.json()) == media_count_after_choose
 
 
-def test_broll_sync_and_layer_undo_restore_only_overlay(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_broll_sync_and_layer_undo_restore_only_overlay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr("app.routers.media.probe_duration_seconds", lambda _: 10.0)
-    monkeypatch.setattr("app.routers.media.probe_stream_flags", lambda _: {"has_video": True, "has_audio": True})
+    monkeypatch.setattr(
+        "app.routers.media.probe_stream_flags",
+        lambda _: {"has_video": True, "has_audio": True},
+    )
     monkeypatch.setattr("app.routers.transcript.generate_transcript", _fake_transcript)
     monkeypatch.setattr("app.routers.broll._detect_focus_x_ratio", lambda _: 0.5)
     monkeypatch.setattr("app.routers.broll._extract_audio_transients", lambda *_: ())
@@ -821,12 +962,19 @@ def test_broll_sync_and_layer_undo_restore_only_overlay(monkeypatch: pytest.Monk
 
         sync_res = client.post(
             f"/api/v1/broll/sync?project_id={project_id}",
-            json={"transcript_id": transcript_id, "clear_existing_overlay": True, "overlay_opacity": 0.85},
+            json={
+                "transcript_id": transcript_id,
+                "clear_existing_overlay": True,
+                "overlay_opacity": 0.85,
+            },
         )
         assert sync_res.status_code == 200
         sync_payload = sync_res.json()
         assert sync_payload["synced_clip_count"] >= 1
-        assert _overlay_clip_count(sync_payload["timeline"]) == sync_payload["synced_clip_count"]
+        assert (
+            _overlay_clip_count(sync_payload["timeline"])
+            == sync_payload["synced_clip_count"]
+        )
         assert _audio_clip_count(sync_payload["timeline"]) == 1
 
         undo_res = client.post(f"/api/v1/broll/undo?project_id={project_id}")
@@ -836,9 +984,14 @@ def test_broll_sync_and_layer_undo_restore_only_overlay(monkeypatch: pytest.Monk
         assert _audio_clip_count(undo_payload["timeline"]) == 1
 
 
-def test_broll_suggest_async_job_returns_result(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_broll_suggest_async_job_returns_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr("app.routers.media.probe_duration_seconds", lambda _: 10.0)
-    monkeypatch.setattr("app.routers.media.probe_stream_flags", lambda _: {"has_video": True, "has_audio": True})
+    monkeypatch.setattr(
+        "app.routers.media.probe_stream_flags",
+        lambda _: {"has_video": True, "has_audio": True},
+    )
     monkeypatch.setattr("app.routers.transcript.generate_transcript", _fake_transcript)
     monkeypatch.setattr("app.routers.broll._extract_audio_transients", lambda *_: ())
 
@@ -889,3 +1042,105 @@ def test_broll_suggest_async_job_returns_result(monkeypatch: pytest.MonkeyPatch)
         assert payload["transcript_id"] == transcript_id
         assert payload["created_slots"] >= 1
         assert len(payload["slots"]) == payload["created_slots"]
+
+
+def test_broll_config_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PEXELS_API_KEY", "")
+    monkeypatch.setenv("PIXABAY_API_KEY", "")
+    get_settings.cache_clear()
+
+    with TestClient(app) as client:
+        res = client.get("/api/v1/broll/config")
+        assert res.status_code == 200
+        payload = res.json()
+        assert payload["pexels_configured"] is False
+        assert payload["pixabay_configured"] is False
+        assert payload["stock_search_available"] is False
+
+
+def test_broll_auto_apply_returns_skip_summaries_when_confidence_high(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.routers.media.probe_duration_seconds", lambda _: 10.0)
+    monkeypatch.setattr(
+        "app.routers.media.probe_stream_flags",
+        lambda _: {"has_video": True, "has_audio": True},
+    )
+    monkeypatch.setattr("app.routers.transcript.generate_transcript", _fake_transcript)
+
+    with TestClient(app) as client:
+        project_id = _create_project(client, "Broll Skip Summaries")
+        transcript_asset_id = _upload_video(client, project_id, "speaker-skip.mp4")
+        _upload_video(client, project_id, "cutaway-skip.mp4")
+
+        generate_res = client.post(
+            f"/api/v1/transcript/generate?project_id={project_id}",
+            json={"asset_id": transcript_asset_id},
+        )
+        assert generate_res.status_code == 200
+
+        auto_res = client.post(
+            f"/api/v1/broll/auto-apply?project_id={project_id}",
+            json={
+                "max_slots": 3,
+                "candidates_per_slot": 2,
+                "include_external_sources": False,
+                "ai_rerank": False,
+                "replace_existing": True,
+                "clear_existing_overlay": True,
+                "fallback_to_top_candidate": False,
+                "min_confidence": 0.99,
+            },
+        )
+        assert auto_res.status_code == 200
+        payload = auto_res.json()
+        assert payload["skipped_slots"] >= 1
+        assert payload["skipped_slot_summaries"]
+        assert payload["skipped_slot_summaries"][0]["reason"] in {
+            "needs_review",
+            "no_candidates",
+            "materialize_failed",
+        }
+
+
+def test_broll_single_asset_no_external_keys_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PEXELS_API_KEY", "")
+    monkeypatch.setenv("PIXABAY_API_KEY", "")
+    get_settings.cache_clear()
+    monkeypatch.setattr("app.routers.media.probe_duration_seconds", lambda _: 10.0)
+    monkeypatch.setattr(
+        "app.routers.media.probe_stream_flags",
+        lambda _: {"has_video": True, "has_audio": True},
+    )
+    monkeypatch.setattr("app.routers.transcript.generate_transcript", _fake_transcript)
+
+    with TestClient(app) as client:
+        config_res = client.get("/api/v1/broll/config")
+        assert config_res.status_code == 200
+        assert config_res.json()["stock_search_available"] is False
+
+        project_id = _create_project(client, "Broll Single Asset")
+        transcript_asset_id = _upload_video(client, project_id, "solo.mp4")
+
+        generate_res = client.post(
+            f"/api/v1/transcript/generate?project_id={project_id}",
+            json={"asset_id": transcript_asset_id},
+        )
+        assert generate_res.status_code == 200
+
+        suggest_res = client.post(
+            f"/api/v1/broll/suggest?project_id={project_id}",
+            json={
+                "max_slots": 2,
+                "candidates_per_slot": 2,
+                "include_external_sources": False,
+                "include_project_assets": True,
+                "ai_rerank": False,
+            },
+        )
+        assert suggest_res.status_code == 200
+        slots = suggest_res.json()["slots"]
+        assert slots
+        assert all(len(slot["candidates"]) <= 2 for slot in slots)

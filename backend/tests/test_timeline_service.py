@@ -3,7 +3,7 @@ import pytest
 pytest.importorskip("sqlmodel")
 
 from app.models import Project
-from app.schemas import Clip, OperationPayload, TimelineState, Track
+from app.schemas import Clip, OperationPayload, TextOverlay, TimelineState, Track
 from app.timeline_service import apply_operation, make_default_timeline
 
 
@@ -350,6 +350,60 @@ def test_set_subtitles_hormozi_preset_applies_caption_style_fields() -> None:
     assert overlay.margin_v == 50
 
 
+def test_set_subtitles_only_clears_matching_asset_overlays() -> None:
+    state = TimelineState(
+        tracks=[
+            Track(
+                id="video-1",
+                kind="video",
+                clips=[
+                    Clip(
+                        id="clip-a",
+                        asset_id="asset-a",
+                        start_sec=0,
+                        end_sec=10,
+                        timeline_start_sec=0,
+                    ),
+                    Clip(
+                        id="clip-b",
+                        asset_id="asset-b",
+                        start_sec=0,
+                        end_sec=10,
+                        timeline_start_sec=10,
+                    ),
+                ],
+            ),
+            Track(id="audio-1", kind="audio", clips=[]),
+        ]
+    )
+    state.tracks[0].clips[1].text_overlays = [
+        TextOverlay(
+            id="other-caption",
+            text="keep me",
+            start_sec=0.2,
+            duration_sec=0.8,
+        )
+    ]
+
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="set_subtitles",
+            params={
+                "asset_id": "asset-a",
+                "style": "static",
+                "words": [
+                    {"id": "w1", "text": "hello", "start_sec": 0.2, "end_sec": 0.45},
+                ],
+            },
+        ),
+    )
+
+    assert len(state.tracks[0].clips[0].text_overlays) == 1
+    assert len(state.tracks[0].clips[1].text_overlays) == 1
+    assert state.tracks[0].clips[1].text_overlays[0].text == "keep me"
+
+
 def test_text_overlay_lifecycle_operations() -> None:
     state = make_timeline()
     apply_operation(
@@ -396,6 +450,42 @@ def test_text_overlay_lifecycle_operations() -> None:
         ),
     )
     assert clip.text_overlays == []
+
+
+def test_update_text_overlay_operation() -> None:
+    state = make_timeline()
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="add_text_overlay",
+            params={
+                "clip": "clip-a",
+                "text": "Before edit",
+                "start_sec": 1.0,
+                "duration_sec": 1.6,
+            },
+        ),
+    )
+    clip = state.tracks[0].clips[0]
+    overlay_id = clip.text_overlays[0].id
+
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="update_text_overlay",
+            params={"clip": "clip-a", "overlay": overlay_id, "text": "After edit"},
+        ),
+    )
+    assert clip.text_overlays[0].text == "After edit"
+
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="update_text_overlay",
+            params={"clip": "clip-a", "overlay": overlay_id, "text": "   "},
+        ),
+    )
+    assert clip.text_overlays[0].text == "After edit"
 
 
 def test_text_overlay_trim_clamps_to_clip_window() -> None:

@@ -189,11 +189,35 @@ _CAPTION_STYLE_PRESETS: dict[str, dict[str, Any]] = {
         "min_duration_sec": 0.06,
     },
 }
+_INDIC_LANGUAGE_CODES = {"as", "bn", "gu", "hi", "kn", "ml", "mr", "ne", "od", "or", "pa", "ta", "te", "ur"}
+_INDIC_SCRIPT_RANGES: tuple[tuple[int, int], ...] = (
+    (0x0900, 0x097F),
+    (0x0980, 0x09FF),
+    (0x0A00, 0x0A7F),
+    (0x0A80, 0x0AFF),
+    (0x0B00, 0x0B7F),
+    (0x0B80, 0x0BFF),
+    (0x0C00, 0x0C7F),
+    (0x0C80, 0x0CFF),
+    (0x0D00, 0x0D7F),
+    (0x0600, 0x06FF),
+    (0x0750, 0x077F),
+    (0x08A0, 0x08FF),
+)
 
 
 def _normalize_subtitle_style(value: object) -> str:
     normalized = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
     return _CAPTION_STYLE_ALIASES.get(normalized, normalized)
+
+
+def _normalize_language_code(value: object | None) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in {"", "auto", "detect", "default"}:
+        return None
+    return normalized
 
 
 def _as_int(value: object, default: int, minimum: int, maximum: int) -> int:
@@ -210,6 +234,33 @@ def _as_float(value: object, default: float, minimum: float, maximum: float) -> 
     except (TypeError, ValueError):
         parsed = default
     return max(minimum, min(maximum, parsed))
+
+
+def _contains_script_chars(text: str, ranges: tuple[tuple[int, int], ...]) -> bool:
+    for char in text:
+        code = ord(char)
+        for start, end in ranges:
+            if start <= code <= end:
+                return True
+    return False
+
+
+def _looks_like_indic_caption_request(raw_words: list[Any], language_code: str | None) -> bool:
+    if language_code in _INDIC_LANGUAGE_CODES:
+        return True
+    sample_parts: list[str] = []
+    for item in raw_words:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text", "")).strip()
+        if not text:
+            continue
+        sample_parts.append(text)
+        if len(sample_parts) >= 16:
+            break
+    if not sample_parts:
+        return False
+    return _contains_script_chars(" ".join(sample_parts), _INDIC_SCRIPT_RANGES)
 
 
 def _merged_caption_style_presets(raw: object) -> dict[str, dict[str, Any]]:
@@ -708,6 +759,19 @@ def _apply_delete_text_overlay(state: TimelineState, params: dict[str, Any]) -> 
     del track.clips[clip_idx].text_overlays[overlay_idx]
 
 
+def _apply_update_text_overlay(state: TimelineState, params: dict[str, Any]) -> None:
+    track, clip_idx, overlay_idx = _text_overlay_index_by_ref(
+        state,
+        str(params["overlay"]),
+        clip_ref=params.get("clip"),
+    )
+    overlay = track.clips[clip_idx].text_overlays[overlay_idx]
+    if "text" in params:
+        text = str(params.get("text") or "").strip()
+        if text:
+            overlay.text = text
+
+
 def _apply_add_clip(state: TimelineState, params: dict[str, Any]) -> None:
     track_kind = str(params.get("track_kind", "video"))
     track = _primary_track(state, track_kind)
@@ -1009,6 +1073,25 @@ def _apply_replace_video_track_clips(state: TimelineState, params: dict[str, Any
         raise ValueError("ranges must be a non-empty list")
 
     video_track = _primary_track(state, "video")
+
+    # ── Collect all captions from old clips for this asset before wiping them ──
+    # Captions are stored with start_sec relative to the clip's own start_sec
+    # (i.e., clip-local time). We convert them to source-absolute time so we
+    # can re-map them correctly onto the new (possibly trimmed) clips.
+    all_captions: list[dict[str, Any]] = []
+    for old_clip in video_track.clips:
+        if old_clip.asset_id != asset_id:
+            continue
+        for ov in old_clip.text_overlays:
+            # Convert clip-local → source-absolute time
+            src_start = round(float(old_clip.start_sec) + float(ov.start_sec), 3)
+            src_end = round(src_start + float(ov.duration_sec), 3)
+            all_captions.append({
+                "overlay": ov,
+                "src_start": src_start,
+                "src_end": src_end,
+            })
+
     rebuilt: list[Clip] = []
     cursor = 0.0
     for item in raw_ranges:
@@ -1022,6 +1105,27 @@ def _apply_replace_video_track_clips(state: TimelineState, params: dict[str, Any
             end_sec=end_sec,
             timeline_start_sec=round(cursor, 3),
         )
+
+        # ── Re-attach captions whose source window overlaps this new clip ──
+        for cap in all_captions:
+            # Check overlap with this clip's source range
+            if cap["src_end"] <= start_sec or cap["src_start"] >= end_sec:
+                continue
+            # Clamp the caption to fit inside this clip's source window
+            clamped_src_start = max(cap["src_start"], start_sec)
+            clamped_src_end = min(cap["src_end"], end_sec)
+            new_duration = round(clamped_src_end - clamped_src_start, 3)
+            if new_duration <= 0.02:
+                continue
+            # Convert back to clip-local time
+            new_local_start = round(clamped_src_start - start_sec, 3)
+            new_ov = cap["overlay"].model_copy(update={
+                "id": str(uuid4()),
+                "start_sec": max(new_local_start, 0.0),
+                "duration_sec": new_duration,
+            })
+            clip.text_overlays.append(new_ov)
+
         rebuilt.append(clip)
         cursor += _clip_duration_on_timeline(clip)
     video_track.clips = rebuilt
@@ -1048,6 +1152,8 @@ def _apply_set_subtitles(state: TimelineState, params: dict[str, Any]) -> None:
         raise ValueError("words must be a non-empty list")
 
     asset_id = str(params.get("asset_id", "")).strip() or None
+    transcript_language = _normalize_language_code(params.get("transcript_language"))
+    indic_caption_mode = _looks_like_indic_caption_request(raw_words, transcript_language)
     style = _normalize_subtitle_style(params.get("style", "hormozi_bold")) or "hormozi_bold"
     style_presets = _merged_caption_style_presets(params.get("caption_styles"))
     preset = style_presets.get(style)
@@ -1098,6 +1204,14 @@ def _apply_set_subtitles(state: TimelineState, params: dict[str, Any]) -> None:
         1.1,
         float(params.get("max_caption_display_hard_cap_factor", 1.8)),
     )
+    if indic_caption_mode:
+        max_words = max(max_words, 2)
+        max_chars = max(max_chars, 48)
+        max_gap_sec = max(max_gap_sec, 0.28)
+        max_caption_duration_sec = max(max_caption_duration_sec, 1.6)
+        max_caption_display_sec = max(max_caption_display_sec, 2.2)
+        max_caption_display_hard_cap_factor = max(max_caption_display_hard_cap_factor, 2.0)
+        caption_guard_sec = max(caption_guard_sec, 0.01)
     max_caption_overlays = _as_int(
         params.get("max_caption_overlays", 0),
         0,
@@ -1143,10 +1257,10 @@ def _apply_set_subtitles(state: TimelineState, params: dict[str, Any]) -> None:
     video_track = _primary_track(state, "video")
     clip_chunks: list[tuple[Clip, list[list[dict[str, Any]]]]] = []
     for clip in video_track.clips:
-        if clear_existing:
-            clip.text_overlays = []
         if asset_id and clip.asset_id != asset_id:
             continue
+        if clear_existing:
+            clip.text_overlays = []
 
         clip_words: list[dict[str, Any]] = []
         for item in raw_words:
@@ -1287,6 +1401,7 @@ def apply_operation(state: TimelineState, operation: OperationPayload) -> Timeli
         "add_text_overlay": _apply_add_text_overlay,
         "move_text_overlay": _apply_move_text_overlay,
         "trim_text_overlay": _apply_trim_text_overlay,
+        "update_text_overlay": _apply_update_text_overlay,
         "delete_text_overlay": _apply_delete_text_overlay,
         "add_audio_track": _apply_add_audio_track,
         "add_broll_clip": _apply_add_broll_clip,
@@ -1317,6 +1432,22 @@ def apply_operation(state: TimelineState, operation: OperationPayload) -> Timeli
     handlers[op_type](state, params)
     _recalculate_duration(state)
     return state
+
+
+def timeline_version_caps(session: Session, project_id: str) -> tuple[int, bool, bool]:
+    timeline = get_timeline_row(session, project_id)
+    version = int(timeline.version)
+    can_undo = version > 0
+    can_redo = (
+        session.exec(
+            select(TimelineVersion).where(
+                TimelineVersion.project_id == project_id,
+                TimelineVersion.version == version + 1,
+            )
+        ).first()
+        is not None
+    )
+    return version, can_undo, can_redo
 
 
 def undo_timeline(session: Session, project_id: str) -> Timeline:

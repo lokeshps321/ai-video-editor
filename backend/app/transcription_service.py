@@ -1,54 +1,190 @@
 from __future__ import annotations
 
+import logging as _logging_module
+import time as _time_module
+
+_perf_logger = _logging_module.getLogger(__name__)
+
 import base64
+import ctypes
+import gc
 import os
 import re
 import shlex
-import sys
-import ctypes
 import shutil
 import subprocess
+import sys
 import threading
 from collections import Counter
-from math import isfinite
 from dataclasses import dataclass
 from functools import lru_cache
+from math import isfinite
 from pathlib import Path
 from uuid import uuid4
 
 from .config import get_settings
 from .media_utils import detect_silence_ranges
 
-
 settings = get_settings()
 _GROQ_AUDIO_SESSION = threading.local()
 _TRANSCRIPTION_RUNTIME = threading.local()
 
 DEFAULT_MUSIC_RETRY_PROMPT = (
-    "Transcribe speech and sung lyrics verbatim in the original language. Preserve repeated chorus lines and ad-libs. Do not paraphrase. Do not translate."
+    "Transcribe only clearly audible speech and sung lyrics verbatim in the original "
+    "language. Preserve repeated chorus lines and ad-libs. If a word is unclear, omit "
+    "it instead of guessing. Do not paraphrase. Do not translate. Do not add "
+    "commentary, summaries, or intro/outro phrases that are not present in the audio."
 )
+_PROMPT_LEAKAGE_PHRASES: tuple[tuple[str, ...], ...] = (
+    ("transcribe", "speech", "and", "sung", "lyrics"),
+    ("transcribe", "speech", "and", "analysis"),
+    ("preserve", "repeated", "chorus", "lines"),
+    ("do", "not", "paraphrase"),
+    ("do", "not", "translate"),
+    ("sung", "lyrics"),
+    ("ad", "libs"),
+)
+_PROMPT_LEAKAGE_SINGLETONS: set[str] = {"transcribe", "paraphrase", "translate"}
 
 # ---------------------------------------------------------------------------
 # Filler words (used by vibe auto-cut and hallucination heuristic)
 # ---------------------------------------------------------------------------
 FILLER_WORDS: set[str] = {
-    "um", "uh", "uhm", "umm", "hmm", "hm", "ah", "er", "eh",
-    "like", "basically", "literally", "actually", "right",
-    "you know", "i mean", "sort of", "kind of", "so yeah",
+    "um",
+    "uh",
+    "uhm",
+    "umm",
+    "hmm",
+    "hm",
+    "ah",
+    "er",
+    "eh",
+    "like",
+    "basically",
+    "literally",
+    "actually",
+    "right",
+    "you know",
+    "i mean",
+    "sort of",
+    "kind of",
+    "so yeah",
 }
 
 _HALLUCINATION_STOPWORDS: set[str] = {
-    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from",
-    "i", "i'm", "in", "is", "it", "of", "on", "or", "that", "the", "to", "we", "you",
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "but",
+    "by",
+    "for",
+    "from",
+    "i",
+    "i'm",
+    "in",
+    "is",
+    "it",
+    "of",
+    "on",
+    "or",
+    "that",
+    "the",
+    "to",
+    "we",
+    "you",
+    # Common hallucination words — frequently appear in silence/music gaps
+    "thank",
+    "thanks",
+    "watching",
+    "listen",
+    "listening",
+    "bye",
+    "goodbye",
+    "subscribe",
+    "subscribed",
+    "end",
 }
 
 _TAIL_HALLUCINATION_PHRASES: set[tuple[str, ...]] = {
     ("thank", "you"),
     ("thank", "you", "so", "much"),
     ("thank", "you", "for", "watching"),
+    ("thank", "you", "for", "listening"),
+    ("thank", "you", "very", "much"),
     ("thanks", "for", "watching"),
+    ("thanks", "for", "listening"),
     ("the", "end"),
     ("the", "end", "thank", "you"),
+    ("bye", "bye"),
+    ("good", "bye"),
+    ("see", "you", "next", "time"),
+    ("see", "you", "later"),
+    ("see", "you", "in", "the", "next", "video"),
+    ("that's", "all", "for", "today"),
+    ("that's", "it", "for", "today"),
+    ("please", "subscribe"),
+    ("don't", "forget", "to", "subscribe"),
+    ("like", "and", "subscribe"),
+    ("like", "comment", "and", "subscribe"),
+    ("if", "you", "enjoyed", "this", "video"),
+}
+
+# Head hallucination phrases - common YouTube intro/outro phrases that appear at START
+_HEAD_HALLUCINATION_PHRASES: set[tuple[str, ...]] = {
+    ("thank", "you"),
+    ("thank", "you", "for", "watching"),
+    ("thank", "you", "for", "listening"),
+    ("thanks", "for", "watching"),
+    ("thank", "you", "so", "much"),
+    ("hey", "guys"),
+    ("hey", "everyone"),
+    ("hello", "everyone"),
+    ("hi", "everyone"),
+    ("hi", "guys"),
+    ("what's", "up"),
+    ("what's", "up", "guys"),
+    ("welcome", "back"),
+    ("welcome", "back", "everyone"),
+    ("welcome", "to", "the", "channel"),
+    ("subscribe",),
+    ("please", "subscribe"),
+    ("don't", "forget", "to", "subscribe"),
+    ("like", "and", "subscribe"),
+    ("like", "comment", "and", "subscribe"),
+    ("good", "morning", "everyone"),
+    ("good", "evening", "everyone"),
+}
+
+# Phrases that are almost certainly hallucinations *anywhere* in the transcript
+# when they appear surrounded by sufficient silence gaps.
+_ANYWHERE_HALLUCINATION_PHRASES: set[tuple[str, ...]] = {
+    ("thank", "you", "for", "watching"),
+    ("thank", "you", "for", "listening"),
+    ("thank", "you", "very", "much", "for", "watching"),
+    ("thanks", "for", "watching"),
+    ("thanks", "for", "listening"),
+    ("don't", "forget", "to", "subscribe"),
+    ("please", "subscribe"),
+    ("like", "and", "subscribe"),
+    ("like", "comment", "and", "subscribe"),
+    ("hit", "the", "subscribe", "button"),
+    ("see", "you", "in", "the", "next", "video"),
+    ("see", "you", "next", "time"),
+    ("see", "you", "guys", "next", "time"),
+    ("that's", "all", "for", "today"),
+    ("that's", "it", "for", "today"),
+    ("if", "you", "enjoyed", "this", "video"),
+    ("thank", "you", "so", "much"),
+}
+
+# Single tokens that are almost always hallucinated when isolated inside silence gaps.
+_HALLUCINATION_SINGLETONS_IN_GAPS: set[str] = {
+    "subscribe",
+    "subscribed",
 }
 
 
@@ -62,6 +198,8 @@ class TranscriptWordPayload:
     quality_score: float | None = None
     quality_label: str | None = None
     source_pass: str | None = None
+    speaker_id: str | None = None
+    speaker_label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -79,6 +217,21 @@ def _runtime_profile() -> str | None:
         return None
     normalized = value.strip().lower()
     return normalized or None
+
+
+def _runtime_mode() -> str | None:
+    value = getattr(_TRANSCRIPTION_RUNTIME, "mode", None)
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    return normalized or None
+
+
+def _normalize_transcription_mode(mode: str | None) -> str:
+    normalized = (mode or "auto").strip().lower()
+    if normalized in {"speech", "song"}:
+        return normalized
+    return "auto"
 
 
 def _normalize_source_pass(value: str | None) -> str | None:
@@ -127,7 +280,9 @@ def _copy_word_payload(
         confidence=item.confidence if confidence is ... else confidence,
         quality_score=item.quality_score if quality_score is ... else quality_score,
         quality_label=item.quality_label if quality_label is ... else quality_label,
-        source_pass=item.source_pass if source_pass is ... else _normalize_source_pass(source_pass),
+        source_pass=item.source_pass
+        if source_pass is ...
+        else _normalize_source_pass(source_pass),
     )
 
 
@@ -179,7 +334,15 @@ def _is_placeholder_config_value(value: str | None) -> bool:
     if not raw:
         return True
     lowered = raw.lower()
-    if lowered in {"your_endpoint", "your_key", "changeme", "change_me", "replace_me", "none", "null"}:
+    if lowered in {
+        "your_endpoint",
+        "your_key",
+        "changeme",
+        "change_me",
+        "replace_me",
+        "none",
+        "null",
+    }:
         return True
     if lowered.startswith("your_"):
         return True
@@ -233,7 +396,9 @@ def _build_language_retry_candidates(
         seen.add(configured_language)
         # By default, avoid cross-language drift when the user explicitly picks
         # a language (e.g., Kannada forcing Tamil fallback candidates).
-        if not _env_bool("TRANSCRIBE_GROQ_EXPLICIT_LANGUAGE_ALLOW_CROSS_FALLBACK", False):
+        if not _env_bool(
+            "TRANSCRIBE_GROQ_EXPLICIT_LANGUAGE_ALLOW_CROSS_FALLBACK", False
+        ):
             return candidates
     for language in fallback_languages:
         if language in seen:
@@ -279,8 +444,36 @@ _LANGUAGE_NAMES: dict[str, str] = {
     "ur": "Urdu",
 }
 
+_LANGUAGE_NAME_TO_CODE: dict[str, str] = {
+    name.lower(): code for code, name in _LANGUAGE_NAMES.items()
+}
 
-def _language_script_match_metrics(value: str, language_code: str | None) -> tuple[int, float]:
+# UI uses "or" for Odia; Sarvam/backend may return "od".
+_LANGUAGE_CODE_ALIASES: dict[str, str] = {
+    "od": "or",
+}
+
+_SCRIPT_LANGUAGE_PREFERENCE: tuple[str, ...] = (
+    "kn",
+    "ta",
+    "te",
+    "ml",
+    "hi",
+    "mr",
+    "ne",
+    "bn",
+    "as",
+    "gu",
+    "pa",
+    "or",
+    "od",
+    "ur",
+)
+
+
+def _language_script_match_metrics(
+    value: str, language_code: str | None
+) -> tuple[int, float]:
     code = _normalize_language_code(language_code)
     if not code:
         return 0, 1.0
@@ -289,7 +482,9 @@ def _language_script_match_metrics(value: str, language_code: str | None) -> tup
         return 0, 1.0
 
     if code in {"en"}:
-        matches = sum(1 for char in alpha_chars if ("A" <= char <= "Z") or ("a" <= char <= "z"))
+        matches = sum(
+            1 for char in alpha_chars if ("A" <= char <= "Z") or ("a" <= char <= "z")
+        )
         return len(alpha_chars), (matches / len(alpha_chars))
 
     ranges = _LANGUAGE_SCRIPT_RANGES.get(code)
@@ -306,9 +501,78 @@ def _language_script_match_metrics(value: str, language_code: str | None) -> tup
     return len(alpha_chars), (matches / len(alpha_chars))
 
 
-def _payload_language_match_metrics(payload: TranscriptPayload, language_code: str | None) -> tuple[int, float]:
+def _payload_language_match_metrics(
+    payload: TranscriptPayload, language_code: str | None
+) -> tuple[int, float]:
     sample = " ".join(word.text for word in payload.words[:800])
     return _language_script_match_metrics(sample, language_code)
+
+
+def _detect_indic_script_languages(value: str) -> list[str]:
+    sample = str(value or "").strip()
+    if not sample:
+        return []
+    min_alpha = _env_int("TRANSCRIBE_AUTO_ROUTE_SARVAM_MIXED_SCRIPT_MIN_ALPHA", 6, 0)
+    min_ratio = _env_float(
+        "TRANSCRIBE_AUTO_ROUTE_SARVAM_MIXED_SCRIPT_MIN_RATIO", 0.08, 0.0
+    )
+    preference_rank = {
+        code: index for index, code in enumerate(_SCRIPT_LANGUAGE_PREFERENCE)
+    }
+    best_by_script: dict[tuple[tuple[int, int], ...], tuple[str, int, float]] = {}
+    for code in _INDIC_LANGUAGE_CODES:
+        ranges = _LANGUAGE_SCRIPT_RANGES.get(code)
+        if not ranges:
+            continue
+        alpha_count, script_ratio = _language_script_match_metrics(sample, code)
+        if alpha_count < min_alpha or script_ratio < min_ratio:
+            continue
+        current = best_by_script.get(ranges)
+        candidate = (code, alpha_count, script_ratio)
+        if current is None:
+            best_by_script[ranges] = candidate
+            continue
+        current_rank = preference_rank.get(current[0], len(preference_rank))
+        candidate_rank = preference_rank.get(code, len(preference_rank))
+        if (
+            script_ratio > current[2]
+            or (script_ratio == current[2] and alpha_count > current[1])
+            or (
+                script_ratio == current[2]
+                and alpha_count == current[1]
+                and candidate_rank < current_rank
+            )
+        ):
+            best_by_script[ranges] = candidate
+    ranked = sorted(
+        best_by_script.values(),
+        key=lambda item: (
+            -item[2],
+            -item[1],
+            preference_rank.get(item[0], len(preference_rank)),
+        ),
+    )
+    result = [code for code, _alpha_count, _script_ratio in ranked]
+    marker_boost = _script_marker_language_boost(sample)
+    if marker_boost is None:
+        return result
+    if marker_boost in result:
+        return [marker_boost] + [code for code in result if code != marker_boost]
+    return [marker_boost, *result]
+
+
+_SCRIPT_LANGUAGE_MARKERS: dict[str, tuple[str, ...]] = {
+    "mr": ("मराठी",),
+    "ne": ("नेपाल", "नेपाली"),
+    "as": ("অসম", "অসমীয়া"),
+}
+
+
+def _script_marker_language_boost(text: str) -> str | None:
+    for code, markers in _SCRIPT_LANGUAGE_MARKERS.items():
+        if any(marker in text for marker in markers):
+            return code
+    return None
 
 
 def _build_language_guard_prompt(language_code: str) -> str:
@@ -321,7 +585,9 @@ def _build_language_guard_prompt(language_code: str) -> str:
     )
 
 
-def _needs_language_guard_retry(payload: TranscriptPayload, language_code: str | None) -> bool:
+def _needs_language_guard_retry(
+    payload: TranscriptPayload, language_code: str | None
+) -> bool:
     normalized = _normalize_language_code(language_code)
     if not normalized:
         return False
@@ -331,13 +597,30 @@ def _needs_language_guard_retry(payload: TranscriptPayload, language_code: str |
     if alpha_count >= min_alpha and script_ratio < min_ratio:
         return True
     detected_language = _normalize_language_code(payload.language)
-    if detected_language and detected_language != normalized and script_ratio < (min_ratio + 0.10):
+    if (
+        detected_language
+        and detected_language != normalized
+        and script_ratio < (min_ratio + 0.10)
+    ):
         return True
     return False
 
 
 _INDIC_LANGUAGE_CODES: set[str] = {
-    "as", "bn", "gu", "hi", "kn", "ml", "mr", "ne", "od", "or", "pa", "ta", "te", "ur",
+    "as",
+    "bn",
+    "gu",
+    "hi",
+    "kn",
+    "ml",
+    "mr",
+    "ne",
+    "od",
+    "or",
+    "pa",
+    "ta",
+    "te",
+    "ur",
 }
 
 _SARVAM_LANGUAGE_CODE_MAP: dict[str, str] = {
@@ -376,6 +659,171 @@ def _should_route_to_sarvam(backend: str, language_code: str | None) -> bool:
     return _is_indic_language(language_code)
 
 
+_SOUTH_INDIAN_MUSIC_NEIGHBORS: tuple[str, ...] = ("kn", "ta", "te", "ml")
+
+
+def _south_indic_music_neighbor_languages(detected_language: str | None) -> list[str]:
+    normalized = _normalize_language_code(detected_language)
+    if normalized not in set(_SOUTH_INDIAN_MUSIC_NEIGHBORS):
+        return []
+    return [
+        code
+        for code in _SOUTH_INDIAN_MUSIC_NEIGHBORS
+        if code != normalized and _is_indic_language(code)
+    ]
+
+
+def _music_language_neighbor_probes(detected_language: str | None) -> list[str]:
+    normalized = _normalize_detected_language(detected_language)
+    if not normalized:
+        return []
+    if normalized in set(_SOUTH_INDIAN_MUSIC_NEIGHBORS):
+        return _south_indic_music_neighbor_languages(normalized)
+    if normalized == "hi":
+        return [
+            code
+            for code in ("ta", "te", "kn", "ml", "mr", "bn")
+            if _is_indic_language(code)
+        ]
+    return []
+
+
+def _looks_like_latin_music_lyrics(payload: TranscriptPayload | None) -> bool:
+    if payload is None or not payload.text:
+        return False
+    min_ratio = _env_float("TRANSCRIBE_MUSIC_LATIN_LYRICS_MIN_RATIO", 0.80, 0.5)
+    min_alpha = _env_int("TRANSCRIBE_MUSIC_LATIN_LYRICS_MIN_ALPHA", 24, 8)
+    alpha = sum(1 for char in payload.text if char.isalpha())
+    if alpha < min_alpha:
+        return False
+    return _ascii_latin_ratio(payload.text) >= min_ratio
+
+
+def _sarvam_script_disagrees_with_language(payload: TranscriptPayload) -> bool:
+    detected = _normalize_detected_language(payload.language)
+    if not _is_indic_language(detected):
+        return False
+    script_languages = _detect_indic_script_languages(payload.text)
+    if not script_languages:
+        return False
+    return script_languages[0] != detected
+
+
+def _should_skip_sarvam_first_return(
+    payload: TranscriptPayload,
+    *,
+    configured_language: str | None,
+    music_auto_routing: bool,
+) -> bool:
+    if configured_language is not None or not music_auto_routing:
+        return False
+    if _looks_like_latin_music_lyrics(payload):
+        return True
+    return _sarvam_script_disagrees_with_language(payload)
+
+
+def _auto_sarvam_music_routing_allowed(
+    *,
+    profile: str,
+    configured_language: str | None,
+) -> bool:
+    return profile in {"music", "mixed"} and configured_language is None
+
+
+def _resolve_auto_sarvam_probe_attempts(
+    *,
+    fast_mode_enabled: bool,
+    speed_optimized: bool,
+    profile: str,
+    configured_language: str | None,
+) -> int:
+    max_attempts = _env_int("TRANSCRIBE_AUTO_ROUTE_SARVAM_MAX_ATTEMPTS", 4, 0)
+    if max_attempts <= 0:
+        return 0
+    if not fast_mode_enabled and not speed_optimized:
+        return max_attempts
+    if not _auto_sarvam_music_routing_allowed(
+        profile=profile,
+        configured_language=configured_language,
+    ):
+        return 0
+    fast_min = _env_int("TRANSCRIBE_AUTO_ROUTE_SARVAM_FAST_MIN_ATTEMPTS", 3, 0)
+    return min(max_attempts, max(fast_min, 1))
+
+
+def _build_auto_sarvam_probe_languages(
+    payload: TranscriptPayload,
+    duration_sec: float,
+    profile: str,
+    configured_language: str | None,
+) -> list[str | None]:
+    if configured_language:
+        return []
+    if not _env_bool("TRANSCRIBE_AUTO_ROUTE_SARVAM_AFTER_GROQ", True):
+        return []
+
+    candidates: list[str | None] = []
+    detected_language = _normalize_detected_language(payload.language)
+    script_languages = (
+        _detect_indic_script_languages(payload.text)
+        if _env_bool("TRANSCRIBE_AUTO_ROUTE_SARVAM_ON_MIXED_SCRIPT", True)
+        else []
+    )
+    if _is_indic_language(detected_language):
+        candidates.append(detected_language or "")
+    candidates.extend(script_languages)
+
+    max_latin_ratio = _env_float(
+        "TRANSCRIBE_AUTO_ROUTE_SARVAM_MAX_LATIN_RATIO", 0.92, 0.0
+    )
+    latin_ratio = _ascii_latin_ratio(payload.text)
+    should_probe_fallbacks = not candidates and (
+        _is_low_coverage(payload, duration_sec) and latin_ratio < max_latin_ratio
+    )
+    if should_probe_fallbacks:
+        fallback_languages = _parse_language_fallbacks(
+            os.getenv("TRANSCRIBE_AUTO_ROUTE_SARVAM_LANGUAGES", "hi,kn,ta,te,ml")
+        )
+        candidates.extend(
+            language for language in fallback_languages if _is_indic_language(language)
+        )
+
+    if (
+        profile in {"music", "mixed"}
+        and _is_indic_language(detected_language)
+        and _env_bool("TRANSCRIBE_AUTO_ROUTE_SARVAM_MUSIC_NEIGHBOR_PROBE", True)
+    ):
+        for neighbor in _music_language_neighbor_probes(detected_language):
+            if neighbor not in candidates:
+                candidates.append(neighbor)
+
+    if (
+        candidates
+        and profile in {"music", "mixed"}
+        and _env_bool("TRANSCRIBE_AUTO_ROUTE_SARVAM_PROBE_UNKNOWN_FIRST", True)
+    ):
+        # Songs often confuse Whisper between neighboring Indian languages
+        # (Kannada/Tamil/Telugu especially). Let Sarvam run its own detector once
+        # before forcing the language that Whisper guessed.
+        candidates.insert(0, None)
+
+    unique_candidates: list[str | None] = []
+    seen: set[str] = set()
+    for language in candidates:
+        normalized = _normalize_language_code(language)
+        if normalized is None:
+            if "unknown" in seen:
+                continue
+            seen.add("unknown")
+            unique_candidates.append(None)
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        unique_candidates.append(normalized)
+    return unique_candidates
+
+
 def _sarvam_language_code(language_hint: str | None) -> str:
     normalized = _normalize_language_code(language_hint)
     if not normalized:
@@ -391,7 +839,14 @@ def _normalize_detected_language(value: object | None) -> str | None:
         return None
     if "-" in raw:
         raw = raw.split("-", 1)[0]
-    return _normalize_language_code(raw)
+    if raw in _LANGUAGE_NAME_TO_CODE:
+        return _LANGUAGE_NAME_TO_CODE[raw]
+    code = _normalize_language_code(raw)
+    if code in _LANGUAGE_CODE_ALIASES:
+        return _LANGUAGE_CODE_ALIASES[code]
+    if code in _INDIC_LANGUAGE_CODES or code in _LANGUAGE_NAMES:
+        return code
+    return code
 
 
 def _parse_timestamp_value(value: object | None) -> float | None:
@@ -450,10 +905,12 @@ def _build_word_payloads_from_series(
                     confidence=None,
                 )
             )
-    return _normalize_words(words, duration_sec)
+    return _normalize_words(words, duration_sec, apply_offset=False)
 
 
-def _fallback_words_from_text(text: str, duration_sec: float) -> list[TranscriptWordPayload]:
+def _fallback_words_from_text(
+    text: str, duration_sec: float
+) -> list[TranscriptWordPayload]:
     parts = [part for part in text.split() if part.strip()]
     if not parts:
         return []
@@ -471,7 +928,7 @@ def _fallback_words_from_text(text: str, duration_sec: float) -> list[Transcript
                 confidence=None,
             )
         )
-    return _normalize_words(words, duration_sec)
+    return _normalize_words(words, duration_sec, apply_offset=False)
 
 
 def _should_fallback_to_text_words(
@@ -490,7 +947,9 @@ def _should_fallback_to_text_words(
     return False
 
 
-def _extract_sarvam_word_timestamps(payload: object, duration_sec: float) -> list[TranscriptWordPayload]:
+def _extract_sarvam_word_timestamps(
+    payload: object, duration_sec: float
+) -> list[TranscriptWordPayload]:
     if not isinstance(payload, dict):
         return []
     timestamps = payload.get("timestamps")
@@ -517,7 +976,9 @@ def _extract_sarvam_word_timestamps(payload: object, duration_sec: float) -> lis
                 else item.get("end")
             )
         if words_series and starts_series and ends_series:
-            return _build_word_payloads_from_series(words_series, starts_series, ends_series, duration_sec)
+            return _build_word_payloads_from_series(
+                words_series, starts_series, ends_series, duration_sec
+            )
         return []
     if isinstance(timestamps, dict) and isinstance(timestamps.get("timestamps"), dict):
         timestamps = timestamps.get("timestamps")
@@ -527,9 +988,15 @@ def _extract_sarvam_word_timestamps(payload: object, duration_sec: float) -> lis
     words_series = timestamps.get("words")
     starts_series = timestamps.get("start_time_seconds")
     ends_series = timestamps.get("end_time_seconds")
-    if not isinstance(words_series, list) or not isinstance(starts_series, list) or not isinstance(ends_series, list):
+    if (
+        not isinstance(words_series, list)
+        or not isinstance(starts_series, list)
+        or not isinstance(ends_series, list)
+    ):
         return []
-    return _build_word_payloads_from_series(words_series, starts_series, ends_series, duration_sec)
+    return _build_word_payloads_from_series(
+        words_series, starts_series, ends_series, duration_sec
+    )
 
 
 def _session_source_key(path: str) -> str:
@@ -559,7 +1026,9 @@ def _finish_groq_audio_session() -> None:
 def _resolve_groq_input_source(path: str) -> tuple[str, Path | None]:
     source_key = _session_source_key(path)
     session_source_key = getattr(_GROQ_AUDIO_SESSION, "source_key", None)
-    use_vocal_isolation = bool(getattr(_GROQ_AUDIO_SESSION, "use_vocal_isolation", True))
+    use_vocal_isolation = bool(
+        getattr(_GROQ_AUDIO_SESSION, "use_vocal_isolation", True)
+    )
     if session_source_key != source_key:
         return _extract_audio_for_cloud(path, use_vocal_isolation=use_vocal_isolation)
 
@@ -567,7 +1036,9 @@ def _resolve_groq_input_source(path: str) -> tuple[str, Path | None]:
     if isinstance(prepared_path, str) and Path(prepared_path).exists():
         return prepared_path, None
 
-    prepared_path, cleanup_path = _extract_audio_for_cloud(path, use_vocal_isolation=use_vocal_isolation)
+    prepared_path, cleanup_path = _extract_audio_for_cloud(
+        path, use_vocal_isolation=use_vocal_isolation
+    )
     _GROQ_AUDIO_SESSION.prepared_path = prepared_path
     _GROQ_AUDIO_SESSION.cleanup_path = cleanup_path
     return prepared_path, None
@@ -589,16 +1060,33 @@ def _normalize_confidence(value: object) -> float | None:
     return max(0.0, min(parsed, 1.0))
 
 
-def _normalize_words(words: list[TranscriptWordPayload], duration_sec: float) -> list[TranscriptWordPayload]:
+def _normalize_words(
+    words: list[TranscriptWordPayload],
+    duration_sec: float,
+    *,
+    apply_offset: bool = True,
+) -> list[TranscriptWordPayload]:
     min_confidence = _env_float("TRANSCRIBE_WORD_MIN_CONFIDENCE", 0.15, 0.0)
     min_word_duration_sec = _env_float("TRANSCRIBE_MIN_WORD_DURATION_SEC", 0.05, 0.01)
-    max_word_duration_sec = _env_float("TRANSCRIBE_MAX_WORD_DURATION_SEC", 1.2, min_word_duration_sec)
+    max_word_duration_sec = _env_float(
+        "TRANSCRIBE_MAX_WORD_DURATION_SEC", 1.2, min_word_duration_sec
+    )
     next_word_guard_sec = _env_float("TRANSCRIBE_WORD_NEXT_GUARD_SEC", 0.01, 0.0)
+    # Global timestamp offset: only applied during initial generation (apply_offset=True)
+    # NOT during storage/reading to avoid triple-application
+    timestamp_offset_sec = (
+        _env_float("TRANSCRIBE_TIMESTAMP_OFFSET_SEC", 0.0, -5.0)
+        if apply_offset
+        else 0.0
+    )
 
     prelim: list[TranscriptWordPayload] = []
     for item in sorted(words, key=lambda entry: entry.start_sec):
-        start_sec = round(_clamp_time(float(item.start_sec), duration_sec), 3)
-        end_sec = round(_clamp_time(float(item.end_sec), duration_sec), 3)
+        # Apply global timestamp offset (only on initial generation)
+        raw_start = float(item.start_sec) + timestamp_offset_sec
+        raw_end = float(item.end_sec) + timestamp_offset_sec
+        start_sec = round(_clamp_time(raw_start, duration_sec), 3)
+        end_sec = round(_clamp_time(raw_end, duration_sec), 3)
         if end_sec <= start_sec:
             end_sec = round(min(duration_sec, start_sec + min_word_duration_sec), 3)
         text = _clean_word(item.text)
@@ -618,6 +1106,8 @@ def _normalize_words(words: list[TranscriptWordPayload], duration_sec: float) ->
                 quality_score=item.quality_score,
                 quality_label=item.quality_label,
                 source_pass=_normalize_source_pass(item.source_pass),
+                speaker_id=item.speaker_id,
+                speaker_label=item.speaker_label,
             )
         )
 
@@ -636,7 +1126,10 @@ def _normalize_words(words: list[TranscriptWordPayload], duration_sec: float) ->
             if index + 1 < len(prelim):
                 next_start = float(prelim[index + 1].start_sec)
                 if next_start > start_sec:
-                    fallback_end = min(fallback_end, max(start_sec + 0.001, next_start - next_word_guard_sec))
+                    fallback_end = min(
+                        fallback_end,
+                        max(start_sec + 0.001, next_start - next_word_guard_sec),
+                    )
             end_sec = fallback_end
 
         if end_sec <= start_sec:
@@ -652,6 +1145,8 @@ def _normalize_words(words: list[TranscriptWordPayload], duration_sec: float) ->
                 quality_score=item.quality_score,
                 quality_label=item.quality_label,
                 source_pass=_normalize_source_pass(item.source_pass),
+                speaker_id=item.speaker_id,
+                speaker_label=item.speaker_label,
             )
         )
     return normalized
@@ -662,14 +1157,21 @@ def sanitize_transcript_words(
     duration_sec: float,
     *,
     apply_filters: bool = False,
+    apply_offset: bool = True,
 ) -> list[TranscriptWordPayload]:
-    normalized = _normalize_words(words, max(float(duration_sec), 0.0))
+    normalized = _normalize_words(
+        words, max(float(duration_sec), 0.0), apply_offset=apply_offset
+    )
     if apply_filters:
-        normalized = _trim_known_tail_hallucination(normalized, max(float(duration_sec), 0.0))
+        normalized = _trim_known_tail_hallucination(
+            normalized, max(float(duration_sec), 0.0)
+        )
     return normalized
 
 
-def _detect_hallucinations(words: list[TranscriptWordPayload]) -> list[TranscriptWordPayload]:
+def _detect_hallucinations(
+    words: list[TranscriptWordPayload],
+) -> list[TranscriptWordPayload]:
     """Remove repeated phrase loops — a common Whisper failure mode.
 
     Detects when the same short phrase is repeated 3+ times consecutively
@@ -698,10 +1200,16 @@ def _detect_hallucinations(words: list[TranscriptWordPayload]) -> list[Transcrip
                         prev,
                         start_sec=float(prev.start_sec),
                         end_sec=max(float(prev.end_sec), float(item.end_sec)),
-                        confidence=prev.confidence if prev.confidence is not None else item.confidence,
-                        quality_score=prev.quality_score if prev.quality_score is not None else item.quality_score,
+                        confidence=prev.confidence
+                        if prev.confidence is not None
+                        else item.confidence,
+                        quality_score=prev.quality_score
+                        if prev.quality_score is not None
+                        else item.quality_score,
                         quality_label=prev.quality_label or item.quality_label,
-                        source_pass=_normalize_source_pass(prev.source_pass or item.source_pass),
+                        source_pass=_normalize_source_pass(
+                            prev.source_pass or item.source_pass
+                        ),
                     )
                     continue
         deduped.append(item)
@@ -711,8 +1219,14 @@ def _detect_hallucinations(words: list[TranscriptWordPayload]) -> list[Transcrip
         return words
 
     profile = _runtime_profile()
-    if profile in {"music", "mixed"} and not _env_bool("TRANSCRIBE_COLLAPSE_REPEATS_IN_MUSIC", False):
+    mode = _runtime_mode()
+    if mode == "song" and not _env_bool("TRANSCRIBE_COLLAPSE_REPEATS_IN_SONG", False):
         return words
+    if profile in {"music", "mixed"}:
+        if _env_bool("TRANSCRIBE_PRESERVE_MUSIC_REPEATS", True):
+            return words
+        if not _env_bool("TRANSCRIBE_COLLAPSE_REPEATS_IN_MUSIC", False):
+            return words
 
     cleaned: list[TranscriptWordPayload] = []
     i = 0
@@ -720,13 +1234,17 @@ def _detect_hallucinations(words: list[TranscriptWordPayload]) -> list[Transcrip
         # Try phrase lengths 1-4 words
         found_repeat = False
         for phrase_len in range(1, min(5, (len(words) - i) // 2 + 1)):
-            phrase_texts = tuple(_normalize_token(w.text) for w in words[i : i + phrase_len])
+            phrase_texts = tuple(
+                _normalize_token(w.text) for w in words[i : i + phrase_len]
+            )
             if any(not token for token in phrase_texts):
                 continue
             repeat_count = 1
             j = i + phrase_len
             while j + phrase_len <= len(words):
-                next_texts = tuple(_normalize_token(w.text) for w in words[j : j + phrase_len])
+                next_texts = tuple(
+                    _normalize_token(w.text) for w in words[j : j + phrase_len]
+                )
                 if next_texts == phrase_texts:
                     repeat_count += 1
                     j += phrase_len
@@ -750,7 +1268,9 @@ def _detect_hallucinations(words: list[TranscriptWordPayload]) -> list[Transcrip
     # Collapse repeated short phrases that recur many times in a tight window
     # (e.g. lyric loops) while preserving the first occurrence.
     min_occurrences = _env_int("TRANSCRIBE_HALLUCINATION_REPEAT_MIN_OCCURRENCES", 3, 2)
-    repeat_window_sec = _env_float("TRANSCRIBE_HALLUCINATION_REPEAT_WINDOW_SEC", 20.0, 2.0)
+    repeat_window_sec = _env_float(
+        "TRANSCRIBE_HALLUCINATION_REPEAT_WINDOW_SEC", 20.0, 2.0
+    )
     if len(cleaned) < 8 or min_occurrences <= 1:
         return cleaned
 
@@ -803,7 +1323,9 @@ def _detect_hallucinations(words: list[TranscriptWordPayload]) -> list[Transcrip
 
     # Collapse short "backtrack" glitches (A B A or A B A B) that appear in
     # noisy mixes after ASR decoding.
-    backtrack_gap_sec = _env_float("TRANSCRIBE_HALLUCINATION_BACKTRACK_GAP_SEC", 1.2, 0.2)
+    backtrack_gap_sec = _env_float(
+        "TRANSCRIBE_HALLUCINATION_BACKTRACK_GAP_SEC", 1.2, 0.2
+    )
     if len(filtered) < 3:
         return filtered
     normalized = [_normalize_token(item.text) for item in filtered]
@@ -833,7 +1355,9 @@ def _detect_hallucinations(words: list[TranscriptWordPayload]) -> list[Transcrip
 
     if not remove_backtrack:
         return filtered
-    collapsed = [item for idx, item in enumerate(filtered) if idx not in remove_backtrack]
+    collapsed = [
+        item for idx, item in enumerate(filtered) if idx not in remove_backtrack
+    ]
     return collapsed if collapsed else filtered
 
 
@@ -847,17 +1371,37 @@ def _detect_sparse_hallucinations(
     of instrumental audio or silence.  This filter scans for sparse windows
     (few words spread across a long time span) with low average confidence and
     removes them.
+
+    For song/music profiles, the filter is more aggressive when confidence data
+    is unavailable (e.g. Groq backend): any sparse cluster surrounded by large
+    gaps is likely a hallucination in an instrumental section.
     """
     if len(words) < 3 or duration_sec <= 0:
         return words
 
-    sparse_window_sec = _env_float("TRANSCRIBE_SPARSE_HALLUCINATION_WINDOW_SEC", 8.0, 3.0)
+    sparse_window_sec = _env_float(
+        "TRANSCRIBE_SPARSE_HALLUCINATION_WINDOW_SEC", 8.0, 3.0
+    )
     sparse_max_words = _env_int("TRANSCRIBE_SPARSE_HALLUCINATION_MAX_WORDS", 5, 1)
-    sparse_max_confidence = _env_float("TRANSCRIBE_SPARSE_HALLUCINATION_MAX_CONFIDENCE", 0.55, 0.0)
-    sparse_min_gap_before = _env_float("TRANSCRIBE_SPARSE_HALLUCINATION_MIN_GAP_SEC", 3.0, 1.0)
+    sparse_max_confidence = _env_float(
+        "TRANSCRIBE_SPARSE_HALLUCINATION_MAX_CONFIDENCE", 0.55, 0.0
+    )
+    sparse_min_gap_before = _env_float(
+        "TRANSCRIBE_SPARSE_HALLUCINATION_MIN_GAP_SEC", 3.0, 1.0
+    )
 
     if not _env_bool("TRANSCRIBE_SPARSE_HALLUCINATION_FILTER", True):
         return words
+
+    # In song/music profiles, be more aggressive with gap detection and
+    # treat missing-confidence clusters as hallucinations.
+    profile = _runtime_profile()
+    mode = _runtime_mode()
+    is_music_context = profile in {"music", "mixed"} or mode == "song"
+    music_min_gap = _env_float(
+        "TRANSCRIBE_SPARSE_HALLUCINATION_MUSIC_MIN_GAP_SEC", 2.0, 0.5
+    )
+    effective_min_gap = music_min_gap if is_music_context else sparse_min_gap_before
 
     drop_indices: set[int] = set()
 
@@ -867,8 +1411,12 @@ def _detect_sparse_hallucinations(
     for i, word_i in indexed:
         # Find runs of words that are sparse (few words in a wide time window)
         # Look for a gap before or after this word that indicates a non-speech region
-        gap_before = float(word_i.start_sec) if i == 0 else (float(word_i.start_sec) - float(words[i - 1].end_sec))
-        if gap_before < sparse_min_gap_before and i > 0:
+        gap_before = (
+            float(word_i.start_sec)
+            if i == 0
+            else (float(word_i.start_sec) - float(words[i - 1].end_sec))
+        )
+        if gap_before < effective_min_gap and i > 0:
             continue
 
         # Collect consecutive words that fall within the sparse window
@@ -882,8 +1430,12 @@ def _detect_sparse_hallucinations(
 
         # Check if there's also a gap after the cluster
         last_idx = cluster_indices[-1]
-        gap_after = (duration_sec - cluster_end) if last_idx == len(words) - 1 else (float(words[last_idx + 1].start_sec) - cluster_end)
-        if gap_after < sparse_min_gap_before and last_idx < len(words) - 1:
+        gap_after = (
+            (duration_sec - cluster_end)
+            if last_idx == len(words) - 1
+            else (float(words[last_idx + 1].start_sec) - cluster_end)
+        )
+        if gap_after < effective_min_gap and last_idx < len(words) - 1:
             continue
 
         # This cluster is sparse (surrounded by gaps) - check word count and confidence
@@ -897,13 +1449,19 @@ def _detect_sparse_hallucinations(
             if words[idx].confidence is not None
         ]
         if not confidences:
-            # No confidence data available, check if all words are stopwords
-            all_stopwords = all(
-                _normalize_token(words[idx].text) in _HALLUCINATION_STOPWORDS
-                for idx in cluster_indices
-            )
-            if all_stopwords:
+            # No confidence data available (common with Groq backend).
+            # In music/song context, sparse clusters surrounded by large gaps
+            # during instrumental sections are almost certainly hallucinations.
+            if is_music_context:
                 drop_indices.update(cluster_indices)
+            else:
+                # Fallback: only drop if all words are stopwords
+                all_stopwords = all(
+                    _normalize_token(words[idx].text) in _HALLUCINATION_STOPWORDS
+                    for idx in cluster_indices
+                )
+                if all_stopwords:
+                    drop_indices.update(cluster_indices)
             continue
 
         avg_confidence = sum(confidences) / len(confidences)
@@ -913,7 +1471,74 @@ def _detect_sparse_hallucinations(
     if not drop_indices:
         return words
 
+    _perf_logger.debug(
+        "Sparse hallucination filter removed %d word(s) in %s context: %s",
+        len(drop_indices),
+        "music/song" if is_music_context else "speech",
+        [words[idx].text for idx in sorted(drop_indices)],
+    )
     filtered = [word for idx, word in enumerate(words) if idx not in drop_indices]
+    return filtered if filtered else words
+
+
+def _drop_words_in_nonvocal_regions(
+    words: list[TranscriptWordPayload],
+    duration_sec: float,
+    *,
+    audio_path: str | None,
+) -> list[TranscriptWordPayload]:
+    """Remove words that land inside long no-vocal spans.
+
+    For music-heavy content, ASR can hallucinate isolated words during
+    instrumental sections. Detect these spans on the prepared audio input and
+    drop words whose midpoint clearly falls inside them.
+    """
+    if len(words) < 2 or duration_sec <= 0 or not audio_path:
+        return words
+    if _runtime_profile() not in {"music", "mixed"}:
+        return words
+    if not _env_bool("TRANSCRIBE_NONVOCAL_REGION_FILTER", True):
+        return words
+
+    min_nonvocal_sec = _env_float("TRANSCRIBE_NONVOCAL_REGION_MIN_SEC", 1.6, 0.4)
+    noise_db = _env_float("TRANSCRIBE_NONVOCAL_REGION_NOISE_DB", -34.0, -80.0)
+    guard_sec = _env_float("TRANSCRIBE_NONVOCAL_REGION_GUARD_SEC", 0.12, 0.0)
+    max_regions = _env_int("TRANSCRIBE_NONVOCAL_REGION_MAX_SPANS", 48, 1)
+
+    try:
+        silence_ranges = detect_silence_ranges(
+            audio_path,
+            noise_db=noise_db,
+            min_silence_sec=min_nonvocal_sec,
+            max_duration_sec=duration_sec,
+        )
+    except Exception:  # noqa: BLE001
+        return words
+
+    if not silence_ranges:
+        return words
+
+    protected_ranges: list[tuple[float, float]] = []
+    for start_sec, end_sec in silence_ranges[:max_regions]:
+        start = max(0.0, min(float(start_sec), duration_sec))
+        end = max(0.0, min(float(end_sec), duration_sec))
+        if end - start < min_nonvocal_sec:
+            continue
+        inner_start = min(end, start + guard_sec)
+        inner_end = max(inner_start, end - guard_sec)
+        if inner_end - inner_start < max(0.2, min_nonvocal_sec * 0.35):
+            continue
+        protected_ranges.append((inner_start, inner_end))
+
+    if not protected_ranges:
+        return words
+
+    filtered: list[TranscriptWordPayload] = []
+    for word in words:
+        midpoint = _word_midpoint_sec(word)
+        if any(start <= midpoint <= end for start, end in protected_ranges):
+            continue
+        filtered.append(word)
     return filtered if filtered else words
 
 
@@ -926,10 +1551,12 @@ def _trim_known_tail_hallucination(
     if not _env_bool("TRANSCRIBE_TAIL_PHRASE_FILTER", True):
         return words
 
-    min_gap_before_sec = _env_float("TRANSCRIBE_TAIL_PHRASE_MIN_GAP_SEC", 0.5, 0.0)
-    max_phrase_span_sec = _env_float("TRANSCRIBE_TAIL_PHRASE_MAX_SPAN_SEC", 2.4, 0.1)
-    min_remaining_words = _env_int("TRANSCRIBE_TAIL_PHRASE_MIN_REMAINING_WORDS", 4, 0)
-    max_phrase_words = max(2, min(_env_int("TRANSCRIBE_TAIL_PHRASE_MAX_WORDS", 4, 2), 6))
+    min_gap_before_sec = _env_float("TRANSCRIBE_TAIL_PHRASE_MIN_GAP_SEC", 0.3, 0.0)
+    max_phrase_span_sec = _env_float("TRANSCRIBE_TAIL_PHRASE_MAX_SPAN_SEC", 3.0, 0.1)
+    min_remaining_words = _env_int("TRANSCRIBE_TAIL_PHRASE_MIN_REMAINING_WORDS", 3, 0)
+    max_phrase_words = max(
+        2, min(_env_int("TRANSCRIBE_TAIL_PHRASE_MAX_WORDS", 6, 2), 8)
+    )
 
     normalized_tokens = [_normalize_token(item.text) for item in words]
     total = len(words)
@@ -961,22 +1588,693 @@ def _trim_known_tail_hallucination(
     return words
 
 
-def _apply_word_filters(words: list[TranscriptWordPayload], duration_sec: float) -> list[TranscriptWordPayload]:
+def _trim_sparse_music_tail(
+    words: list[TranscriptWordPayload],
+    duration_sec: float,
+    *,
+    force: bool = False,
+) -> list[TranscriptWordPayload]:
+    if len(words) < 3 or duration_sec <= 0:
+        return words
+    if not force and _runtime_profile() not in {"music", "mixed"}:
+        return words
+    if not _env_bool("TRANSCRIBE_SPARSE_MUSIC_TAIL_FILTER", True):
+        return words
+
+    max_tail_words = _env_int("TRANSCRIBE_SPARSE_MUSIC_TAIL_MAX_WORDS", 6, 1)
+    max_tail_span_sec = _env_float(
+        "TRANSCRIBE_SPARSE_MUSIC_TAIL_MAX_SPAN_SEC", 4.0, 0.2
+    )
+    default_tail_gap_sec = 4.0 if duration_sec <= 30.0 else 2.5
+    min_tail_gap_sec = _env_float(
+        "TRANSCRIBE_SPARSE_MUSIC_TAIL_MIN_GAP_SEC", default_tail_gap_sec, 0.5
+    )
+    if duration_sec <= 30.0:
+        min_tail_gap_sec = max(min_tail_gap_sec, default_tail_gap_sec)
+    min_prev_gap_sec = _env_float("TRANSCRIBE_SPARSE_MUSIC_TAIL_PREV_GAP_SEC", 1.2, 0.0)
+    cluster_gap_sec = _env_float(
+        "TRANSCRIBE_SPARSE_MUSIC_TAIL_CLUSTER_GAP_SEC", 0.85, 0.05
+    )
+    max_avg_confidence = _env_float(
+        "TRANSCRIBE_SPARSE_MUSIC_TAIL_MAX_CONFIDENCE", 0.72, 0.0
+    )
+
+    tail_gap_sec = max(0.0, duration_sec - float(words[-1].end_sec))
+    if tail_gap_sec < min_tail_gap_sec:
+        return words
+
+    start_idx = len(words) - 1
+    while start_idx > 0:
+        gap_sec = max(
+            0.0, float(words[start_idx].start_sec) - float(words[start_idx - 1].end_sec)
+        )
+        if gap_sec > cluster_gap_sec:
+            break
+        start_idx -= 1
+
+    tail_cluster = words[start_idx:]
+    if len(tail_cluster) > max_tail_words:
+        return words
+
+    cluster_start = float(tail_cluster[0].start_sec)
+    cluster_end = float(tail_cluster[-1].end_sec)
+    if (cluster_end - cluster_start) > max_tail_span_sec:
+        return words
+
+    prev_gap_sec = (
+        cluster_start
+        if start_idx == 0
+        else max(0.0, cluster_start - float(words[start_idx - 1].end_sec))
+    )
+    if prev_gap_sec < min_prev_gap_sec:
+        return words
+
+    confidences = [
+        float(item.confidence) for item in tail_cluster if item.confidence is not None
+    ]
+    if confidences:
+        avg_confidence = sum(confidences) / len(confidences)
+        if avg_confidence > max_avg_confidence:
+            return words
+
+    trimmed = words[:start_idx]
+    return trimmed if trimmed else words
+
+
+def trim_songlike_tail_hallucination(
+    payload: TranscriptPayload,
+    *,
+    duration_sec: float,
+) -> TranscriptPayload:
+    if payload.is_mock or not payload.words:
+        return payload
+
+    trimmed_words = _trim_sparse_music_tail(
+        payload.words,
+        duration_sec,
+        force=True,
+    )
+    if len(trimmed_words) == len(payload.words):
+        return payload
+
+    return TranscriptPayload(
+        source=payload.source,
+        language=payload.language,
+        text=" ".join(word.text for word in trimmed_words).strip(),
+        words=trimmed_words,
+        is_mock=payload.is_mock,
+    )
+
+
+def trim_song_mode_to_manual_lyrics_span(
+    payload: TranscriptPayload,
+) -> TranscriptPayload:
+    if payload.is_mock or not payload.words:
+        return payload
+    if not payload.source.endswith("_lyrics_ref"):
+        return payload
+
+    manual_indices = [
+        index
+        for index, word in enumerate(payload.words)
+        if _normalize_source_pass(word.source_pass) == "manual"
+    ]
+    if not manual_indices:
+        return payload
+
+    start_index = manual_indices[0]
+    end_index = manual_indices[-1] + 1
+    trimmed_words = payload.words[start_index:end_index]
+    if len(trimmed_words) == len(payload.words):
+        return payload
+
+    return TranscriptPayload(
+        source=payload.source,
+        language=payload.language,
+        text=" ".join(word.text for word in trimmed_words).strip(),
+        words=trimmed_words,
+        is_mock=payload.is_mock,
+    )
+
+
+def _trim_known_head_hallucination(
+    words: list[TranscriptWordPayload],
+) -> list[TranscriptWordPayload]:
+    """Remove known hallucination phrases from the START of transcript.
+
+    Common YouTube intro/outro phrases like "Thank you for watching" often appear
+    as hallucinations at the beginning of music transcripts. This function removes
+    them if they appear within the first few seconds and are followed by a gap.
+    """
+    if len(words) < 3:
+        return words
+    if not _env_bool("TRANSCRIBE_HEAD_PHRASE_FILTER", True):
+        return words
+
+    min_gap_after_sec = _env_float("TRANSCRIBE_HEAD_PHRASE_MIN_GAP_SEC", 0.2, 0.0)
+    max_phrase_span_sec = _env_float("TRANSCRIBE_HEAD_PHRASE_MAX_SPAN_SEC", 15.0, 0.1)
+    max_phrase_start_sec = _env_float("TRANSCRIBE_HEAD_PHRASE_MAX_START_SEC", 20.0, 0.0)
+    min_remaining_words = _env_int("TRANSCRIBE_HEAD_PHRASE_MIN_REMAINING_WORDS", 5, 0)
+    max_phrase_words = max(
+        2, min(_env_int("TRANSCRIBE_HEAD_PHRASE_MAX_WORDS", 7, 2), 10)
+    )
+
+    # Only process if first word starts within the max start window
+    first_start = float(words[0].start_sec)
+    if first_start > max_phrase_start_sec:
+        return words
+
+    normalized_tokens = [_normalize_token(item.text) for item in words]
+    total = len(words)
+
+    # Try matching phrases of different lengths starting from longest
+    for phrase_len in range(min(max_phrase_words, total), 1, -1):
+        phrase_tokens = tuple(normalized_tokens[:phrase_len])
+        if any(not token for token in phrase_tokens):
+            continue
+        if phrase_tokens not in _HEAD_HALLUCINATION_PHRASES:
+            continue
+
+        remaining = total - phrase_len
+        if remaining < min_remaining_words:
+            continue
+
+        phrase_start = float(words[0].start_sec)
+        phrase_end = float(words[phrase_len - 1].end_sec)
+        phrase_span = max(0.0, phrase_end - phrase_start)
+        if phrase_span > max_phrase_span_sec:
+            continue
+
+        # Check for gap after the phrase
+        next_start = float(words[phrase_len].start_sec)
+        gap_after = max(0.0, next_start - phrase_end)
+        if gap_after < min_gap_after_sec:
+            continue
+
+        # Remove the head hallucination phrase
+        trimmed = words[phrase_len:]
+        return trimmed if trimmed else words
+
+    return words
+
+
+def _trim_prompt_leakage_phrases(
+    words: list[TranscriptWordPayload],
+) -> list[TranscriptWordPayload]:
+    if len(words) < 2:
+        return words
+    if not _env_bool("TRANSCRIBE_PROMPT_LEAKAGE_FILTER", True):
+        return words
+    if _runtime_profile() not in {"music", "mixed"}:
+        return words
+
+    normalized_tokens = [_normalize_token(item.text) for item in words]
+    kept: list[TranscriptWordPayload] = []
+    index = 0
+    while index < len(words):
+        matched = False
+        for phrase in _PROMPT_LEAKAGE_PHRASES:
+            phrase_len = len(phrase)
+            if index + phrase_len > len(words):
+                continue
+            if tuple(normalized_tokens[index : index + phrase_len]) == phrase:
+                index += phrase_len
+                matched = True
+                break
+        if matched:
+            continue
+        token = normalized_tokens[index]
+        if token in _PROMPT_LEAKAGE_SINGLETONS:
+            index += 1
+            continue
+        kept.append(words[index])
+        index += 1
+
+    return kept if kept else words
+
+
+def _remove_hallucination_phrases_in_silence_gaps(
+    words: list[TranscriptWordPayload],
+    duration_sec: float,
+) -> list[TranscriptWordPayload]:
+    """Remove known hallucination phrases that appear *anywhere* in the transcript.
+
+    Whisper / Groq commonly hallucinates YouTube-style sign-off phrases like
+    "thank you for watching" or "please subscribe" during silence or music
+    transitions in the *middle* of a recording — not just at the head / tail.
+    This function scans every position and removes a match when the phrase is
+    clearly isolated by silence gaps on both sides, making it very unlikely to
+    be real speech.
+
+    The filter is conservative by default:
+      • requires a gap of at least ``TRANSCRIBE_ANYWHERE_PHRASE_MIN_GAP_SEC``
+        (default 0.8 s) before the phrase AND after it (or near the
+        start/end of the audio).
+      • the entire phrase must fit within ``TRANSCRIBE_ANYWHERE_PHRASE_MAX_SPAN_SEC``
+        (default 3.5 s).
+      • at least ``TRANSCRIBE_ANYWHERE_PHRASE_MIN_REMAINING_WORDS`` (default 3)
+        real words must remain outside the detected phrase cluster.
+    """
+    if len(words) < 3 or duration_sec <= 0:
+        return words
+    if not _env_bool("TRANSCRIBE_ANYWHERE_PHRASE_FILTER", True):
+        return words
+
+    min_gap_sec = _env_float("TRANSCRIBE_ANYWHERE_PHRASE_MIN_GAP_SEC", 0.8, 0.2)
+    max_phrase_span_sec = _env_float(
+        "TRANSCRIBE_ANYWHERE_PHRASE_MAX_SPAN_SEC", 3.5, 0.5
+    )
+    max_phrase_words = max(
+        2, min(_env_int("TRANSCRIBE_ANYWHERE_PHRASE_MAX_WORDS", 8, 2), 12)
+    )
+    min_remaining_words = _env_int(
+        "TRANSCRIBE_ANYWHERE_PHRASE_MIN_REMAINING_WORDS", 3, 0
+    )
+
+    normalized_tokens = [_normalize_token(item.text) for item in words]
+    drop_indices: set[int] = set()
+    total = len(words)
+
+    for i in range(total):
+        if i in drop_indices:
+            continue
+
+        # Gap before this word
+        if i == 0:
+            gap_before = float(words[0].start_sec)
+        else:
+            gap_before = max(
+                0.0, float(words[i].start_sec) - float(words[i - 1].end_sec)
+            )
+
+        # Require a meaningful silence before the phrase so we don’t accidentally
+        # clip real speech that happens to match (e.g., genuine gratitude mid-talk).
+        if gap_before < min_gap_sec:
+            continue
+
+        # Check single-word singletons first (e.g., isolated "subscribe")
+        singleton_token = normalized_tokens[i]
+        if singleton_token in _HALLUCINATION_SINGLETONS_IN_GAPS:
+            # Also need a gap after
+            if i + 1 < total:
+                gap_after = max(
+                    0.0, float(words[i + 1].start_sec) - float(words[i].end_sec)
+                )
+            else:
+                gap_after = max(0.0, duration_sec - float(words[i].end_sec))
+            if gap_after >= min_gap_sec:
+                remaining = total - 1  # would remove 1 word
+                if remaining >= min_remaining_words:
+                    drop_indices.add(i)
+                    continue
+
+        # Try matching multi-word phrases from longest to shortest
+        matched_phrase_len = 0
+        for phrase_len in range(min(max_phrase_words, total - i), 1, -1):
+            phrase_tokens = tuple(normalized_tokens[i : i + phrase_len])
+            if any(not token for token in phrase_tokens):
+                continue
+            if phrase_tokens not in _ANYWHERE_HALLUCINATION_PHRASES:
+                continue
+
+            phrase_start = float(words[i].start_sec)
+            phrase_end = float(words[i + phrase_len - 1].end_sec)
+            if (phrase_end - phrase_start) > max_phrase_span_sec:
+                continue
+
+            last_idx = i + phrase_len - 1
+            if last_idx + 1 < total:
+                gap_after = max(
+                    0.0,
+                    float(words[last_idx + 1].start_sec) - phrase_end,
+                )
+                near_end = (duration_sec - phrase_end) <= min_gap_sec * 1.5
+            else:
+                gap_after = max(0.0, duration_sec - phrase_end)
+                near_end = True
+
+            # Both sides must be silent (or phrase is near start/end of file)
+            if gap_after < min_gap_sec and not near_end:
+                continue
+
+            remaining = total - phrase_len
+            if remaining < min_remaining_words:
+                continue
+
+            matched_phrase_len = phrase_len
+            break
+
+        if matched_phrase_len:
+            for offset in range(matched_phrase_len):
+                drop_indices.add(i + offset)
+
+    if not drop_indices:
+        return words
+
+    dropped_texts = [words[idx].text for idx in sorted(drop_indices)]
+    _perf_logger.debug(
+        "Hallucination anywhere-filter removed %d word(s): %s",
+        len(drop_indices),
+        dropped_texts,
+    )
+    filtered = [word for idx, word in enumerate(words) if idx not in drop_indices]
+    return filtered if filtered else words
+
+
+def _drop_sparse_words_in_music_gaps(
+    words: list[TranscriptWordPayload],
+    duration_sec: float,
+) -> list[TranscriptWordPayload]:
+    """Remove sparse isolated words that appear in low-density regions of songs.
+
+    Songs typically have dense clusters of lyrics (verses, chorus) separated by
+    instrumental breaks. Whisper/Groq often hallucinates random words during
+    these breaks. This filter computes the local word density and drops words
+    in regions that are dramatically sparser than the densest sections — those
+    words are almost certainly hallucinations in instrumental gaps.
+    """
+    if len(words) < 6 or duration_sec <= 0:
+        return words
+    profile = _runtime_profile()
+    mode = _runtime_mode()
+    if profile not in {"music", "mixed"} and mode != "song":
+        return words
+    if not _env_bool("TRANSCRIBE_MUSIC_GAP_DENSITY_FILTER", True):
+        return words
+
+    density_window_sec = _env_float(
+        "TRANSCRIBE_MUSIC_GAP_DENSITY_WINDOW_SEC", 6.0, 2.0
+    )
+    density_ratio_threshold = _env_float(
+        "TRANSCRIBE_MUSIC_GAP_DENSITY_RATIO", 0.15, 0.01
+    )
+    min_dense_cluster_words = _env_int(
+        "TRANSCRIBE_MUSIC_GAP_MIN_DENSE_WORDS", 6, 2
+    )
+    max_sparse_cluster_words = _env_int(
+        "TRANSCRIBE_MUSIC_GAP_MAX_SPARSE_WORDS", 4, 1
+    )
+    min_gap_around_sec = _env_float(
+        "TRANSCRIBE_MUSIC_GAP_MIN_SURROUNDING_GAP_SEC", 1.5, 0.3
+    )
+
+    # Step 1: compute per-word local density (words per second in surrounding window)
+    word_densities: list[float] = []
+    for i, word in enumerate(words):
+        center = (float(word.start_sec) + float(word.end_sec)) * 0.5
+        window_start = max(0.0, center - density_window_sec * 0.5)
+        window_end = min(duration_sec, center + density_window_sec * 0.5)
+        window_span = max(window_end - window_start, 0.5)
+        count_in_window = sum(
+            1 for w in words
+            if float(w.end_sec) > window_start and float(w.start_sec) < window_end
+        )
+        word_densities.append(count_in_window / window_span)
+
+    # Step 2: find the peak density (representative of actual lyrics sections)
+    if not word_densities:
+        return words
+    peak_density = max(word_densities)
+    if peak_density < 0.5:  # If peak is very low, entire track may be sparse — skip
+        return words
+
+    # Step 3: identify words in sparse regions below the threshold
+    drop_indices: set[int] = set()
+    i = 0
+    while i < len(words):
+        if word_densities[i] >= peak_density * density_ratio_threshold:
+            i += 1
+            continue
+
+        # Start a sparse cluster
+        cluster = [i]
+        j = i + 1
+        while j < len(words) and word_densities[j] < peak_density * density_ratio_threshold:
+            cluster.append(j)
+            j += 1
+
+        # Only drop small clusters (large ones might be actual quiet vocal sections)
+        if len(cluster) <= max_sparse_cluster_words:
+            cluster_start = float(words[cluster[0]].start_sec)
+            cluster_end = float(words[cluster[-1]].end_sec)
+
+            gap_before = (
+                cluster_start
+                if cluster[0] == 0
+                else max(0.0, cluster_start - float(words[cluster[0] - 1].end_sec))
+            )
+            gap_after = (
+                max(0.0, duration_sec - cluster_end)
+                if cluster[-1] == len(words) - 1
+                else max(0.0, float(words[cluster[-1] + 1].start_sec) - cluster_end)
+            )
+
+            if gap_before >= min_gap_around_sec or gap_after >= min_gap_around_sec:
+                drop_indices.update(cluster)
+
+        i = j
+
+    if not drop_indices:
+        return words
+
+    _perf_logger.debug(
+        "Music gap density filter removed %d word(s): %s",
+        len(drop_indices),
+        [words[idx].text for idx in sorted(drop_indices)],
+    )
+    filtered = [word for idx, word in enumerate(words) if idx not in drop_indices]
+    return filtered if filtered else words
+
+
+def _apply_word_filters(
+    words: list[TranscriptWordPayload],
+    duration_sec: float,
+    *,
+    audio_path: str | None = None,
+) -> list[TranscriptWordPayload]:
     filtered = list(words)
     if _env_bool("TRANSCRIBE_HALLUCINATION_FILTER", True):
         filtered = _detect_hallucinations(filtered)
         filtered = _detect_sparse_hallucinations(filtered, duration_sec)
+        filtered = _drop_words_in_nonvocal_regions(
+            filtered, duration_sec, audio_path=audio_path
+        )
+        # Song/music-specific: remove isolated words in low-density instrumental gaps
+        filtered = _drop_sparse_words_in_music_gaps(filtered, duration_sec)
+    filtered = _trim_prompt_leakage_phrases(filtered)
+    # Remove hallucination phrases from both head and tail of transcript
+    filtered = _trim_known_head_hallucination(filtered)
     filtered = _trim_known_tail_hallucination(filtered, duration_sec)
+    filtered = _trim_sparse_music_tail(filtered, duration_sec)
+    # Remove known hallucination phrases that appear anywhere in the transcript
+    # (e.g., "thank you for watching" mid-video during a silence gap).
+    filtered = _remove_hallucination_phrases_in_silence_gaps(filtered, duration_sec)
     return filtered
+
+
+def _word_midpoint_sec(word: TranscriptWordPayload) -> float:
+    return (float(word.start_sec) + float(word.end_sec)) * 0.5
+
+
+def _song_validator_support_flags(
+    words: list[TranscriptWordPayload],
+    validator_words: list[TranscriptWordPayload],
+    *,
+    time_pad_sec: float,
+) -> list[bool]:
+    validator_index: dict[str, list[TranscriptWordPayload]] = {}
+    for validator_word in validator_words:
+        token = _normalize_token(validator_word.text)
+        if not token:
+            continue
+        validator_index.setdefault(token, []).append(validator_word)
+
+    supported: list[bool] = []
+    for word in words:
+        token = _normalize_token(word.text)
+        if not token:
+            supported.append(True)
+            continue
+        midpoint = _word_midpoint_sec(word)
+        matches = validator_index.get(token, [])
+        is_supported = any(
+            abs(_word_midpoint_sec(candidate) - midpoint) <= time_pad_sec
+            or (
+                float(candidate.start_sec) <= (float(word.end_sec) + time_pad_sec)
+                and float(candidate.end_sec) >= (float(word.start_sec) - time_pad_sec)
+            )
+            for candidate in matches
+        )
+        supported.append(is_supported)
+    return supported
+
+
+def _stabilize_song_words_with_validator(
+    words: list[TranscriptWordPayload],
+    validator_words: list[TranscriptWordPayload],
+    duration_sec: float,
+) -> list[TranscriptWordPayload]:
+    if len(words) < 4 or len(validator_words) < 2:
+        return words
+
+    time_pad_sec = _env_float("TRANSCRIBE_SONG_VALIDATION_TIME_PAD_SEC", 0.55, 0.1)
+    cluster_gap_sec = _env_float(
+        "TRANSCRIBE_SONG_VALIDATION_CLUSTER_GAP_SEC", 0.55, 0.05
+    )
+    boundary_gap_sec = _env_float(
+        "TRANSCRIBE_SONG_VALIDATION_BOUNDARY_GAP_SEC", 0.9, 0.1
+    )
+    max_cluster_words = _env_int("TRANSCRIBE_SONG_VALIDATION_MAX_CLUSTER_WORDS", 8, 1)
+    max_cluster_span_sec = _env_float(
+        "TRANSCRIBE_SONG_VALIDATION_MAX_CLUSTER_SPAN_SEC", 2.4, 0.2
+    )
+    edge_window_sec = _env_float(
+        "TRANSCRIBE_SONG_VALIDATION_EDGE_WINDOW_SEC", 18.0, 1.0
+    )
+
+    exact_supported = _song_validator_support_flags(
+        words,
+        validator_words,
+        time_pad_sec=time_pad_sec,
+    )
+
+    soft_supported = list(exact_supported)
+    for index, word in enumerate(words):
+        if soft_supported[index]:
+            continue
+        token = _normalize_token(word.text)
+        if not token or token not in _HALLUCINATION_STOPWORDS:
+            continue
+        if (index > 0 and exact_supported[index - 1]) or (
+            index + 1 < len(words) and exact_supported[index + 1]
+        ):
+            soft_supported[index] = True
+
+    validator_midpoints = [_word_midpoint_sec(word) for word in validator_words]
+    drop_indices: set[int] = set()
+    index = 0
+    while index < len(words):
+        if soft_supported[index]:
+            index += 1
+            continue
+        cluster = [index]
+        next_index = index + 1
+        while next_index < len(words):
+            gap_sec = max(
+                0.0,
+                float(words[next_index].start_sec)
+                - float(words[next_index - 1].end_sec),
+            )
+            if soft_supported[next_index] or gap_sec > cluster_gap_sec:
+                break
+            cluster.append(next_index)
+            next_index += 1
+
+        cluster_start = float(words[cluster[0]].start_sec)
+        cluster_end = float(words[cluster[-1]].end_sec)
+        cluster_span = max(0.0, cluster_end - cluster_start)
+        prev_gap = (
+            cluster_start
+            if cluster[0] == 0
+            else max(0.0, cluster_start - float(words[cluster[0] - 1].end_sec))
+        )
+        next_gap = (
+            max(0.0, duration_sec - cluster_end)
+            if cluster[-1] == len(words) - 1
+            else max(0.0, float(words[cluster[-1] + 1].start_sec) - cluster_end)
+        )
+        at_edge = (
+            cluster_start <= edge_window_sec
+            or (duration_sec - cluster_end) <= edge_window_sec
+        )
+        surrounded_by_gap = prev_gap >= boundary_gap_sec or next_gap >= boundary_gap_sec
+        validator_nearby = any(
+            (cluster_start - time_pad_sec) <= midpoint <= (cluster_end + time_pad_sec)
+            for midpoint in validator_midpoints
+        )
+
+        if (
+            len(cluster) <= max_cluster_words
+            and cluster_span <= max_cluster_span_sec
+            and (at_edge or surrounded_by_gap or not validator_nearby)
+        ):
+            drop_indices.update(cluster)
+
+        index = next_index
+
+    if not drop_indices:
+        return words
+
+    filtered = [word for idx, word in enumerate(words) if idx not in drop_indices]
+    return filtered if filtered else words
+
+
+def stabilize_song_transcript(
+    payload: TranscriptPayload,
+    *,
+    path: str,
+    duration_sec: float,
+) -> TranscriptPayload:
+    if not payload.words or payload.is_mock:
+        return payload
+    if not _env_bool("TRANSCRIBE_SONG_VALIDATION_ENABLED", True):
+        return payload
+    if _runtime_mode() != "song":
+        return payload
+    max_duration_sec = _env_float(
+        "TRANSCRIBE_SONG_VALIDATION_MAX_DURATION_SEC", 120.0, 5.0
+    )
+    if float(duration_sec) > max_duration_sec:
+        return payload
+    if payload.source.endswith("_lyrics_ref"):
+        return payload
+
+    validator_model = (
+        os.getenv("TRANSCRIBE_SONG_VALIDATION_MODEL", "base.en") or "base.en"
+    ).strip() or "base.en"
+    validator_payload = _build_from_faster_whisper(
+        path,
+        duration_sec,
+        model_name=validator_model,
+        force_vad_filter=False,
+    )
+    if validator_payload is None or not validator_payload.words:
+        return payload
+
+    stabilized_words = _stabilize_song_words_with_validator(
+        payload.words,
+        validator_payload.words,
+        max(float(duration_sec), 0.0),
+    )
+    min_retained_words = _env_int("TRANSCRIBE_SONG_VALIDATION_MIN_RETAINED_WORDS", 3, 1)
+    min_retained_ratio = _env_float(
+        "TRANSCRIBE_SONG_VALIDATION_MIN_RETAINED_RATIO", 0.3, 0.0
+    )
+    if len(stabilized_words) >= max(
+        min_retained_words,
+        int(round(len(payload.words) * min_retained_ratio)),
+    ):
+        return TranscriptPayload(
+            source=f"{payload.source}_validated",
+            language=payload.language,
+            text=" ".join(word.text for word in stabilized_words).strip(),
+            words=stabilized_words,
+            is_mock=payload.is_mock,
+        )
+    return payload
 
 
 def _build_preprocess_filter_chain() -> str:
     default_chain = "pan=mono|c0=0.5*c0+0.5*c1"
-    return (os.getenv("TRANSCRIBE_PREPROCESS_FILTER_CHAIN", default_chain) or default_chain).strip()
+    return (
+        os.getenv("TRANSCRIBE_PREPROCESS_FILTER_CHAIN", default_chain) or default_chain
+    ).strip()
 
 
 def _vocal_isolation_allowed_for_profile(profile: str) -> bool:
-    raw = (os.getenv("TRANSCRIBE_VOCAL_ISOLATION_PROFILES", "speech,mixed,music") or "").strip()
+    raw = (
+        os.getenv("TRANSCRIBE_VOCAL_ISOLATION_PROFILES", "speech,mixed,music") or ""
+    ).strip()
     if not raw:
         return True
     tokens = {token.strip().lower() for token in raw.split(",") if token.strip()}
@@ -987,7 +2285,9 @@ def _vocal_isolation_allowed_for_profile(profile: str) -> bool:
     return profile.strip().lower() in tokens
 
 
-def _prepare_transcription_source(path: str, format: str = "wav") -> tuple[str, Path | None]:
+def _prepare_transcription_source(
+    path: str, format: str = "wav"
+) -> tuple[str, Path | None]:
     if not _env_bool("TRANSCRIBE_PREPROCESS_AUDIO", True):
         return path, None
 
@@ -1027,7 +2327,10 @@ def _prepare_transcription_source(path: str, format: str = "wav") -> tuple[str, 
         return path, None
 
     if process.returncode != 0 or not output_path.exists():
-        print(f"[transcribe] ffmpeg preprocess failed (rc={process.returncode}): {process.stderr}", file=sys.stderr)
+        _perf_logger.warning(
+            "[transcribe] ffmpeg preprocess failed (rc=%d): %s",
+            process.returncode, process.stderr,
+        )
         output_path.unlink(missing_ok=True)
         return path, None
     if output_path.stat().st_size == 0:
@@ -1041,7 +2344,12 @@ def _prime_cuda_runtime_libraries() -> None:
     # In venv installs, CUDA user-space libs can live under site-packages/nvidia/*/lib.
     # Preload them so CTranslate2 can resolve CUDA 12 symbols without system-wide installs.
     search_roots: list[Path] = []
-    site_dir = Path(sys.prefix) / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+    site_dir = (
+        Path(sys.prefix)
+        / "lib"
+        / f"python{sys.version_info.major}.{sys.version_info.minor}"
+        / "site-packages"
+    )
     search_roots.append(site_dir)
 
     loaded_any = False
@@ -1087,8 +2395,12 @@ def _prime_cuda_runtime_libraries() -> None:
         os.environ["LD_LIBRARY_PATH"] = ":".join(merged)
 
 
-@lru_cache(maxsize=4)
-def _load_faster_whisper_model(model_name: str, device: str, compute_type: str) -> object:
+# maxsize=1: keep only one Whisper model in memory at a time to prevent OOM.
+# Previously maxsize=4, which could cache 4 different models (~600MB-6GB total).
+@lru_cache(maxsize=1)
+def _load_faster_whisper_model(
+    model_name: str, device: str, compute_type: str
+) -> object:
     _prime_cuda_runtime_libraries()
     from faster_whisper import WhisperModel  # type: ignore[import-not-found]
 
@@ -1113,12 +2425,18 @@ def _resolve_device_and_compute_type() -> tuple[str, str]:
     else:
         device = raw_device
 
-    raw_compute = (os.getenv("TRANSCRIBE_COMPUTE_TYPE", "auto") or "auto").strip().lower()
+    raw_compute = (
+        (os.getenv("TRANSCRIBE_COMPUTE_TYPE", "auto") or "auto").strip().lower()
+    )
     if raw_compute in {"", "auto"}:
         if device == "cuda":
-            compute_type = (os.getenv("TRANSCRIBE_COMPUTE_TYPE_CUDA", "float16") or "float16").strip() or "float16"
+            compute_type = (
+                os.getenv("TRANSCRIBE_COMPUTE_TYPE_CUDA", "float16") or "float16"
+            ).strip() or "float16"
         else:
-            compute_type = (os.getenv("TRANSCRIBE_COMPUTE_TYPE_CPU", "int8") or "int8").strip() or "int8"
+            compute_type = (
+                os.getenv("TRANSCRIBE_COMPUTE_TYPE_CPU", "int8") or "int8"
+            ).strip() or "int8"
     else:
         compute_type = raw_compute
     return device, compute_type
@@ -1131,14 +2449,19 @@ def _build_from_faster_whisper(
     model_name: str | None = None,
     beam_size: int | None = None,
     force_vad_filter: bool | None = None,
+    language_hint: str | None = None,
 ) -> TranscriptPayload | None:
     transcribe_path, cleanup_path = _prepare_transcription_source(path)
-    resolved_model_name = (model_name or os.getenv("TRANSCRIBE_MODEL", "base.en")).strip() or "base.en"
+    resolved_model_name = (
+        model_name or os.getenv("TRANSCRIBE_MODEL", "base.en")
+    ).strip() or "base.en"
     device, compute_type = _resolve_device_and_compute_type()
 
     try:
         try:
-            model = _load_faster_whisper_model(resolved_model_name, device, compute_type)
+            model = _load_faster_whisper_model(
+                resolved_model_name, device, compute_type
+            )
         except Exception:  # noqa: BLE001
             if device == "cuda":
                 # CUDA may be unavailable despite configuration; retry on CPU.
@@ -1146,7 +2469,10 @@ def _build_from_faster_whisper(
                     model = _load_faster_whisper_model(
                         resolved_model_name,
                         "cpu",
-                        (os.getenv("TRANSCRIBE_COMPUTE_TYPE_CPU", "int8") or "int8").strip() or "int8",
+                        (
+                            os.getenv("TRANSCRIBE_COMPUTE_TYPE_CPU", "int8") or "int8"
+                        ).strip()
+                        or "int8",
                     )
                 except Exception:  # noqa: BLE001
                     return None
@@ -1154,11 +2480,19 @@ def _build_from_faster_whisper(
                 return None
 
         transcribe_kwargs: dict[str, object] = {
-            "beam_size": int(beam_size) if beam_size is not None else _env_int("TRANSCRIBE_BEAM_SIZE", 5, 1),
+            "beam_size": int(beam_size)
+            if beam_size is not None
+            else _env_int("TRANSCRIBE_BEAM_SIZE", 5, 1),
             "word_timestamps": True,
-            "condition_on_previous_text": _env_bool("TRANSCRIBE_CONDITION_ON_PREVIOUS_TEXT", False),
-            "no_speech_threshold": _env_float("TRANSCRIBE_NO_SPEECH_THRESHOLD", 0.6, 0.0),
-            "log_prob_threshold": _env_float("TRANSCRIBE_LOG_PROB_THRESHOLD", -1.0, -10.0),
+            "condition_on_previous_text": _env_bool(
+                "TRANSCRIBE_CONDITION_ON_PREVIOUS_TEXT", False
+            ),
+            "no_speech_threshold": _env_float(
+                "TRANSCRIBE_NO_SPEECH_THRESHOLD", 0.6, 0.0
+            ),
+            "log_prob_threshold": _env_float(
+                "TRANSCRIBE_LOG_PROB_THRESHOLD", -1.0, -10.0
+            ),
         }
         # Temperature fallback: start deterministic, retry with higher temperature on failure
         raw_temps = (os.getenv("TRANSCRIBE_TEMPERATURE", "") or "").strip()
@@ -1171,13 +2505,20 @@ def _build_from_faster_whisper(
                     transcribe_kwargs["temperature"] = temps
             except ValueError:
                 pass  # Use faster-whisper default
-        language = (os.getenv("TRANSCRIBE_LANGUAGE", "") or "").strip()
+        language = (
+            _normalize_language_code(language_hint)
+            or (os.getenv("TRANSCRIBE_LANGUAGE", "") or "").strip()
+        )
         if language:
             transcribe_kwargs["language"] = language
         initial_prompt = (os.getenv("TRANSCRIBE_INITIAL_PROMPT", "") or "").strip()
         if initial_prompt:
             transcribe_kwargs["initial_prompt"] = initial_prompt
-        vad_filter_enabled = _env_bool("TRANSCRIBE_VAD_FILTER", False) if force_vad_filter is None else force_vad_filter
+        vad_filter_enabled = (
+            _env_bool("TRANSCRIBE_VAD_FILTER", False)
+            if force_vad_filter is None
+            else force_vad_filter
+        )
         if vad_filter_enabled:
             transcribe_kwargs["vad_filter"] = True
             transcribe_kwargs["vad_parameters"] = {"min_silence_duration_ms": 250}
@@ -1188,9 +2529,15 @@ def _build_from_faster_whisper(
             if device == "cuda":
                 # CUDA may partially initialize but fail during decode (e.g., missing user-space CUDA libs).
                 try:
-                    cpu_compute_type = (os.getenv("TRANSCRIBE_COMPUTE_TYPE_CPU", "int8") or "int8").strip() or "int8"
-                    cpu_model = _load_faster_whisper_model(resolved_model_name, "cpu", cpu_compute_type)
-                    segments, info = cpu_model.transcribe(transcribe_path, **transcribe_kwargs)
+                    cpu_compute_type = (
+                        os.getenv("TRANSCRIBE_COMPUTE_TYPE_CPU", "int8") or "int8"
+                    ).strip() or "int8"
+                    cpu_model = _load_faster_whisper_model(
+                        resolved_model_name, "cpu", cpu_compute_type
+                    )
+                    segments, info = cpu_model.transcribe(
+                        transcribe_path, **transcribe_kwargs
+                    )
                 except Exception:  # noqa: BLE001
                     return None
             else:
@@ -1200,7 +2547,9 @@ def _build_from_faster_whisper(
         for segment in segments:
             segment_text = _clean_word(str(getattr(segment, "text", "") or ""))
             segment_start = float(getattr(segment, "start", 0.0) or 0.0)
-            segment_end = float(getattr(segment, "end", segment_start + 0.2) or (segment_start + 0.2))
+            segment_end = float(
+                getattr(segment, "end", segment_start + 0.2) or (segment_start + 0.2)
+            )
 
             segment_words = list(getattr(segment, "words", []) or [])
             if segment_words:
@@ -1208,11 +2557,16 @@ def _build_from_faster_whisper(
                     token = _clean_word(str(getattr(word, "word", "") or ""))
                     if not token:
                         continue
-                    start_sec = float(getattr(word, "start", segment_start) or segment_start)
-                    end_sec = float(
-                        getattr(word, "end", max(start_sec + 0.05, segment_end)) or max(start_sec + 0.05, segment_end)
+                    start_sec = float(
+                        getattr(word, "start", segment_start) or segment_start
                     )
-                    confidence = _normalize_confidence(getattr(word, "probability", None))
+                    end_sec = float(
+                        getattr(word, "end", max(start_sec + 0.05, segment_end))
+                        or max(start_sec + 0.05, segment_end)
+                    )
+                    confidence = _normalize_confidence(
+                        getattr(word, "probability", None)
+                    )
                     words.append(
                         TranscriptWordPayload(
                             id=str(uuid4()),
@@ -1244,7 +2598,11 @@ def _build_from_faster_whisper(
                     )
                 )
 
-        normalized = _apply_word_filters(_normalize_words(words, duration_sec), duration_sec)
+        normalized = _apply_word_filters(
+            _normalize_words(words, duration_sec),
+            duration_sec,
+            audio_path=transcribe_path,
+        )
         if len(normalized) < 2:
             return None
         text = " ".join(item.text for item in normalized)
@@ -1259,6 +2617,15 @@ def _build_from_faster_whisper(
     finally:
         if cleanup_path is not None:
             cleanup_path.unlink(missing_ok=True)
+        # Release memory from model inference tensors
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _min_expected_word_count(duration_sec: float) -> int:
@@ -1282,7 +2649,9 @@ def _max_word_gap_sec(payload: TranscriptPayload, duration_sec: float) -> float:
         return 0.0
     if not payload.words:
         return duration_sec
-    ordered = sorted(payload.words, key=lambda item: (float(item.start_sec), float(item.end_sec)))
+    ordered = sorted(
+        payload.words, key=lambda item: (float(item.start_sec), float(item.end_sec))
+    )
     max_gap = max(float(ordered[0].start_sec), 0.0)
     for idx in range(1, len(ordered)):
         prev_end = float(ordered[idx - 1].end_sec)
@@ -1314,7 +2683,9 @@ def _has_sparse_window(payload: TranscriptPayload, duration_sec: float) -> bool:
     if duration_sec < window_sec * 1.5:
         return False
 
-    step_sec = _env_float("TRANSCRIBE_SPARSE_WINDOW_STEP_SEC", max(5.0, window_sec / 2.0), 1.0)
+    step_sec = _env_float(
+        "TRANSCRIBE_SPARSE_WINDOW_STEP_SEC", max(5.0, window_sec / 2.0), 1.0
+    )
     start_at_sec = _env_float("TRANSCRIBE_SPARSE_WINDOW_START_SEC", 20.0, 0.0)
     starts = sorted(float(word.start_sec) for word in payload.words)
     if not starts:
@@ -1349,7 +2720,9 @@ def _find_long_gaps(
     if not payload.words:
         return [(0.0, duration_sec)] if duration_sec >= min_gap_sec else []
 
-    ordered = sorted(payload.words, key=lambda item: (float(item.start_sec), float(item.end_sec)))
+    ordered = sorted(
+        payload.words, key=lambda item: (float(item.start_sec), float(item.end_sec))
+    )
     gaps: list[tuple[float, float]] = []
     cursor = max(0.0, float(ordered[0].start_sec))
     if cursor >= min_gap_sec:
@@ -1387,7 +2760,9 @@ def _merge_gap_fill_transcript(
     if secondary is None or not secondary.words:
         return None
 
-    default_gap_fill_sec = max(4.0, _env_float("TRANSCRIBE_MAX_WORD_GAP_SEC", 24.0, 2.0) * 0.75)
+    default_gap_fill_sec = max(
+        4.0, _env_float("TRANSCRIBE_MAX_WORD_GAP_SEC", 24.0, 2.0) * 0.75
+    )
     min_gap_sec = _env_float("TRANSCRIBE_GAP_FILL_MIN_SEC", default_gap_fill_sec, 1.0)
     pad_sec = _env_float("TRANSCRIBE_GAP_FILL_PAD_SEC", 0.18, 0.0)
     gaps = _find_long_gaps(primary, duration_sec, min_gap_sec=min_gap_sec)
@@ -1397,18 +2772,24 @@ def _merge_gap_fill_transcript(
     primary_source_pass = infer_source_pass(primary.source)
     secondary_source_pass = infer_source_pass(secondary.source)
     primary_words = [
-        _copy_word_payload(word, source_pass=_normalize_source_pass(word.source_pass) or primary_source_pass)
+        _copy_word_payload(
+            word,
+            source_pass=_normalize_source_pass(word.source_pass) or primary_source_pass,
+        )
         for word in primary.words
     ]
     additions: list[TranscriptWordPayload] = []
-    for word in sorted(secondary.words, key=lambda item: (float(item.start_sec), float(item.end_sec))):
+    for word in sorted(
+        secondary.words, key=lambda item: (float(item.start_sec), float(item.end_sec))
+    ):
         center = (float(word.start_sec) + float(word.end_sec)) / 2.0
         for start_sec, end_sec in gaps:
             if (start_sec - pad_sec) <= center <= (end_sec + pad_sec):
                 additions.append(
                     _copy_word_payload(
                         word,
-                        source_pass=_normalize_source_pass(word.source_pass) or secondary_source_pass,
+                        source_pass=_normalize_source_pass(word.source_pass)
+                        or secondary_source_pass,
                     )
                 )
                 break
@@ -1436,7 +2817,9 @@ def _merge_gap_fill_transcript(
                 continue
         deduped.append(word)
 
-    normalized = _apply_word_filters(_normalize_words(deduped, duration_sec), duration_sec)
+    normalized = _apply_word_filters(
+        _normalize_words(deduped, duration_sec), duration_sec
+    )
     if len(normalized) <= len(primary.words):
         return None
     return TranscriptPayload(
@@ -1453,7 +2836,9 @@ def _gap_fill_word_count(
     secondary: TranscriptPayload,
     duration_sec: float,
 ) -> int:
-    default_gap_fill_sec = max(4.0, _env_float("TRANSCRIBE_MAX_WORD_GAP_SEC", 24.0, 2.0) * 0.75)
+    default_gap_fill_sec = max(
+        4.0, _env_float("TRANSCRIBE_MAX_WORD_GAP_SEC", 24.0, 2.0) * 0.75
+    )
     min_gap_sec = _env_float("TRANSCRIBE_GAP_FILL_MIN_SEC", default_gap_fill_sec, 1.0)
     pad_sec = _env_float("TRANSCRIBE_GAP_FILL_PAD_SEC", 0.18, 0.0)
     gaps = _find_long_gaps(primary, duration_sec, min_gap_sec=min_gap_sec)
@@ -1552,7 +2937,10 @@ def _pick_better_transcript(
         if secondary_low_ratio + 0.05 <= primary_low_ratio:
             return secondary
         # If risk ratios are similar, pick the one with better average confidence.
-        if secondary_low_ratio <= primary_low_ratio + 0.01 and secondary_avg >= primary_avg + 0.03:
+        if (
+            secondary_low_ratio <= primary_low_ratio + 0.01
+            and secondary_avg >= primary_avg + 0.03
+        ):
             return secondary
 
     return primary
@@ -1576,8 +2964,12 @@ def _pick_better_transcript_with_language(
     protect_gap = _env_float("TRANSCRIBE_LANGUAGE_SCRIPT_PROTECT_GAP", 0.18, 0.0)
     sparse_words = _env_int("TRANSCRIBE_LANGUAGE_SCRIPT_SPARSE_WORDS", 4, 1)
 
-    primary_alpha, primary_ratio = _payload_language_match_metrics(primary, resolved_language)
-    secondary_alpha, secondary_ratio = _payload_language_match_metrics(secondary, resolved_language)
+    primary_alpha, primary_ratio = _payload_language_match_metrics(
+        primary, resolved_language
+    )
+    secondary_alpha, secondary_ratio = _payload_language_match_metrics(
+        secondary, resolved_language
+    )
     primary_reliable = primary_alpha >= min_alpha
     secondary_reliable = secondary_alpha >= min_alpha
 
@@ -1589,7 +2981,9 @@ def _pick_better_transcript_with_language(
         and secondary_reliable
         and (secondary_ratio + protect_gap) < primary_ratio
     ):
-        if len(primary.words) <= sparse_words and len(secondary.words) >= (len(primary.words) + 20):
+        if len(primary.words) <= sparse_words and len(secondary.words) >= (
+            len(primary.words) + 20
+        ):
             return preferred
         return primary
 
@@ -1605,6 +2999,72 @@ def _pick_better_transcript_with_language(
     return preferred
 
 
+def _reliable_detected_indic_script(
+    payload: TranscriptPayload | None,
+    duration_sec: float,
+) -> tuple[str | None, int, float]:
+    if payload is None:
+        return None, 0, 0.0
+    language_code = _normalize_detected_language(payload.language)
+    if not _is_indic_language(language_code):
+        return language_code, 0, 0.0
+    if _is_low_coverage(payload, duration_sec):
+        return language_code, 0, 0.0
+    min_alpha = _env_int("TRANSCRIBE_AUTO_ROUTE_SARVAM_MIN_ALPHA", 18, 0)
+    min_ratio = _env_float("TRANSCRIBE_AUTO_ROUTE_SARVAM_MIN_RATIO", 0.30, 0.0)
+    alpha_count, script_ratio = _payload_language_match_metrics(payload, language_code)
+    if alpha_count >= min_alpha and script_ratio >= min_ratio:
+        return language_code, alpha_count, script_ratio
+    return language_code, alpha_count, script_ratio
+
+
+def _pick_better_auto_indic_transcript(
+    primary: TranscriptPayload | None,
+    secondary: TranscriptPayload | None,
+    duration_sec: float,
+) -> TranscriptPayload | None:
+    preferred = _pick_better_transcript(primary, secondary, duration_sec)
+    if primary is None or secondary is None:
+        return preferred
+
+    secondary_language, secondary_alpha, secondary_ratio = (
+        _reliable_detected_indic_script(secondary, duration_sec)
+    )
+    if not _is_indic_language(secondary_language):
+        return preferred
+
+    min_alpha = _env_int("TRANSCRIBE_AUTO_ROUTE_SARVAM_MIN_ALPHA", 18, 0)
+    min_ratio = _env_float("TRANSCRIBE_AUTO_ROUTE_SARVAM_MIN_RATIO", 0.30, 0.0)
+    secondary_reliable = secondary_alpha >= min_alpha and secondary_ratio >= min_ratio
+    if not secondary_reliable:
+        return preferred
+
+    primary_language, primary_alpha, primary_ratio = _reliable_detected_indic_script(
+        primary, duration_sec
+    )
+    primary_reliable = (
+        _is_indic_language(primary_language)
+        and primary_alpha >= min_alpha
+        and primary_ratio >= min_ratio
+    )
+    prefer_reliable_sarvam = _env_bool(
+        "TRANSCRIBE_AUTO_ROUTE_SARVAM_PREFER_RELIABLE_UNKNOWN", True
+    )
+    if (
+        prefer_reliable_sarvam
+        and secondary.source.startswith("sarvam")
+        and (
+            primary.source.startswith("groq")
+            or not primary_reliable
+            or primary_language != secondary_language
+        )
+    ):
+        return secondary
+    if not primary_reliable:
+        return secondary
+    return preferred
+
+
 def _silence_ratio_for_profile(path: str, duration_sec: float) -> float | None:
     if duration_sec <= 0:
         return None
@@ -1612,7 +3072,10 @@ def _silence_ratio_for_profile(path: str, duration_sec: float) -> float | None:
         return None
 
     min_analyze_sec = _env_float("TRANSCRIBE_PROFILE_MIN_ANALYZE_SEC", 25.0, 5.0)
-    analyze_sec = min(duration_sec, _env_float("TRANSCRIBE_PROFILE_ANALYZE_SEC", 120.0, min_analyze_sec))
+    analyze_sec = min(
+        duration_sec,
+        _env_float("TRANSCRIBE_PROFILE_ANALYZE_SEC", 120.0, min_analyze_sec),
+    )
     if analyze_sec < min_analyze_sec:
         return None
 
@@ -1647,8 +3110,12 @@ def _resolve_transcription_profile(path: str, duration_sec: float) -> str:
     if silence_ratio is None:
         return "mixed"
 
-    speech_min_ratio = _env_float("TRANSCRIBE_PROFILE_SPEECH_MIN_SILENCE_RATIO", 0.10, 0.0)
-    music_max_ratio = _env_float("TRANSCRIBE_PROFILE_MUSIC_MAX_SILENCE_RATIO", 0.04, 0.0)
+    speech_min_ratio = _env_float(
+        "TRANSCRIBE_PROFILE_SPEECH_MIN_SILENCE_RATIO", 0.10, 0.0
+    )
+    music_max_ratio = _env_float(
+        "TRANSCRIBE_PROFILE_MUSIC_MAX_SILENCE_RATIO", 0.04, 0.0
+    )
     if silence_ratio >= speech_min_ratio:
         return "speech"
     if silence_ratio <= music_max_ratio:
@@ -1663,23 +3130,40 @@ def _resolve_groq_prompt_strategy(
     retry_try_no_prompt: bool,
 ) -> tuple[str | None, str | None, bool]:
     if profile == "speech":
-        speech_primary_prompt = (os.getenv("TRANSCRIBE_GROQ_PROMPT_SPEECH", "") or "").strip() or primary_prompt
-        speech_retry_prompt = (os.getenv("TRANSCRIBE_GROQ_RETRY_PROMPT_SPEECH", "") or "").strip() or None
-        speech_retry_try_no_prompt = _env_bool("TRANSCRIBE_GROQ_RETRY_TRY_NO_PROMPT_SPEECH", False)
+        speech_primary_prompt = (
+            os.getenv("TRANSCRIBE_GROQ_PROMPT_SPEECH", "") or ""
+        ).strip() or primary_prompt
+        speech_retry_prompt = (
+            os.getenv("TRANSCRIBE_GROQ_RETRY_PROMPT_SPEECH", "") or ""
+        ).strip() or None
+        speech_retry_try_no_prompt = _env_bool(
+            "TRANSCRIBE_GROQ_RETRY_TRY_NO_PROMPT_SPEECH", False
+        )
         return speech_primary_prompt, speech_retry_prompt, speech_retry_try_no_prompt
     if profile == "music":
-        music_primary_prompt = (os.getenv("TRANSCRIBE_GROQ_PROMPT_MUSIC", "") or "").strip() or primary_prompt
+        music_primary_prompt = (
+            (os.getenv("TRANSCRIBE_GROQ_PROMPT_MUSIC", "") or "").strip()
+            or primary_prompt
+            or DEFAULT_MUSIC_RETRY_PROMPT
+        )
         music_retry_prompt = (
             (os.getenv("TRANSCRIBE_GROQ_RETRY_PROMPT_MUSIC", "") or "").strip()
             or retry_prompt
+            or DEFAULT_MUSIC_RETRY_PROMPT
         )
-        music_retry_try_no_prompt = _env_bool("TRANSCRIBE_GROQ_RETRY_TRY_NO_PROMPT_MUSIC", retry_try_no_prompt)
+        music_retry_try_no_prompt = _env_bool(
+            "TRANSCRIBE_GROQ_RETRY_TRY_NO_PROMPT_MUSIC", False
+        )
         return music_primary_prompt, music_retry_prompt, music_retry_try_no_prompt
     return primary_prompt, retry_prompt, retry_try_no_prompt
 
 
-def _should_retry_groq_for_profile(profile: str, payload: TranscriptPayload, duration_sec: float) -> bool:
-    common_retry = _is_low_coverage(payload, duration_sec) or _has_suspicious_long_gap(payload, duration_sec)
+def _should_retry_groq_for_profile(
+    profile: str, payload: TranscriptPayload, duration_sec: float
+) -> bool:
+    common_retry = _is_low_coverage(payload, duration_sec) or _has_suspicious_long_gap(
+        payload, duration_sec
+    )
     if common_retry:
         return True
     if profile == "speech":
@@ -1748,7 +3232,11 @@ def _cleanup_temp_path(path: Path | None) -> None:
 
 
 def _resolve_vocal_isolation_device() -> str:
-    raw_device = (os.getenv("TRANSCRIBE_VOCAL_ISOLATION_DEVICE", "auto") or "auto").strip().lower()
+    raw_device = (
+        (os.getenv("TRANSCRIBE_VOCAL_ISOLATION_DEVICE", "auto") or "auto")
+        .strip()
+        .lower()
+    )
     if raw_device in {"", "auto"}:
         return "cuda" if _gpu_available() else "cpu"
     if raw_device in {"cpu", "cuda"}:
@@ -1770,6 +3258,10 @@ def _apply_vocal_isolation_priority(cmd: list[str]) -> list[str]:
 
 def _backend_env_suffix(backend: str) -> str | None:
     normalized = backend.strip().lower().replace("-", "_")
+    if normalized.startswith("melband_roformer"):
+        return "MELBAND_ROFORMER"
+    if normalized.startswith("htdemucs_ft"):
+        return "HTDEMUCS_FT"
     if normalized.startswith("bs_roformer"):
         return "BS_ROFORMER"
     if normalized.startswith("mdx23c"):
@@ -1811,6 +3303,10 @@ def _resolve_vocal_isolation_model(backend: str) -> str:
     if model_name:
         return model_name
     normalized = backend.strip().lower().replace("-", "_")
+    if normalized.startswith("melband_roformer"):
+        return "vocals_mel_band_roformer.ckpt"
+    if normalized.startswith("htdemucs_ft"):
+        return "htdemucs_ft.yaml"
     if normalized.startswith("bs_roformer"):
         return "bs_roformer"
     return "mdx23c"
@@ -1825,7 +3321,9 @@ def _is_distinct_isolated_source(candidate: str, original: str) -> bool:
     candidate_path = Path(candidate)
     original_path = Path(original)
     try:
-        return candidate_path.resolve(strict=False) != original_path.resolve(strict=False)
+        return candidate_path.resolve(strict=False) != original_path.resolve(
+            strict=False
+        )
     except OSError:
         return candidate != original
 
@@ -1834,7 +3332,10 @@ def _auto_vocal_isolation_backends() -> list[str]:
     candidates: list[str] = []
 
     # Prefer explicit task-specific command/API overrides before generic ones.
+    # Order by quality: melband_roformer > htdemucs_ft > bs_roformer > mdx23c
     command_candidates = (
+        ("melband_roformer", "TRANSCRIBE_VOCAL_ISOLATION_COMMAND_MELBAND_ROFORMER"),
+        ("htdemucs_ft", "TRANSCRIBE_VOCAL_ISOLATION_COMMAND_HTDEMUCS_FT"),
         ("bs_roformer", "TRANSCRIBE_VOCAL_ISOLATION_COMMAND_BS_ROFORMER"),
         ("mdx23c", "TRANSCRIBE_VOCAL_ISOLATION_COMMAND_MDX23C"),
         ("command", "TRANSCRIBE_VOCAL_ISOLATION_COMMAND"),
@@ -1844,6 +3345,8 @@ def _auto_vocal_isolation_backends() -> list[str]:
             candidates.append(backend)
 
     api_candidates = (
+        ("melband_roformer_api", "TRANSCRIBE_VOCAL_ISOLATION_API_URL_MELBAND_ROFORMER"),
+        ("htdemucs_ft_api", "TRANSCRIBE_VOCAL_ISOLATION_API_URL_HTDEMUCS_FT"),
         ("bs_roformer_api", "TRANSCRIBE_VOCAL_ISOLATION_API_URL_BS_ROFORMER"),
         ("mdx23c_api", "TRANSCRIBE_VOCAL_ISOLATION_API_URL_MDX23C"),
         ("api", "TRANSCRIBE_VOCAL_ISOLATION_API_URL"),
@@ -1876,11 +3379,13 @@ def _find_isolated_stem(root: Path, stem_name: str) -> Path | None:
     return scored[0][2]
 
 
-def _render_command_template_tokens(template: str, mapping: dict[str, str]) -> list[str] | None:
+def _render_command_template_tokens(
+    template: str, mapping: dict[str, str]
+) -> list[str] | None:
     try:
         raw_tokens = shlex.split(template)
     except ValueError as exc:
-        print(f"[transcribe] invalid vocal isolation command template: {exc}", file=sys.stderr)
+        _perf_logger.warning("[transcribe] invalid vocal isolation command template: %s", exc)
         return None
 
     rendered: list[str] = []
@@ -1888,10 +3393,7 @@ def _render_command_template_tokens(template: str, mapping: dict[str, str]) -> l
         try:
             rendered.append(token.format(**mapping))
         except KeyError as exc:
-            print(
-                f"[transcribe] vocal isolation command has unknown placeholder: {exc}",
-                file=sys.stderr,
-            )
+            _perf_logger.warning("[transcribe] vocal isolation command has unknown placeholder: %s", exc)
             return None
     return rendered
 
@@ -1907,7 +3409,7 @@ def _resolve_command_output_hint(
     try:
         rendered = output_hint_template.format(**mapping)
     except KeyError as exc:
-        print(f"[transcribe] invalid command output template placeholder: {exc}", file=sys.stderr)
+        _perf_logger.warning("[transcribe] invalid command output template placeholder: %s", exc)
         return None
     candidate = Path(rendered)
     if not candidate.is_absolute():
@@ -1915,17 +3417,16 @@ def _resolve_command_output_hint(
     return candidate
 
 
-def _prepare_vocal_stem_with_command(path: str, *, backend: str) -> tuple[str, Path | None]:
-    source_path = Path(path)
+def _prepare_vocal_stem_with_command(
+    path: str, *, backend: str
+) -> tuple[str, Path | None]:
+    source_path = Path(path).expanduser().resolve(strict=False)
     if not source_path.exists():
         return path, None
 
     command_template = _backend_env("TRANSCRIBE_VOCAL_ISOLATION_COMMAND", backend)
     if not command_template:
-        print(
-            "[transcribe] vocal isolation command backend selected but no command configured",
-            file=sys.stderr,
-        )
+        _perf_logger.warning("[transcribe] vocal isolation command backend selected but no command configured")
         return path, None
 
     model_name = _resolve_vocal_isolation_model(backend)
@@ -1933,14 +3434,50 @@ def _prepare_vocal_stem_with_command(path: str, *, backend: str) -> tuple[str, P
     device = _resolve_vocal_isolation_device()
     timeout_sec = _env_int("TRANSCRIBE_VOCAL_ISOLATION_TIMEOUT_SEC", 1200, 30)
 
-    tmp_dir = Path(os.getenv("TMP_DIR", settings.tmp_dir))
+    tmp_dir = Path(os.getenv("TMP_DIR", settings.tmp_dir)).expanduser()
+    if not tmp_dir.is_absolute():
+        tmp_dir = (Path.cwd() / tmp_dir).resolve(strict=False)
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    work_dir = tmp_dir / f"vocal-command-{uuid4()}"
+    work_dir = (tmp_dir / f"vocal-command-{uuid4()}").resolve(strict=False)
     output_dir = work_dir / "out"
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Extract audio to WAV first if source is video (audio-separator can't read MP4)
+    input_for_separator = source_path
+    audio_formats = {".wav", ".flac", ".mp3", ".ogg", ".m4a", ".aac"}
+    if source_path.suffix.lower() not in audio_formats:
+        extracted_audio = work_dir / "input_audio.wav"
+        extract_cmd = [
+            settings.ffmpeg_bin,
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(source_path),
+            "-vn",
+            "-ac",
+            "2",
+            "-ar",
+            "44100",
+            "-acodec",
+            "pcm_s16le",
+            str(extracted_audio),
+        ]
+        try:
+            extract_process = subprocess.run(
+                extract_cmd, capture_output=True, text=True, check=False, timeout=120
+            )
+            if extract_process.returncode == 0 and extracted_audio.exists():
+                input_for_separator = extracted_audio
+            else:
+                _perf_logger.warning("[transcribe] audio extraction for vocal isolation failed, trying with original")
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            _perf_logger.warning("[transcribe] audio extraction timed out or failed: %s", exc)
+
     output_path_hint = output_dir / f"{stem_name}.wav"
     mapping = {
-        "input": str(source_path),
+        "input": str(input_for_separator.resolve(strict=False)),
         "output_dir": str(output_dir),
         "work_dir": str(work_dir),
         "output_path": str(output_path_hint),
@@ -1969,21 +3506,31 @@ def _prepare_vocal_stem_with_command(path: str, *, backend: str) -> tuple[str, P
 
     if process.returncode != 0:
         stderr_tail = (process.stderr or "").strip()[-240:]
-        print(
-            f"[transcribe] command vocal isolation failed (rc={process.returncode}): {stderr_tail}",
-            file=sys.stderr,
+        _perf_logger.warning(
+            "[transcribe] command vocal isolation failed (rc=%d): %s",
+            process.returncode, stderr_tail,
         )
         _cleanup_temp_path(work_dir)
         return path, None
 
-    output_hint_template = _backend_env("TRANSCRIBE_VOCAL_ISOLATION_COMMAND_OUTPUT", backend)
-    hinted_path = _resolve_command_output_hint(output_hint_template, output_dir=output_dir, mapping=mapping)
-    if hinted_path is not None and hinted_path.exists() and hinted_path.stat().st_size > 0:
+    output_hint_template = _backend_env(
+        "TRANSCRIBE_VOCAL_ISOLATION_COMMAND_OUTPUT", backend
+    )
+    hinted_path = _resolve_command_output_hint(
+        output_hint_template, output_dir=output_dir, mapping=mapping
+    )
+    if (
+        hinted_path is not None
+        and hinted_path.exists()
+        and hinted_path.stat().st_size > 0
+    ):
         return str(hinted_path), work_dir
 
-    stem_path = _find_isolated_stem(output_dir, stem_name) or _find_isolated_stem(work_dir, stem_name)
+    stem_path = _find_isolated_stem(output_dir, stem_name) or _find_isolated_stem(
+        work_dir, stem_name
+    )
     if stem_path is None:
-        print("[transcribe] command vocal isolation produced no usable stem", file=sys.stderr)
+        _perf_logger.warning("[transcribe] command vocal isolation produced no usable stem")
         _cleanup_temp_path(work_dir)
         return path, None
     return str(stem_path), work_dir
@@ -2008,7 +3555,9 @@ def _guess_audio_extension(content_type: str | None, default_ext: str = "wav") -
     return mapping.get(normalized, default_ext)
 
 
-def _write_vocal_stem_bytes(data: bytes, *, work_dir: Path, stem_name: str, ext: str) -> Path | None:
+def _write_vocal_stem_bytes(
+    data: bytes, *, work_dir: Path, stem_name: str, ext: str
+) -> Path | None:
     if not data:
         return None
     safe_ext = re.sub(r"[^a-z0-9]+", "", ext.lower()) or "wav"
@@ -2046,31 +3595,46 @@ def _prepare_vocal_stem_with_api(path: str, *, backend: str) -> tuple[str, Path 
 
     api_url = _backend_env("TRANSCRIBE_VOCAL_ISOLATION_API_URL", backend)
     if _is_placeholder_config_value(api_url):
-        print("[transcribe] vocal isolation API backend selected but API URL is missing/placeholder", file=sys.stderr)
+        _perf_logger.warning("[transcribe] vocal isolation API backend selected but API URL is missing/placeholder")
         return path, None
     if not re.match(r"^https?://", api_url, flags=re.IGNORECASE):
-        print("[transcribe] vocal isolation API URL must start with http:// or https://", file=sys.stderr)
+        _perf_logger.warning("[transcribe] vocal isolation API URL must start with http:// or https://")
         return path, None
 
     try:
         import httpx  # type: ignore[import-not-found]
     except Exception:
-        print("[transcribe] vocal isolation API backend unavailable: httpx missing", file=sys.stderr)
+        _perf_logger.warning("[transcribe] vocal isolation API backend unavailable: httpx missing")
         return path, None
 
     stem_name = _resolve_vocal_stem_name(backend)
-    model_name = _backend_env("TRANSCRIBE_VOCAL_ISOLATION_API_MODEL", backend) or _resolve_vocal_isolation_model(backend)
+    model_name = _backend_env(
+        "TRANSCRIBE_VOCAL_ISOLATION_API_MODEL", backend
+    ) or _resolve_vocal_isolation_model(backend)
     device = _resolve_vocal_isolation_device()
     timeout_sec = _env_float("TRANSCRIBE_VOCAL_ISOLATION_API_TIMEOUT_SEC", 300.0, 5.0)
-    output_ext_default = (os.getenv("TRANSCRIBE_VOCAL_ISOLATION_API_OUTPUT_EXT", "wav") or "wav").strip().lstrip(".")
+    output_ext_default = (
+        (os.getenv("TRANSCRIBE_VOCAL_ISOLATION_API_OUTPUT_EXT", "wav") or "wav")
+        .strip()
+        .lstrip(".")
+    )
     output_ext_default = output_ext_default or "wav"
 
-    file_field = (os.getenv("TRANSCRIBE_VOCAL_ISOLATION_API_FILE_FIELD", "file") or "file").strip() or "file"
-    model_field = (os.getenv("TRANSCRIBE_VOCAL_ISOLATION_API_MODEL_FIELD", "model") or "model").strip()
-    stem_field = (os.getenv("TRANSCRIBE_VOCAL_ISOLATION_API_STEM_FIELD", "stem") or "stem").strip()
-    device_field = (os.getenv("TRANSCRIBE_VOCAL_ISOLATION_API_DEVICE_FIELD", "device") or "device").strip()
+    file_field = (
+        os.getenv("TRANSCRIBE_VOCAL_ISOLATION_API_FILE_FIELD", "file") or "file"
+    ).strip() or "file"
+    model_field = (
+        os.getenv("TRANSCRIBE_VOCAL_ISOLATION_API_MODEL_FIELD", "model") or "model"
+    ).strip()
+    stem_field = (
+        os.getenv("TRANSCRIBE_VOCAL_ISOLATION_API_STEM_FIELD", "stem") or "stem"
+    ).strip()
+    device_field = (
+        os.getenv("TRANSCRIBE_VOCAL_ISOLATION_API_DEVICE_FIELD", "device") or "device"
+    ).strip()
     input_mime = (
-        os.getenv("TRANSCRIBE_VOCAL_ISOLATION_API_INPUT_MIME", "").strip() or "application/octet-stream"
+        os.getenv("TRANSCRIBE_VOCAL_ISOLATION_API_INPUT_MIME", "").strip()
+        or "application/octet-stream"
     )
 
     headers: dict[str, str] = {}
@@ -2079,9 +3643,12 @@ def _prepare_vocal_stem_with_api(path: str, *, backend: str) -> tuple[str, Path 
         api_key = ""
     if api_key:
         key_header = (
-            os.getenv("TRANSCRIBE_VOCAL_ISOLATION_API_KEY_HEADER", "Authorization") or "Authorization"
+            os.getenv("TRANSCRIBE_VOCAL_ISOLATION_API_KEY_HEADER", "Authorization")
+            or "Authorization"
         ).strip() or "Authorization"
-        if key_header.lower() == "authorization" and not api_key.lower().startswith("bearer "):
+        if key_header.lower() == "authorization" and not api_key.lower().startswith(
+            "bearer "
+        ):
             headers[key_header] = f"Bearer {api_key}"
         else:
             headers[key_header] = api_key
@@ -2093,7 +3660,11 @@ def _prepare_vocal_stem_with_api(path: str, *, backend: str) -> tuple[str, Path 
         form_fields[stem_field] = stem_name
     if device_field:
         form_fields[device_field] = device
-    form_fields.update(_parse_extra_fields(_backend_env("TRANSCRIBE_VOCAL_ISOLATION_API_EXTRA_FIELDS", backend)))
+    form_fields.update(
+        _parse_extra_fields(
+            _backend_env("TRANSCRIBE_VOCAL_ISOLATION_API_EXTRA_FIELDS", backend)
+        )
+    )
 
     tmp_dir = Path(os.getenv("TMP_DIR", settings.tmp_dir))
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -2133,7 +3704,10 @@ def _prepare_vocal_stem_with_api(path: str, *, backend: str) -> tuple[str, Path 
 
                 if isinstance(payload, dict):
                     path_fields = [
-                        (os.getenv("TRANSCRIBE_VOCAL_ISOLATION_API_PATH_FIELD", "") or "").strip(),
+                        (
+                            os.getenv("TRANSCRIBE_VOCAL_ISOLATION_API_PATH_FIELD", "")
+                            or ""
+                        ).strip(),
                         "path",
                         "file_path",
                         "output_path",
@@ -2163,7 +3737,10 @@ def _prepare_vocal_stem_with_api(path: str, *, backend: str) -> tuple[str, Path 
                             return str(stem_path), work_dir
 
                     base64_fields = [
-                        (os.getenv("TRANSCRIBE_VOCAL_ISOLATION_API_BASE64_FIELD", "") or "").strip(),
+                        (
+                            os.getenv("TRANSCRIBE_VOCAL_ISOLATION_API_BASE64_FIELD", "")
+                            or ""
+                        ).strip(),
                         "audio_base64",
                         "vocals_base64",
                         "base64",
@@ -2192,13 +3769,18 @@ def _prepare_vocal_stem_with_api(path: str, *, backend: str) -> tuple[str, Path 
                             return str(stem_path), work_dir
 
                     url_fields = [
-                        (os.getenv("TRANSCRIBE_VOCAL_ISOLATION_API_URL_FIELD", "") or "").strip(),
+                        (
+                            os.getenv("TRANSCRIBE_VOCAL_ISOLATION_API_URL_FIELD", "")
+                            or ""
+                        ).strip(),
                         "audio_url",
                         "vocals_url",
                         "file_url",
                         "url",
                     ]
-                    forward_auth = _env_bool("TRANSCRIBE_VOCAL_ISOLATION_API_FORWARD_AUTH_ON_DOWNLOAD", False)
+                    forward_auth = _env_bool(
+                        "TRANSCRIBE_VOCAL_ISOLATION_API_FORWARD_AUTH_ON_DOWNLOAD", False
+                    )
                     download_headers = headers if forward_auth else None
                     for field in url_fields:
                         if not field:
@@ -2207,7 +3789,9 @@ def _prepare_vocal_stem_with_api(path: str, *, backend: str) -> tuple[str, Path 
                         if not isinstance(value, str) or not value.strip():
                             continue
                         try:
-                            download_response = client.get(value.strip(), headers=download_headers)
+                            download_response = client.get(
+                                value.strip(), headers=download_headers
+                            )
                             download_response.raise_for_status()
                         except Exception:  # noqa: BLE001
                             continue
@@ -2216,32 +3800,49 @@ def _prepare_vocal_stem_with_api(path: str, *, backend: str) -> tuple[str, Path 
                             work_dir=work_dir,
                             stem_name=stem_name,
                             ext=_guess_audio_extension(
-                                str(download_response.headers.get("content-type", "") or ""),
+                                str(
+                                    download_response.headers.get("content-type", "")
+                                    or ""
+                                ),
                                 output_ext_default,
                             ),
                         )
                         if stem_path is not None:
                             return str(stem_path), work_dir
     except Exception as exc:  # noqa: BLE001
-        print(f"[transcribe] vocal isolation API call failed: {exc}", file=sys.stderr)
+        _perf_logger.warning("[transcribe] vocal isolation API call failed: %s", exc)
         _cleanup_temp_path(work_dir)
         return path, None
 
     _cleanup_temp_path(work_dir)
-    print("[transcribe] vocal isolation API produced no usable stem", file=sys.stderr)
+    _perf_logger.warning("[transcribe] vocal isolation API produced no usable stem")
     return path, None
 
 
 def _prepare_with_vocal_backend(path: str, backend: str) -> tuple[str, Path | None]:
-    if backend in {"command", "bs_roformer", "mdx23c"}:
+    # Command-based backends (local processing)
+    command_backends = {
+        "command",
+        "bs_roformer",
+        "mdx23c",
+        "melband_roformer",
+        "htdemucs_ft",
+    }
+    if backend in command_backends:
         return _prepare_vocal_stem_with_command(path, backend=backend)
-    if backend in {"api", "bs_roformer_api", "mdx23c_api"}:
+
+    # API-based backends (remote processing)
+    api_backends = {
+        "api",
+        "bs_roformer_api",
+        "mdx23c_api",
+        "melband_roformer_api",
+        "htdemucs_ft_api",
+    }
+    if backend in api_backends:
         return _prepare_vocal_stem_with_api(path, backend=backend)
 
-    print(
-        f"[transcribe] unsupported vocal isolation backend '{backend}'; skipping",
-        file=sys.stderr,
-    )
+    _perf_logger.warning("[transcribe] unsupported vocal isolation backend %r; skipping", backend)
     return path, None
 
 
@@ -2249,7 +3850,30 @@ def _prepare_vocal_isolation_source(path: str) -> tuple[str, Path | None]:
     if not _env_bool("TRANSCRIBE_VOCAL_ISOLATION_ENABLED", True):
         return path, None
 
-    requested_backend = _normalize_vocal_backend(os.getenv("TRANSCRIBE_VOCAL_ISOLATION_BACKEND", "auto") or "auto")
+    duet_mode = bool(getattr(_TRANSCRIPTION_RUNTIME, "duet_mode", False))
+    # Check for pre-computed vocal stem first (from upload-time processing)
+    source_path = Path(path)
+    if source_path.exists():
+        source_dir = source_path.parent
+        stem_filename = f"{source_path.stem}_vocals.wav"
+        precomputed_path = source_dir / stem_filename
+        if precomputed_path.exists() and precomputed_path.stat().st_size > 0:
+            _perf_logger.info("[transcribe] using pre-computed vocal stem: %s", precomputed_path)
+            return str(precomputed_path), None
+
+    # Check if high-quality mode is enabled - uses the best available model
+    high_quality_enabled = _env_bool("TRANSCRIBE_VOCAL_ISOLATION_HIGH_QUALITY", False) or duet_mode
+    if high_quality_enabled:
+        hq_backend = (
+            os.getenv("TRANSCRIBE_VOCAL_ISOLATION_HIGH_QUALITY_BACKEND", "")
+            or "melband_roformer"
+        ).strip()
+        requested_backend = _normalize_vocal_backend(hq_backend)
+        _perf_logger.info("[transcribe] using high-quality vocal isolation: %s", requested_backend)
+    else:
+        requested_backend = _normalize_vocal_backend(
+            os.getenv("TRANSCRIBE_VOCAL_ISOLATION_BACKEND", "auto") or "auto"
+        )
     if requested_backend == "none":
         return path, None
 
@@ -2259,10 +3883,12 @@ def _prepare_vocal_isolation_source(path: str) -> tuple[str, Path | None]:
     else:
         candidates.append(requested_backend)
 
-    fallback_candidates = _parse_backend_list(os.getenv("TRANSCRIBE_VOCAL_ISOLATION_FALLBACKS", ""))
+    fallback_candidates = _parse_backend_list(
+        os.getenv("TRANSCRIBE_VOCAL_ISOLATION_FALLBACKS", "")
+    )
     candidates.extend(fallback_candidates)
     if not candidates:
-        print("[transcribe] no vocal isolation backends available; using original audio", file=sys.stderr)
+        _perf_logger.warning("[transcribe] no vocal isolation backends available; using original audio")
         return path, None
 
     seen: set[str] = set()
@@ -2271,16 +3897,23 @@ def _prepare_vocal_isolation_source(path: str) -> tuple[str, Path | None]:
         if normalized_backend in {"", "none"} or normalized_backend in seen:
             continue
         seen.add(normalized_backend)
-        prepared_source, cleanup_path = _prepare_with_vocal_backend(path, normalized_backend)
-        if _is_distinct_isolated_source(prepared_source, path) and Path(prepared_source).exists():
+        prepared_source, cleanup_path = _prepare_with_vocal_backend(
+            path, normalized_backend
+        )
+        if (
+            _is_distinct_isolated_source(prepared_source, path)
+            and Path(prepared_source).exists()
+        ):
             return prepared_source, cleanup_path
         _cleanup_temp_path(cleanup_path)
 
-    print("[transcribe] vocal isolation produced no valid stem; using original audio", file=sys.stderr)
+    _perf_logger.warning("[transcribe] vocal isolation produced no valid stem; using original audio")
     return path, None
 
 
-def _extract_audio_for_cloud(path: str, *, use_vocal_isolation: bool = True) -> tuple[str, Path | None]:
+def _extract_audio_for_cloud(
+    path: str, *, use_vocal_isolation: bool = True
+) -> tuple[str, Path | None]:
     """Prepare cloud ASR input audio.
 
     When enabled, this first isolates a vocal stem (command/api) and
@@ -2291,7 +3924,9 @@ def _extract_audio_for_cloud(path: str, *, use_vocal_isolation: bool = True) -> 
         return path, None
 
     # Rescue windows are already mono 16k MP3 chunks; avoid re-encoding/re-separating.
-    if source_path.suffix.lower() == ".mp3" and source_path.name.startswith("groq-window-"):
+    if source_path.suffix.lower() == ".mp3" and source_path.name.startswith(
+        "groq-window-"
+    ):
         return str(source_path), None
 
     prepared_cleanup: Path | None = None
@@ -2312,18 +3947,26 @@ def _extract_audio_for_cloud(path: str, *, use_vocal_isolation: bool = True) -> 
         settings.ffmpeg_bin,
         "-y",
         "-hide_banner",
-        "-loglevel", "error",
-        "-i", str(prepared_path),
-        "-vn",                       # no video
-        "-ac", "1",                  # mono
-        "-ar", "16000",              # 16kHz is Whisper's native rate
-        "-codec:a", "libmp3lame",
-        "-b:a", "64k",              # 64kbps mono = ~0.5MB/min
+        "-loglevel",
+        "error",
+        "-i",
+        str(prepared_path),
+        "-vn",  # no video
+        "-ac",
+        "1",  # mono
+        "-ar",
+        "16000",  # 16kHz is Whisper's native rate
+        "-codec:a",
+        "libmp3lame",
+        "-b:a",
+        "64k",  # 64kbps mono = ~0.5MB/min
         str(output_path),
     ]
 
     try:
-        process = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=120)
+        process = subprocess.run(
+            cmd, capture_output=True, text=True, check=False, timeout=120
+        )
     except (OSError, subprocess.TimeoutExpired):
         output_path.unlink(missing_ok=True)
         _cleanup_temp_path(prepared_cleanup)
@@ -2349,7 +3992,11 @@ def _call_sarvam_rest(
     prompt: str | None,
     timeout_sec: float,
 ) -> TranscriptPayload | None:
-    api_key = (os.getenv("SARVAM_API_KEY", "") or os.getenv("TRANSCRIBE_SARVAM_API_KEY", "") or "").strip()
+    api_key = (
+        os.getenv("SARVAM_API_KEY", "")
+        or os.getenv("TRANSCRIBE_SARVAM_API_KEY", "")
+        or ""
+    ).strip()
     if not api_key:
         return None
     api_url = (
@@ -2384,12 +4031,16 @@ def _call_sarvam_rest(
         form_data["prompt"] = prompt
 
     source = Path(audio_path)
-    mime = "audio/mpeg" if source.suffix.lower() == ".mp3" else "application/octet-stream"
+    mime = (
+        "audio/mpeg" if source.suffix.lower() == ".mp3" else "application/octet-stream"
+    )
     try:
         with open(source, "rb") as audio_file:
             files = {"file": (source.name, audio_file, mime)}
             with httpx.Client(timeout=timeout_sec, follow_redirects=True) as client:
-                response = client.post(api_url, headers=headers, data=form_data, files=files)
+                response = client.post(
+                    api_url, headers=headers, data=form_data, files=files
+                )
                 response.raise_for_status()
                 payload = response.json()
     except Exception:
@@ -2397,14 +4048,22 @@ def _call_sarvam_rest(
 
     if not isinstance(payload, dict):
         return None
-    transcript_text = _clean_word(str(payload.get("transcript") or payload.get("text") or ""))
+    transcript_text = _clean_word(
+        str(payload.get("transcript") or payload.get("text") or "")
+    )
     words = _extract_sarvam_word_timestamps(payload, duration_sec)
     if _should_fallback_to_text_words(words, transcript_text):
         words = _fallback_words_from_text(transcript_text, duration_sec)
-    words = _apply_word_filters(_normalize_words(words, duration_sec), duration_sec)
+    # Sarvam timestamps are already accurate (no Whisper drift),
+    # so we must NOT apply the global TRANSCRIBE_TIMESTAMP_OFFSET_SEC offset.
+    words = _apply_word_filters(
+        _normalize_words(words, duration_sec, apply_offset=False),
+        duration_sec,
+        audio_path=audio_path,
+    )
     if _should_fallback_to_text_words(words, transcript_text):
         words = _fallback_words_from_text(transcript_text, duration_sec)
-        words = _apply_word_filters(words, duration_sec)
+        words = _apply_word_filters(words, duration_sec, audio_path=audio_path)
     if not words:
         return None
     if not transcript_text:
@@ -2430,7 +4089,9 @@ def _build_from_sarvam(
     prompt: str | None,
     use_vocal_isolation: bool,
 ) -> TranscriptPayload | None:
-    prepared_path, cleanup_path = _extract_audio_for_cloud(path, use_vocal_isolation=use_vocal_isolation)
+    prepared_path, cleanup_path = _extract_audio_for_cloud(
+        path, use_vocal_isolation=use_vocal_isolation
+    )
     timeout_sec = _env_float("TRANSCRIBE_SARVAM_TIMEOUT_SEC", 120.0, 5.0)
     max_window_sec = _env_float("TRANSCRIBE_SARVAM_MAX_WINDOW_SEC", 25.0, 5.0)
     overlap_sec = _env_float("TRANSCRIBE_SARVAM_WINDOW_OVERLAP_SEC", 0.25, 0.0)
@@ -2450,9 +4111,14 @@ def _build_from_sarvam(
         cursor = 0.0
         merged_words: list[TranscriptWordPayload] = []
         detected_language: str | None = None
+        # Track the last absolute time we have accepted so words in the
+        # overlap zone of consecutive chunks are not duplicated.
+        last_accepted_end_sec = 0.0
         while cursor < duration_sec:
             window_end = min(duration_sec, cursor + max_window_sec)
-            window_path, window_cleanup = _extract_audio_window_for_cloud(prepared_path, cursor, window_end)
+            window_path, window_cleanup = _extract_audio_window_for_cloud(
+                prepared_path, cursor, window_end
+            )
             if not window_path:
                 cursor += step_sec
                 continue
@@ -2472,21 +4138,37 @@ def _build_from_sarvam(
             if window_payload is not None:
                 if detected_language is None:
                     detected_language = window_payload.language
+                # The safe zone for this chunk starts after the overlap region.
+                # Words whose absolute start is before `last_accepted_end_sec`
+                # were already produced by the previous chunk — skip them.
+                safe_start_abs = max(cursor, last_accepted_end_sec)
                 for word in window_payload.words:
+                    abs_start = float(word.start_sec) + cursor
+                    abs_end = float(word.end_sec) + cursor
+                    if abs_start < safe_start_abs - 0.05:
+                        # Word falls entirely inside the overlap zone already
+                        # covered by the previous chunk — discard to avoid dupe.
+                        continue
                     merged_words.append(
                         TranscriptWordPayload(
                             id=str(uuid4()),
                             text=word.text,
-                            start_sec=float(word.start_sec) + cursor,
-                            end_sec=float(word.end_sec) + cursor,
+                            start_sec=abs_start,
+                            end_sec=abs_end,
                             confidence=word.confidence,
                         )
                     )
+                    last_accepted_end_sec = max(last_accepted_end_sec, abs_end)
             cursor += step_sec
 
         if not merged_words:
             return None
-        normalized_words = _apply_word_filters(_normalize_words(merged_words, duration_sec), duration_sec)
+        # Sarvam timestamps are already accurate — do NOT apply the Whisper-specific offset.
+        normalized_words = _apply_word_filters(
+            _normalize_words(merged_words, duration_sec, apply_offset=False),
+            duration_sec,
+            audio_path=prepared_path,
+        )
         if not normalized_words:
             return None
         return TranscriptPayload(
@@ -2543,8 +4225,13 @@ def _build_from_groq(
     model_name: str = "whisper-large-v3-turbo",
     prompt: str | None = None,
     language_hint: str | None = None,
+    translate_to_english: bool | None = None,
 ) -> TranscriptPayload | None:
-    """Transcribe via Groq's cloud API. Returns None on failure."""
+    """Transcribe via Groq's cloud API. Returns None on failure.
+
+    If translate_to_english is True, uses Groq's translation endpoint to
+    translate any language to English. If None, checks TRANSCRIBE_TRANSLATE_TO_ENGLISH env var.
+    """
     api_key = (os.getenv("GROQ_API_KEY", "") or "").strip()
     if not api_key:
         return None
@@ -2554,12 +4241,24 @@ def _build_from_groq(
     except ImportError:
         return None
 
+    # Determine if translation mode is enabled
+    if translate_to_english is None:
+        translate_to_english = _env_bool("TRANSCRIBE_TRANSLATE_TO_ENGLISH", False)
+
     # Fast lightweight extraction (no heavy filters — Groq handles normalization)
+    _t_audio_prep_start = _time_module.monotonic()
     source_path, cleanup_path = _resolve_groq_input_source(path)
+    _perf_logger.info(
+        "⏱️ INNER TIMING: Audio prep (vocal iso + ffmpeg) took %.1fs for %s",
+        _time_module.monotonic() - _t_audio_prep_start,
+        path,
+    )
     try:
         client = Groq(api_key=api_key)
 
-        language = (language_hint or _resolve_transcribe_language() or "").strip() or None
+        language = (
+            language_hint or _resolve_transcribe_language() or ""
+        ).strip() or None
         resolved_prompt = (
             prompt.strip()
             if prompt is not None
@@ -2583,11 +4282,20 @@ def _build_from_groq(
                 "file": (Path(source_path).name, audio_file),
             }
             try:
-                response = client.audio.transcriptions.create(**request_payload)
+                if translate_to_english:
+                    # Use translation endpoint - translates any language to English
+                    # Note: translations endpoint doesn't support language parameter
+                    request_payload.pop("language", None)
+                    response = client.audio.translations.create(**request_payload)
+                else:
+                    response = client.audio.transcriptions.create(**request_payload)
             except TypeError:
                 # Some SDK versions may not expose `prompt` yet.
                 request_payload.pop("prompt", None)
-                response = client.audio.transcriptions.create(**request_payload)
+                if translate_to_english:
+                    response = client.audio.translations.create(**request_payload)
+                else:
+                    response = client.audio.transcriptions.create(**request_payload)
 
         # Parse words from response.
         # Groq SDK may return `words` as dict entries instead of typed objects.
@@ -2623,11 +4331,16 @@ def _build_from_groq(
                 if isinstance(segment, dict):
                     segment_text = str(segment.get("text") or "")
                     segment_start = float(segment.get("start", 0.0) or 0.0)
-                    segment_end = float(segment.get("end", segment_start + 0.2) or (segment_start + 0.2))
+                    segment_end = float(
+                        segment.get("end", segment_start + 0.2) or (segment_start + 0.2)
+                    )
                 else:
                     segment_text = str(getattr(segment, "text", "") or "")
                     segment_start = float(getattr(segment, "start", 0.0) or 0.0)
-                    segment_end = float(getattr(segment, "end", segment_start + 0.2) or (segment_start + 0.2))
+                    segment_end = float(
+                        getattr(segment, "end", segment_start + 0.2)
+                        or (segment_start + 0.2)
+                    )
                 parts = segment_text.strip().split()
                 if not parts:
                     continue
@@ -2644,22 +4357,30 @@ def _build_from_groq(
                         )
                     )
             normalized = _normalize_words(recovered_words, duration_sec)
-        normalized = _apply_word_filters(normalized, duration_sec)
+        normalized = _apply_word_filters(
+            normalized,
+            duration_sec,
+            audio_path=source_path,
+        )
         if not normalized:
             return None
 
         # Keep transcript text aligned with post-processed word tokens so UI text
         # does not reintroduce repeats that were removed from `normalized`.
         text = " ".join(w.text for w in normalized)
+        source = "groq_translated" if translate_to_english else "groq"
         return TranscriptPayload(
-            source="groq",
-            language=getattr(response, "language", None) or language,
+            source=source,
+            language="en"
+            if translate_to_english
+            else (getattr(response, "language", None) or language),
             text=text.strip(),
             words=normalized,
             is_mock=False,
         )
     except Exception as exc:
         import traceback
+
         traceback.print_exc()
         return None
     finally:
@@ -2674,21 +4395,45 @@ def _call_groq(
     model_name: str,
     prompt: str | None,
     language_hint: str | None = None,
+    translate_to_english: bool | None = None,
 ) -> TranscriptPayload | None:
+    call_kwargs: dict[str, object] = {
+        "model_name": model_name,
+        "prompt": prompt,
+    }
+    if language_hint:
+        call_kwargs["language_hint"] = language_hint
+    if translate_to_english is not None:
+        call_kwargs["translate_to_english"] = translate_to_english
     if language_hint:
         try:
             return _build_from_groq(
                 path,
                 duration_sec,
-                model_name=model_name,
-                prompt=prompt,
-                language_hint=language_hint,
+                **call_kwargs,
             )
         except TypeError as exc:
             # Backward-compatible shim for tests or patched call-sites that still
-            # expose the old signature without language hints.
-            if "language_hint" not in str(exc):
+            # expose the old signature without language hints or translation flags.
+            if "language_hint" not in str(exc) and "translate_to_english" not in str(
+                exc
+            ):
                 raise
+    fallback_kwargs: dict[str, object] = {
+        "model_name": model_name,
+        "prompt": prompt,
+    }
+    if translate_to_english is not None:
+        fallback_kwargs["translate_to_english"] = translate_to_english
+    try:
+        return _build_from_groq(
+            path,
+            duration_sec,
+            **fallback_kwargs,
+        )
+    except TypeError as exc:
+        if "translate_to_english" not in str(exc):
+            raise
     return _build_from_groq(
         path,
         duration_sec,
@@ -2697,7 +4442,9 @@ def _call_groq(
     )
 
 
-def _extract_audio_window_for_cloud(path: str, start_sec: float, end_sec: float) -> tuple[str | None, Path | None]:
+def _extract_audio_window_for_cloud(
+    path: str, start_sec: float, end_sec: float
+) -> tuple[str | None, Path | None]:
     source_path = Path(path)
     if not source_path.exists():
         return None, None
@@ -2734,11 +4481,17 @@ def _extract_audio_window_for_cloud(path: str, start_sec: float, end_sec: float)
         str(output_path),
     ]
     try:
-        process = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=120)
+        process = subprocess.run(
+            cmd, capture_output=True, text=True, check=False, timeout=120
+        )
     except (OSError, subprocess.TimeoutExpired):
         output_path.unlink(missing_ok=True)
         return None, None
-    if process.returncode != 0 or not output_path.exists() or output_path.stat().st_size == 0:
+    if (
+        process.returncode != 0
+        or not output_path.exists()
+        or output_path.stat().st_size == 0
+    ):
         output_path.unlink(missing_ok=True)
         return None, None
     return str(output_path), output_path
@@ -2794,7 +4547,9 @@ def _rescue_groq_gaps(
     if not gaps or max_chunks <= 0:
         return None
 
-    ordered_gaps = sorted(gaps, key=lambda gap: (float(gap[1]) - float(gap[0])), reverse=True)
+    ordered_gaps = sorted(
+        gaps, key=lambda gap: float(gap[1]) - float(gap[0]), reverse=True
+    )
     collected_words: list[TranscriptWordPayload] = []
     used_chunks = 0
 
@@ -2806,18 +4561,24 @@ def _rescue_groq_gaps(
         cursor = window_start
         while cursor < window_end and used_chunks < max_chunks:
             chunk_end = min(window_end, cursor + max_window_sec)
-            window_path, cleanup_path = _extract_audio_window_for_cloud(path, cursor, chunk_end)
+            window_path, cleanup_path = _extract_audio_window_for_cloud(
+                path, cursor, chunk_end
+            )
             used_chunks += 1
             if not window_path:
                 cursor = chunk_end
                 continue
             try:
+                window_groq_kwargs: dict[str, object] = {
+                    "model_name": model_name,
+                    "prompt": prompt,
+                }
+                if language_hint is not None:
+                    window_groq_kwargs["language_hint"] = language_hint
                 window_payload = _call_groq(
                     window_path,
                     chunk_end - cursor,
-                    model_name=model_name,
-                    prompt=prompt,
-                    language_hint=language_hint,
+                    **window_groq_kwargs,
                 )
             finally:
                 if cleanup_path is not None:
@@ -2840,17 +4601,28 @@ def _rescue_groq_gaps(
         primary_alpha_count = sum(1 for char in primary_text if char.isalpha())
         primary_latin_ratio = _ascii_latin_ratio(primary_text)
         primary_min_alpha = _env_int("TRANSCRIBE_RESCUE_PRIMARY_MIN_ALPHA", 40, 0)
-        primary_latin_min = _env_float("TRANSCRIBE_RESCUE_PRIMARY_LATIN_RATIO", 0.65, 0.0)
-        rescue_token_latin_min = _env_float("TRANSCRIBE_RESCUE_TOKEN_LATIN_MIN_RATIO", 0.35, 0.0)
-        if primary_alpha_count >= primary_min_alpha and primary_latin_ratio >= primary_latin_min:
+        primary_latin_min = _env_float(
+            "TRANSCRIBE_RESCUE_PRIMARY_LATIN_RATIO", 0.65, 0.0
+        )
+        rescue_token_latin_min = _env_float(
+            "TRANSCRIBE_RESCUE_TOKEN_LATIN_MIN_RATIO", 0.35, 0.0
+        )
+        if (
+            primary_alpha_count >= primary_min_alpha
+            and primary_latin_ratio >= primary_latin_min
+        ):
             filtered_words: list[TranscriptWordPayload] = []
-            drop_non_ascii_tokens = _env_bool("TRANSCRIBE_RESCUE_DROP_NON_ASCII_TOKENS", True)
+            drop_non_ascii_tokens = _env_bool(
+                "TRANSCRIBE_RESCUE_DROP_NON_ASCII_TOKENS", True
+            )
             for word in collected_words:
                 alpha_count = sum(1 for char in word.text if char.isalpha())
                 if alpha_count < 2:
                     filtered_words.append(word)
                     continue
-                if drop_non_ascii_tokens and any(char.isalpha() and ord(char) > 127 for char in word.text):
+                if drop_non_ascii_tokens and any(
+                    char.isalpha() and ord(char) > 127 for char in word.text
+                ):
                     continue
                 if _ascii_latin_ratio(word.text) >= rescue_token_latin_min:
                     filtered_words.append(word)
@@ -2910,24 +4682,72 @@ def generate_transcript(
     allow_mock_fallback: bool | None = None,
     fast_mode: bool | None = None,
     prompt: str | None = None,
+    translate_to_english: bool | None = None,
+    mode: str | None = None,
+    optimize_for_speed: bool | None = None,
+    filename: str | None = None,
 ) -> TranscriptPayload:
     safe_duration = max(float(duration_sec), 0.1)
-    allow_mock = _env_bool("TRANSCRIBE_ALLOW_MOCK_FALLBACK", True) if allow_mock_fallback is None else bool(allow_mock_fallback)
-    configured_language = _normalize_language_code(language_hint) or _resolve_transcribe_language()
+    allow_mock = (
+        _env_bool("TRANSCRIBE_ALLOW_MOCK_FALLBACK", False)
+        if allow_mock_fallback is None
+        else bool(allow_mock_fallback)
+    )
+    configured_language = (
+        _normalize_language_code(language_hint) or _resolve_transcribe_language()
+    )
+    transcript_mode = _normalize_transcription_mode(mode)
+    speed_optimized = (
+        bool(optimize_for_speed) if optimize_for_speed is not None else False
+    )
     backend = (os.getenv("TRANSCRIBE_BACKEND", "auto") or "auto").strip().lower()
     fast_mode_enabled = bool(fast_mode) if fast_mode is not None else False
-    requested_profile = (os.getenv("TRANSCRIBE_PROFILE", "auto") or "auto").strip().lower()
-    # Fast mode keeps transcript generation snappy for interactive UI workflows:
-    # avoid running profile analysis + extra cloud retry passes unless explicitly requested.
-    if fast_mode_enabled and requested_profile in {"", "auto"}:
+    requested_profile = (
+        (os.getenv("TRANSCRIBE_PROFILE", "auto") or "auto").strip().lower()
+    )
+    if transcript_mode == "song":
+        profile = "music"
+    elif transcript_mode == "speech":
         profile = "speech"
+        if requested_profile in {"", "auto"}:
+            detected_profile = _resolve_transcription_profile(path, safe_duration)
+            if detected_profile in {"music", "mixed"}:
+                profile = detected_profile
+    elif fast_mode_enabled and requested_profile in {"", "auto"}:
+        detected_profile = _resolve_transcription_profile(path, safe_duration)
+        profile = (
+            detected_profile
+            if detected_profile in {"music", "mixed"}
+            else "speech"
+        )
     else:
+        _t_profile_start = _time_module.monotonic()
         profile = _resolve_transcription_profile(path, safe_duration)
+        _perf_logger.info(
+            "⏱️ INNER TIMING: Profile analysis took %.1fs → %s",
+            _time_module.monotonic() - _t_profile_start,
+            profile,
+        )
     previous_runtime_profile = getattr(_TRANSCRIPTION_RUNTIME, "profile", None)
+    previous_runtime_mode = getattr(_TRANSCRIPTION_RUNTIME, "mode", None)
+    previous_runtime_duet_mode = getattr(_TRANSCRIPTION_RUNTIME, "duet_mode", False)
     _TRANSCRIPTION_RUNTIME.profile = profile
+    _TRANSCRIPTION_RUNTIME.mode = transcript_mode
+    duet_detected = False
+    if filename:
+        from .lyrics_reference_service import looks_like_duet_media
+
+        duet_detected = looks_like_duet_media(filename)
+    _TRANSCRIPTION_RUNTIME.duet_mode = duet_detected
     try:
-        groq_primary_model = (os.getenv("TRANSCRIBE_GROQ_MODEL", "whisper-large-v3-turbo") or "whisper-large-v3-turbo").strip()
-        groq_retry_model = (os.getenv("TRANSCRIBE_GROQ_RETRY_MODEL", "whisper-large-v3") or "whisper-large-v3").strip()
+        groq_primary_model = (
+            os.getenv("TRANSCRIBE_GROQ_MODEL", "whisper-large-v3-turbo")
+            or "whisper-large-v3-turbo"
+        ).strip()
+        groq_retry_model = (
+            os.getenv("TRANSCRIBE_GROQ_RETRY_MODEL", "whisper-large-v3")
+            or "whisper-large-v3"
+        ).strip()
         groq_primary_prompt = (
             (prompt.strip() if prompt else None)
             or (os.getenv("TRANSCRIBE_GROQ_PROMPT", "") or "").strip()
@@ -2938,23 +4758,70 @@ def generate_transcript(
             or (os.getenv("TRANSCRIBE_GROQ_RETRY_PROMPT", "") or "").strip()
             or groq_primary_prompt
         )
-        groq_retry_try_no_prompt = _env_bool("TRANSCRIBE_GROQ_RETRY_TRY_NO_PROMPT", True)
-        groq_primary_prompt, groq_retry_prompt, groq_retry_try_no_prompt = _resolve_groq_prompt_strategy(
-            profile,
-            groq_primary_prompt,
-            groq_retry_prompt,
-            groq_retry_try_no_prompt,
+        groq_retry_try_no_prompt = _env_bool(
+            "TRANSCRIBE_GROQ_RETRY_TRY_NO_PROMPT", True
         )
-        groq_retry_enabled = _env_bool("TRANSCRIBE_GROQ_ENABLE_RETRY", True) and not fast_mode_enabled
-        groq_retry_min_duration_sec = _env_float("TRANSCRIBE_GROQ_RETRY_MIN_DURATION_SEC", 60.0, 0.0)
-        sarvam_model = (os.getenv("TRANSCRIBE_SARVAM_MODEL", "saaras:v3") or "saaras:v3").strip() or "saaras:v3"
-        sarvam_mode = (os.getenv("TRANSCRIBE_SARVAM_MODE", "transcribe") or "transcribe").strip() or "transcribe"
-        sarvam_prompt = (os.getenv("TRANSCRIBE_SARVAM_PROMPT", "") or "").strip() or None
+        groq_primary_prompt, groq_retry_prompt, groq_retry_try_no_prompt = (
+            _resolve_groq_prompt_strategy(
+                profile,
+                groq_primary_prompt,
+                groq_retry_prompt,
+                groq_retry_try_no_prompt,
+            )
+        )
+        groq_retry_enabled = (
+            _env_bool("TRANSCRIBE_GROQ_ENABLE_RETRY", True)
+            and not fast_mode_enabled
+            and not speed_optimized
+        )
+        groq_retry_min_duration_sec = _env_float(
+            "TRANSCRIBE_GROQ_RETRY_MIN_DURATION_SEC", 60.0, 0.0
+        )
+        sarvam_model = (
+            os.getenv("TRANSCRIBE_SARVAM_MODEL", "saaras:v3") or "saaras:v3"
+        ).strip() or "saaras:v3"
+        sarvam_mode = (
+            os.getenv("TRANSCRIBE_SARVAM_MODE", "transcribe") or "transcribe"
+        ).strip() or "transcribe"
+        sarvam_prompt = (
+            os.getenv("TRANSCRIBE_SARVAM_PROMPT", "") or ""
+        ).strip() or None
         use_vocal_isolation = _vocal_isolation_allowed_for_profile(profile)
+        music_auto_routing = _auto_sarvam_music_routing_allowed(
+            profile=profile,
+            configured_language=configured_language,
+        )
         route_to_sarvam = _should_route_to_sarvam(backend, configured_language)
-        if fast_mode_enabled and backend == "auto":
+        route_unknown_auto_to_sarvam = (
+            backend == "auto"
+            and configured_language is None
+            and (
+                (not fast_mode_enabled and not speed_optimized)
+                or music_auto_routing
+            )
+            and translate_to_english is not True
+            and _env_bool("TRANSCRIBE_AUTO_UNKNOWN_TO_SARVAM_FIRST", True)
+        )
+        if route_unknown_auto_to_sarvam:
+            route_to_sarvam = True
+        if (
+            transcript_mode == "song"
+            and configured_language is not None
+            and not _is_indic_language(configured_language)
+        ):
             route_to_sarvam = False
-        sarvam_allow_groq_fallback = _env_bool("TRANSCRIBE_SARVAM_ALLOW_GROQ_FALLBACK", True)
+        elif (
+            speed_optimized
+            and backend == "auto"
+            and not _is_indic_language(configured_language)
+            and not music_auto_routing
+        ):
+            route_to_sarvam = False
+        if fast_mode_enabled and backend == "auto" and not music_auto_routing:
+            route_to_sarvam = False
+        sarvam_allow_groq_fallback = _env_bool(
+            "TRANSCRIBE_SARVAM_ALLOW_GROQ_FALLBACK", True
+        )
         sarvam_result: TranscriptPayload | None = None
 
         if route_to_sarvam:
@@ -2967,68 +4834,138 @@ def generate_transcript(
                 prompt=sarvam_prompt,
                 use_vocal_isolation=use_vocal_isolation,
             )
-            if sarvam_result is not None and not _is_low_coverage(sarvam_result, safe_duration):
-                return sarvam_result
+            if sarvam_result is not None and not _is_low_coverage(
+                sarvam_result, safe_duration
+            ):
+                if not _should_skip_sarvam_first_return(
+                    sarvam_result,
+                    configured_language=configured_language,
+                    music_auto_routing=music_auto_routing,
+                ):
+                    return sarvam_result
             if backend == "sarvam" and not sarvam_allow_groq_fallback:
                 if sarvam_result is not None:
                     return sarvam_result
                 if allow_mock:
                     return _build_mock_transcript(safe_duration)
-                raise RuntimeError("Sarvam transcription failed. Check SARVAM API key and network.")
+                raise RuntimeError(
+                    "Sarvam transcription failed. Check SARVAM API key and network."
+                )
 
         # ------------------------------------------------------------------
         # Groq cloud backend: fast, no local GPU needed
         # ------------------------------------------------------------------
-        if backend in {"groq", "auto"} or (backend == "sarvam" and sarvam_allow_groq_fallback):
+        if backend in {"groq", "auto"} or (
+            backend == "sarvam" and sarvam_allow_groq_fallback
+        ):
             _start_groq_audio_session(path, use_vocal_isolation=use_vocal_isolation)
             try:
+                _t_groq_primary_start = _time_module.monotonic()
+                primary_groq_kwargs: dict[str, object] = {
+                    "model_name": groq_primary_model,
+                    "prompt": groq_primary_prompt,
+                }
+                if configured_language is not None:
+                    primary_groq_kwargs["language_hint"] = configured_language
+                if translate_to_english is not None:
+                    primary_groq_kwargs["translate_to_english"] = translate_to_english
                 groq_result = _call_groq(
                     path,
                     safe_duration,
-                    model_name=groq_primary_model,
-                    prompt=groq_primary_prompt,
-                    language_hint=configured_language,
+                    **primary_groq_kwargs,
+                )
+                _perf_logger.info(
+                    "⏱️ INNER TIMING: Groq primary call took %.1fs (model=%s, vocal_iso=%s)",
+                    _time_module.monotonic() - _t_groq_primary_start,
+                    groq_primary_model,
+                    use_vocal_isolation,
                 )
                 if groq_result is not None:
                     should_retry_groq = (
                         groq_retry_enabled
                         and safe_duration >= groq_retry_min_duration_sec
-                        and _should_retry_groq_for_profile(profile, groq_result, safe_duration)
+                        and _should_retry_groq_for_profile(
+                            profile, groq_result, safe_duration
+                        )
                     )
-                    if should_retry_groq and groq_retry_model and groq_retry_model != groq_primary_model:
+                    if (
+                        should_retry_groq
+                        and groq_retry_model
+                        and groq_retry_model != groq_primary_model
+                    ):
                         groq_retry_candidates: list[TranscriptPayload] = []
+                        retry_groq_kwargs: dict[str, object] = {
+                            "model_name": groq_retry_model,
+                            "prompt": groq_retry_prompt,
+                        }
+                        if configured_language is not None:
+                            retry_groq_kwargs["language_hint"] = configured_language
+                        if translate_to_english is not None:
+                            retry_groq_kwargs["translate_to_english"] = (
+                                translate_to_english
+                            )
                         groq_retry = _call_groq(
                             path,
                             safe_duration,
-                            model_name=groq_retry_model,
-                            prompt=groq_retry_prompt,
-                            language_hint=configured_language,
+                            **retry_groq_kwargs,
                         )
                         if groq_retry is not None:
                             groq_retry_candidates.append(groq_retry)
                         if groq_retry_try_no_prompt and groq_retry_prompt:
+                            retry_no_prompt_kwargs: dict[str, object] = {
+                                "model_name": groq_retry_model,
+                                "prompt": None,
+                            }
+                            if configured_language is not None:
+                                retry_no_prompt_kwargs["language_hint"] = (
+                                    configured_language
+                                )
+                            if translate_to_english is not None:
+                                retry_no_prompt_kwargs["translate_to_english"] = (
+                                    translate_to_english
+                                )
                             groq_retry_no_prompt = _call_groq(
                                 path,
                                 safe_duration,
-                                model_name=groq_retry_model,
-                                prompt=None,
-                                language_hint=configured_language,
+                                **retry_no_prompt_kwargs,
                             )
                             if groq_retry_no_prompt is not None:
                                 groq_retry_candidates.append(groq_retry_no_prompt)
-                        groq_retry = _pick_best_gap_fill_candidate(groq_result, groq_retry_candidates, safe_duration)
-                        merged = _merge_gap_fill_transcript(groq_result, groq_retry, safe_duration)
+                        groq_retry = _pick_best_gap_fill_candidate(
+                            groq_result, groq_retry_candidates, safe_duration
+                        )
+                        merged = _merge_gap_fill_transcript(
+                            groq_result, groq_retry, safe_duration
+                        )
                         if merged is not None:
-                            min_gap_fill_words = _env_int("TRANSCRIBE_MIN_GAP_FILL_WORDS", 3, 1)
-                            added_words = max(len(merged.words) - len(groq_result.words), 0)
+                            default_min_gap_fill_words = (
+                                2 if safe_duration <= 30.0 else 3
+                            )
+                            min_gap_fill_words = _env_int(
+                                "TRANSCRIBE_MIN_GAP_FILL_WORDS",
+                                default_min_gap_fill_words,
+                                1,
+                            )
+                            if safe_duration <= 30.0:
+                                min_gap_fill_words = min(
+                                    min_gap_fill_words,
+                                    _env_int(
+                                        "TRANSCRIBE_MIN_GAP_FILL_WORDS_SHORT", 2, 1
+                                    ),
+                                )
+                            added_words = max(
+                                len(merged.words) - len(groq_result.words), 0
+                            )
                             if added_words >= min_gap_fill_words:
                                 groq_result = merged
                             else:
-                                preferred_gap_fill = _pick_better_transcript_with_language(
-                                    groq_result,
-                                    merged,
-                                    safe_duration,
-                                    configured_language,
+                                preferred_gap_fill = (
+                                    _pick_better_transcript_with_language(
+                                        groq_result,
+                                        merged,
+                                        safe_duration,
+                                        configured_language,
+                                    )
                                 )
                                 if preferred_gap_fill is not None:
                                     groq_result = preferred_gap_fill
@@ -3043,18 +4980,31 @@ def generate_transcript(
                             if preferred_groq is not None:
                                 groq_result = preferred_groq
                     low_coverage_now = _is_low_coverage(groq_result, safe_duration)
-                    unresolved_gaps = _has_suspicious_long_gap(groq_result, safe_duration) or (
-                        profile != "speech" and _has_sparse_window(groq_result, safe_duration)
+                    unresolved_gaps = _has_suspicious_long_gap(
+                        groq_result, safe_duration
+                    ) or (
+                        profile != "speech"
+                        and _has_sparse_window(groq_result, safe_duration)
                     )
-                    rescue_enabled = _env_bool("TRANSCRIBE_ENABLE_GAP_RESCUE", True) and not fast_mode_enabled
-                    rescue_on_low_coverage = _env_bool("TRANSCRIBE_RESCUE_ON_LOW_COVERAGE", True)
-                    should_run_rescue = unresolved_gaps or (rescue_on_low_coverage and low_coverage_now)
+                    rescue_enabled = (
+                        _env_bool("TRANSCRIBE_ENABLE_GAP_RESCUE", True)
+                        and not fast_mode_enabled
+                        and not speed_optimized
+                        and transcript_mode != "song"
+                    )
+                    rescue_on_low_coverage = _env_bool(
+                        "TRANSCRIBE_RESCUE_ON_LOW_COVERAGE", True
+                    )
+                    should_run_rescue = unresolved_gaps or (
+                        rescue_on_low_coverage and low_coverage_now
+                    )
                     if should_run_rescue and rescue_enabled and profile != "speech":
-                        rescue_model = (os.getenv("TRANSCRIBE_GROQ_RESCUE_MODEL", "") or "").strip() or groq_retry_model
+                        rescue_model = (
+                            os.getenv("TRANSCRIBE_GROQ_RESCUE_MODEL", "") or ""
+                        ).strip() or groq_retry_model
                         rescue_prompt = (
-                            (os.getenv("TRANSCRIBE_GROQ_RESCUE_PROMPT", "") or "").strip()
-                            or groq_retry_prompt
-                        )
+                            os.getenv("TRANSCRIBE_GROQ_RESCUE_PROMPT", "") or ""
+                        ).strip() or groq_retry_prompt
                         rescue = _call_rescue_groq_gaps(
                             path,
                             safe_duration,
@@ -3065,8 +5015,12 @@ def generate_transcript(
                             language_hint=configured_language,
                         )
                         if rescue is not None:
-                            min_added_rescue_words = _env_int("TRANSCRIBE_MIN_RESCUE_ADDED_WORDS", 2, 1)
-                            rescue_added = max(len(rescue.words) - len(groq_result.words), 0)
+                            min_added_rescue_words = _env_int(
+                                "TRANSCRIBE_MIN_RESCUE_ADDED_WORDS", 2, 1
+                            )
+                            rescue_added = max(
+                                len(rescue.words) - len(groq_result.words), 0
+                            )
                             if rescue_added >= min_added_rescue_words:
                                 groq_result = rescue
 
@@ -3076,8 +5030,16 @@ def generate_transcript(
                         language_fallbacks = _parse_language_fallbacks(
                             os.getenv("TRANSCRIBE_GROQ_LANGUAGE_FALLBACKS", "")
                         )
-                        max_lang_attempts = 0 if fast_mode_enabled else _env_int("TRANSCRIBE_GROQ_LANGUAGE_FALLBACK_MAX_ATTEMPTS", 2, 0)
-                        retry_languages = _build_language_retry_candidates(configured_language, language_fallbacks)
+                        max_lang_attempts = (
+                            0
+                            if fast_mode_enabled or speed_optimized
+                            else _env_int(
+                                "TRANSCRIBE_GROQ_LANGUAGE_FALLBACK_MAX_ATTEMPTS", 2, 0
+                            )
+                        )
+                        retry_languages = _build_language_retry_candidates(
+                            configured_language, language_fallbacks
+                        )
                         if retry_languages and max_lang_attempts > 0:
                             fallback_model = groq_retry_model or groq_primary_model
                             attempted = 0
@@ -3086,12 +5048,19 @@ def generate_transcript(
                                 if attempted >= max_lang_attempts:
                                     break
                                 attempted += 1
+                                fallback_groq_kwargs: dict[str, object] = {
+                                    "model_name": fallback_model,
+                                    "prompt": None,
+                                    "language_hint": language_code,
+                                }
+                                if translate_to_english is not None:
+                                    fallback_groq_kwargs["translate_to_english"] = (
+                                        translate_to_english
+                                    )
                                 fallback_result = _call_groq(
                                     path,
                                     safe_duration,
-                                    model_name=fallback_model,
-                                    prompt=None,
-                                    language_hint=language_code,
+                                    **fallback_groq_kwargs,
                                 )
                                 candidate = _pick_better_transcript_with_language(
                                     best_result,
@@ -3104,16 +5073,32 @@ def generate_transcript(
                                 if not _is_low_coverage(best_result, safe_duration):
                                     break
                             groq_result = best_result
-                    guard_retry_enabled = _env_bool("TRANSCRIBE_LANGUAGE_GUARD_RETRY", True) and not fast_mode_enabled
-                    if guard_retry_enabled and _needs_language_guard_retry(groq_result, configured_language):
+                    guard_retry_enabled = (
+                        _env_bool("TRANSCRIBE_LANGUAGE_GUARD_RETRY", True)
+                        and not fast_mode_enabled
+                        and not speed_optimized
+                    )
+                    if guard_retry_enabled and _needs_language_guard_retry(
+                        groq_result, configured_language
+                    ):
                         guard_model = groq_retry_model or groq_primary_model
-                        guard_prompt = _build_language_guard_prompt(configured_language or "")
+                        guard_prompt = _build_language_guard_prompt(
+                            configured_language or ""
+                        )
+                        guard_groq_kwargs: dict[str, object] = {
+                            "model_name": guard_model,
+                            "prompt": guard_prompt,
+                        }
+                        if configured_language is not None:
+                            guard_groq_kwargs["language_hint"] = configured_language
+                        if translate_to_english is not None:
+                            guard_groq_kwargs["translate_to_english"] = (
+                                translate_to_english
+                            )
                         guard_result = _call_groq(
                             path,
                             safe_duration,
-                            model_name=guard_model,
-                            prompt=guard_prompt,
-                            language_hint=configured_language,
+                            **guard_groq_kwargs,
                         )
                         preferred_guard = _pick_better_transcript_with_language(
                             groq_result,
@@ -3132,73 +5117,444 @@ def generate_transcript(
                         )
                         if preferred_provider is not None:
                             groq_result = preferred_provider
+                    if (
+                        configured_language is None
+                        and music_auto_routing
+                        and groq_result is not None
+                        and _looks_like_latin_music_lyrics(groq_result)
+                        and _normalize_detected_language(groq_result.language) != "en"
+                    ):
+                        en_groq_kwargs: dict[str, object] = {
+                            "model_name": groq_primary_model,
+                            "prompt": groq_primary_prompt,
+                            "language_hint": "en",
+                        }
+                        if translate_to_english is not None:
+                            en_groq_kwargs["translate_to_english"] = (
+                                translate_to_english
+                            )
+                        en_result = _call_groq(
+                            path,
+                            safe_duration,
+                            **en_groq_kwargs,
+                        )
+                        preferred_en = _pick_better_transcript_with_language(
+                            groq_result,
+                            en_result,
+                            safe_duration,
+                            "en",
+                        )
+                        if preferred_en is not None:
+                            groq_result = preferred_en
+                    if (
+                        fast_mode_enabled
+                        and music_auto_routing
+                        and groq_result is not None
+                        and _normalize_detected_language(groq_result.language) == "en"
+                        and not _looks_like_latin_music_lyrics(groq_result)
+                    ):
+                        sarvam_guess = _call_sarvam(
+                            path,
+                            safe_duration,
+                            model_name=sarvam_model,
+                            mode=sarvam_mode,
+                            language_hint=None,
+                            prompt=sarvam_prompt,
+                            use_vocal_isolation=use_vocal_isolation,
+                        )
+                        preferred_guess = _pick_better_auto_indic_transcript(
+                            groq_result,
+                            sarvam_guess,
+                            safe_duration,
+                        )
+                        if preferred_guess is not None:
+                            groq_result = preferred_guess
+                    auto_sarvam_attempts = _resolve_auto_sarvam_probe_attempts(
+                        fast_mode_enabled=fast_mode_enabled,
+                        speed_optimized=speed_optimized,
+                        profile=profile,
+                        configured_language=configured_language,
+                    )
+                    auto_probe_languages = (
+                        _build_auto_sarvam_probe_languages(
+                            groq_result,
+                            safe_duration,
+                            profile,
+                            configured_language,
+                        )
+                        if (
+                            backend == "auto"
+                            and auto_sarvam_attempts > 0
+                            and configured_language is None
+                        )
+                        else []
+                    )
+                    if auto_probe_languages:
+                        best_result = groq_result
+                        attempts = 0
+                        min_auto_alpha = _env_int(
+                            "TRANSCRIBE_AUTO_ROUTE_SARVAM_MIN_ALPHA", 18, 0
+                        )
+                        min_auto_ratio = _env_float(
+                            "TRANSCRIBE_AUTO_ROUTE_SARVAM_MIN_RATIO", 0.30, 0.0
+                        )
+                        for language_code in auto_probe_languages:
+                            if attempts >= auto_sarvam_attempts:
+                                break
+                            attempts += 1
+                            sarvam_candidate = _call_sarvam(
+                                path,
+                                safe_duration,
+                                model_name=sarvam_model,
+                                mode=sarvam_mode,
+                                language_hint=language_code,
+                                prompt=sarvam_prompt,
+                                use_vocal_isolation=use_vocal_isolation,
+                            )
+                            if language_code is None:
+                                candidate = _pick_better_auto_indic_transcript(
+                                    best_result,
+                                    sarvam_candidate,
+                                    safe_duration,
+                                )
+                            else:
+                                candidate = _pick_better_transcript_with_language(
+                                    best_result,
+                                    sarvam_candidate,
+                                    safe_duration,
+                                    language_code,
+                                )
+                            if candidate is not None:
+                                best_result = candidate
+                            if (
+                                candidate is sarvam_candidate
+                                and sarvam_candidate is not None
+                            ):
+                                candidate_language = (
+                                    language_code
+                                    or _normalize_detected_language(
+                                        sarvam_candidate.language
+                                    )
+                                )
+                                alpha_count, script_ratio = (
+                                    _payload_language_match_metrics(
+                                        sarvam_candidate, candidate_language
+                                    )
+                                )
+                                if (
+                                    not _is_low_coverage(
+                                        sarvam_candidate, safe_duration
+                                    )
+                                    and alpha_count >= min_auto_alpha
+                                    and script_ratio >= min_auto_ratio
+                                ):
+                                    break
+                        groq_result = best_result
+                    if (
+                        allow_mock
+                        and _env_bool("TRANSCRIBE_MOCK_ON_LOW_COVERAGE", True)
+                        and _is_low_coverage(
+                            groq_result,
+                            safe_duration,
+                        )
+                    ):
+                        return _build_mock_transcript(safe_duration)
                     return groq_result
                 if backend == "groq":
                     # Avoid unexpectedly slow local fallback when explicit Groq mode is selected.
-                    groq_local_fallback = _env_bool("TRANSCRIBE_GROQ_LOCAL_FALLBACK", backend != "groq")
+                    groq_local_fallback = _env_bool(
+                        "TRANSCRIBE_GROQ_LOCAL_FALLBACK", backend != "groq"
+                    )
                     if fast_mode_enabled:
                         groq_local_fallback = False
-                    if _env_bool("TRANSCRIBE_GROQ_STRICT_ONLY", False) or not groq_local_fallback:
+                    if (
+                        _env_bool("TRANSCRIBE_GROQ_STRICT_ONLY", False)
+                        or not groq_local_fallback
+                    ):
                         if allow_mock:
                             return _build_mock_transcript(safe_duration)
-                        raise RuntimeError("Groq transcription failed. Check GROQ_API_KEY and network.")
+                        raise RuntimeError(
+                            "Groq transcription failed. Check GROQ_API_KEY and network."
+                        )
                 if backend == "sarvam":
                     if sarvam_result is not None:
                         return sarvam_result
                     if allow_mock:
                         return _build_mock_transcript(safe_duration)
-                    raise RuntimeError("Transcription failed for Sarvam and Groq fallback.")
+                    raise RuntimeError(
+                        "Transcription failed for Sarvam and Groq fallback."
+                    )
             finally:
                 _finish_groq_audio_session()
         if sarvam_result is not None:
+            if (
+                allow_mock
+                and _env_bool("TRANSCRIBE_MOCK_ON_LOW_COVERAGE", True)
+                and _is_low_coverage(
+                    sarvam_result,
+                    safe_duration,
+                )
+            ):
+                return _build_mock_transcript(safe_duration)
             return sarvam_result
         if backend == "sarvam":
             if allow_mock:
                 return _build_mock_transcript(safe_duration)
-            raise RuntimeError("Sarvam transcription failed. Check SARVAM API key and network.")
-
-        # ------------------------------------------------------------------
-        # Local faster-whisper backend (original path)
-        # ------------------------------------------------------------------
-        primary_model = (os.getenv("TRANSCRIBE_MODEL", "base.en") or "base.en").strip() or "base.en"
-        retry_model = (os.getenv("TRANSCRIBE_RETRY_MODEL", "medium") or "medium").strip() or "medium"
-        retry_beam_size = _env_int("TRANSCRIBE_RETRY_BEAM_SIZE", 8, 1)
-        allow_quality_retry = _env_bool("TRANSCRIBE_ENABLE_QUALITY_RETRY", True)
-        retry_min_duration_sec = _env_float("TRANSCRIBE_RETRY_MIN_DURATION_SEC", 90.0, 0.0)
-        can_retry = allow_quality_retry and safe_duration >= retry_min_duration_sec
-
-        from_faster_whisper = _build_from_faster_whisper(path, safe_duration, model_name=primary_model)
-        if from_faster_whisper is not None:
-            should_retry = (
-                _is_low_coverage(from_faster_whisper, safe_duration)
-                or _is_low_confidence_quality(from_faster_whisper)
-                or _has_suspicious_long_gap(from_faster_whisper, safe_duration)
+            raise RuntimeError(
+                "Sarvam transcription failed. Check SARVAM API key and network."
             )
-            if can_retry and should_retry:
-                retry_result = _build_from_faster_whisper(
-                    path,
-                    safe_duration,
-                    model_name=retry_model,
-                    beam_size=retry_beam_size,
-                    force_vad_filter=False,
-                )
-                preferred = _pick_better_transcript(from_faster_whisper, retry_result, safe_duration)
-                if preferred is not None:
-                    return preferred
-            return from_faster_whisper
 
-        if can_retry:
-            retry_result = _build_from_faster_whisper(
-                path,
-                safe_duration,
-                model_name=retry_model,
-                beam_size=retry_beam_size,
-                force_vad_filter=False,
-            )
-            if retry_result is not None:
-                return retry_result
+        # Cloud-only mode: no local offline model fallback.
+        # Always raise a clear error when cloud transcription fails.
         if allow_mock:
             return _build_mock_transcript(safe_duration)
-        raise RuntimeError("Transcription failed for the selected model. Verify model availability and compute settings.")
+        raise RuntimeError(
+            "Cloud transcription failed (Groq/Sarvam). "
+            "Check your GROQ_API_KEY, SARVAM_API_KEY, and network connectivity. "
+            "Ensure the API keys are valid and the services are reachable."
+        )
     finally:
         _TRANSCRIPTION_RUNTIME.profile = previous_runtime_profile
+        _TRANSCRIPTION_RUNTIME.mode = previous_runtime_mode
+        _TRANSCRIPTION_RUNTIME.duet_mode = previous_runtime_duet_mode
+        # Aggressive cleanup after each transcription to prevent OOM on low-memory systems
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def generate_transcript_with_refinement(
+    path: str,
+    duration_sec: float,
+    *,
+    language_hint: str | None = None,
+    allow_mock_fallback: bool | None = None,
+    fast_mode: bool | None = None,
+    prompt: str | None = None,
+    refine_timestamps: bool | None = None,
+    mode: str | None = None,
+    optimize_for_speed: bool | None = None,
+) -> TranscriptPayload:
+    """
+    Generate transcript with optional per-word timestamp refinement.
+
+    This wrapper calls generate_transcript() and then applies energy-based
+    timestamp refinement to improve word-level alignment with audio.
+
+    Args:
+        path: Path to audio/video file
+        duration_sec: Duration in seconds
+        language_hint: Optional language code
+        allow_mock_fallback: Whether to allow mock transcript on failure
+        fast_mode: Fast mode skips retries and refinement
+        prompt: Optional transcription prompt
+        refine_timestamps: Whether to refine timestamps (default: auto from env)
+
+    Returns:
+        TranscriptPayload with optionally refined timestamps
+    """
+    result = generate_transcript(
+        path,
+        duration_sec,
+        language_hint=language_hint,
+        allow_mock_fallback=allow_mock_fallback,
+        fast_mode=fast_mode,
+        prompt=prompt,
+        mode=mode,
+        optimize_for_speed=optimize_for_speed,
+    )
+
+    # Skip refinement for mock transcripts or fast mode
+    if result.is_mock:
+        return result
+
+    # Check if refinement is enabled
+    refine_enabled = (
+        _env_bool("TRANSCRIBE_TIMESTAMP_REFINEMENT_ENABLED", False)
+        if refine_timestamps is None
+        else bool(refine_timestamps)
+    )
+
+    # Fast mode disables refinement
+    if fast_mode:
+        refine_enabled = False
+
+    if not refine_enabled:
+        return result
+
+    try:
+        from app.timestamp_refiner import refine_word_timestamps_batch
+
+        refined_words = refine_word_timestamps_batch(
+            result.words,
+            path,
+            max_words=_env_int("TRANSCRIBE_TIMESTAMP_REFINEMENT_MAX_WORDS", 1000, 100),
+        )
+
+        if refined_words is not result.words:
+            return TranscriptPayload(
+                source=result.source,
+                language=result.language,
+                text=result.text,
+                words=refined_words,
+                is_mock=result.is_mock,
+            )
+    except Exception as exc:  # noqa: BLE001
+        # Log but don't fail - timestamp refinement is optional
+        import logging
+
+        logging.getLogger(__name__).warning(
+            f"Timestamp refinement failed, using original timestamps: {exc}"
+        )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Pre-computed vocal isolation for upload-time processing
+# ---------------------------------------------------------------------------
+
+
+def precompute_vocal_isolation(
+    source_path: str,
+    output_dir: str,
+    *,
+    force_backend: str | None = None,
+) -> str | None:
+    """Run vocal isolation and store the result for later transcription.
+
+    This function is called at upload time to pre-compute the vocal stem,
+    so that transcription can use it directly without waiting.
+
+    Args:
+        source_path: Absolute path to the source video/audio file
+        output_dir: Directory to store the output vocal stem (typically same as upload dir)
+        force_backend: If provided, use this backend instead of config-based selection
+
+    Returns:
+        Relative path to the vocal stem file if successful, None otherwise
+    """
+    from pathlib import Path as P
+
+    source = P(source_path)
+    if not source.exists():
+        _perf_logger.warning("[precompute] source does not exist: %s", source_path)
+        return None
+
+    # Check if vocal isolation is enabled at all
+    if not _env_bool("TRANSCRIBE_VOCAL_ISOLATION_ENABLED", True):
+        _perf_logger.debug("[precompute] vocal isolation disabled, skipping")
+        return None
+
+    # Determine the backend to use (same logic as _prepare_vocal_isolation_source)
+    high_quality_enabled = _env_bool("TRANSCRIBE_VOCAL_ISOLATION_HIGH_QUALITY", False)
+    if force_backend:
+        requested_backend = _normalize_vocal_backend(force_backend)
+    elif high_quality_enabled:
+        hq_backend = (
+            os.getenv("TRANSCRIBE_VOCAL_ISOLATION_HIGH_QUALITY_BACKEND", "")
+            or "melband_roformer"
+        ).strip()
+        requested_backend = _normalize_vocal_backend(hq_backend)
+    else:
+        requested_backend = _normalize_vocal_backend(
+            os.getenv("TRANSCRIBE_VOCAL_ISOLATION_BACKEND", "auto") or "auto"
+        )
+
+    if requested_backend == "none":
+        _perf_logger.debug("[precompute] backend is 'none', skipping")
+        return None
+
+    # Build candidate list
+    candidates: list[str] = []
+    if requested_backend == "auto":
+        candidates.extend(_auto_vocal_isolation_backends())
+    else:
+        candidates.append(requested_backend)
+
+    fallback_candidates = _parse_backend_list(
+        os.getenv("TRANSCRIBE_VOCAL_ISOLATION_FALLBACKS", "")
+    )
+    candidates.extend(fallback_candidates)
+
+    if not candidates:
+        _perf_logger.warning("[precompute] no vocal isolation backends available")
+        return None
+
+    # Try each backend until one succeeds
+    seen: set[str] = set()
+    for backend in candidates:
+        normalized_backend = _normalize_vocal_backend(backend)
+        if normalized_backend in {"", "none"} or normalized_backend in seen:
+            continue
+        seen.add(normalized_backend)
+
+        _perf_logger.info("[precompute] trying backend: %s", normalized_backend)
+
+        # Run isolation (this goes to a temp directory first)
+        prepared_source, cleanup_path = _prepare_with_vocal_backend(
+            source_path, normalized_backend
+        )
+
+        if (
+            _is_distinct_isolated_source(prepared_source, source_path)
+            and P(prepared_source).exists()
+        ):
+            # Success! Move to permanent location
+            out_dir = P(output_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            # Name the vocal stem based on source file
+            stem_filename = f"{source.stem}_vocals.wav"
+            final_path = out_dir / stem_filename
+
+            try:
+                # Copy to permanent location
+                shutil.copy2(prepared_source, final_path)
+                _perf_logger.info("[precompute] saved vocal stem: %s", final_path)
+
+                # Clean up temp files
+                _cleanup_temp_path(cleanup_path)
+
+                # Return just the filename (relative to output_dir)
+                return stem_filename
+
+            except (OSError, IOError) as exc:
+                _perf_logger.warning("[precompute] failed to save vocal stem: %s", exc)
+                _cleanup_temp_path(cleanup_path)
+                continue
+
+        _cleanup_temp_path(cleanup_path)
+
+    _perf_logger.warning("[precompute] all backends failed")
+    return None
+
+
+def get_precomputed_vocal_path(
+    source_path: str,
+    upload_dir: str,
+) -> str | None:
+    """Check if a pre-computed vocal stem exists for the given source file.
+
+    Args:
+        source_path: Absolute path to the source video/audio file
+        upload_dir: Directory where vocal stems are stored
+
+    Returns:
+        Absolute path to the vocal stem if it exists, None otherwise
+    """
+    from pathlib import Path as P
+
+    source = P(source_path)
+    stem_filename = f"{source.stem}_vocals.wav"
+    vocal_path = P(upload_dir) / stem_filename
+
+    if vocal_path.exists() and vocal_path.stat().st_size > 0:
+        return str(vocal_path)
+
+    return None

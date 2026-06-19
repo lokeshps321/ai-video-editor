@@ -68,6 +68,11 @@ export type TextOverlay = {
   alignment?: number;
   margin_v?: number;
   style: string;
+  word_timings?: Array<{
+    text: string;
+    start_sec: number;
+    end_sec: number;
+  }>;
 };
 
 export type Clip = {
@@ -110,6 +115,9 @@ export type Project = {
   width: number;
   height: number;
   timeline: Timeline;
+  timeline_version?: number;
+  timeline_can_undo?: boolean;
+  timeline_can_redo?: boolean;
 };
 
 export type MediaAsset = {
@@ -152,6 +160,8 @@ export type JobEvent = {
   created_at: string;
 };
 
+export type TranscriptMode = "auto" | "speech" | "song";
+
 export type OperationHistoryItem = {
   id: number;
   project_id: string;
@@ -164,12 +174,17 @@ export type OperationHistoryItem = {
 export type TranscriptWord = {
   id: string;
   text: string;
+  display_text?: string | null;
+  script_tag?: "latin" | "indic" | "arabic" | "mixed" | "other" | null;
+  language_hint?: string | null;
   start_sec: number;
   end_sec: number;
   confidence?: number | null;
   quality_score?: number | null;
   quality_label?: "trusted" | "weak" | null;
   source_pass?: "primary" | "retry" | "rescue" | "manual" | null;
+  speaker_id?: string | null;
+  speaker_label?: string | null;
 };
 
 export type TranscriptRegion = {
@@ -189,6 +204,8 @@ export type Transcript = {
   text: string;
   words: TranscriptWord[];
   regions: TranscriptRegion[];
+  script_tags?: string[];
+  mixed_script?: boolean;
   duration_sec: number;
   is_mock: boolean;
   created_at: string;
@@ -197,6 +214,13 @@ export type Transcript = {
 export type TranscriptGenerateResponse = {
   transcript: Transcript;
   timeline: Timeline;
+  reused_transcript?: boolean;
+};
+
+export type TranscriptEditResponse = {
+  transcript: Transcript;
+  timeline: Timeline;
+  captions_synced: boolean;
 };
 
 export type TranscriptCutResponse = {
@@ -263,6 +287,22 @@ export type BrollSuggestResponse = {
   slots: BrollSlot[];
 };
 
+export type BrollAutoApplySkipSummary = {
+  slot_id: string;
+  concept_text: string;
+  reason: string;
+  detail?: string | null;
+};
+
+export type BrollConfig = {
+  external_enabled: boolean;
+  pexels_configured: boolean;
+  pixabay_configured: boolean;
+  stock_search_available: boolean;
+  generative_enabled: boolean;
+  llm_rerank_available: boolean;
+};
+
 export type BrollAutoApplyResponse = {
   project_id: string;
   transcript_id: string | null;
@@ -271,6 +311,7 @@ export type BrollAutoApplyResponse = {
   synced_clip_count: number;
   skipped_slots: number;
   confidence_threshold: number;
+  skipped_slot_summaries?: BrollAutoApplySkipSummary[];
   timeline: Timeline;
   slots: BrollSlot[];
 };

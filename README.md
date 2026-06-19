@@ -93,7 +93,7 @@ Key environment variables:
 - `TRANSCRIBE_DEVICE=auto` and `TRANSCRIBE_COMPUTE_TYPE=auto` to use CUDA automatically when available
 - `TRANSCRIBE_COMPUTE_TYPE_CUDA=float16`, `TRANSCRIBE_COMPUTE_TYPE_CPU=int8` for per-device overrides
 - `TRANSCRIBE_ENABLE_QUALITY_RETRY=true` to auto-retry weak transcripts with higher quality settings
-- `TRANSCRIBE_ALLOW_MOCK_FALLBACK=true` to permit synthetic fallback transcripts when ASR model loading fails
+- `TRANSCRIBE_ALLOW_MOCK_FALLBACK=false` in production so synthetic fallback transcripts never replace real ASR
 - `TRANSCRIBE_MIN_WORDS_PER_SEC` (quality floor; low-word transcripts trigger retry)
 - `TRANSCRIBE_RETRY_MIN_DURATION_SEC=90` (retry only for longer videos to avoid slow short-clip transcribes)
 - `TRANSCRIBE_BEAM_SIZE`, `TRANSCRIBE_RETRY_BEAM_SIZE`

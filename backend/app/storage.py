@@ -9,13 +9,23 @@ from fastapi import UploadFile
 from .config import get_settings
 
 settings = get_settings()
+_BACKEND_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _resolve_storage_root(path_value: str) -> Path:
+    path = Path(path_value)
+    if path.is_absolute():
+        return path
+    # Resolve relative storage roots from the backend directory so runtime cwd
+    # does not decide where uploads/renders/tmp live.
+    return (_BACKEND_ROOT / path).resolve()
 
 
 class LocalStorage:
     def __init__(self, upload_dir: str, render_dir: str, tmp_dir: str) -> None:
-        self.upload_root = Path(upload_dir).resolve()
-        self.render_root = Path(render_dir).resolve()
-        self.tmp_root = Path(tmp_dir).resolve()
+        self.upload_root = _resolve_storage_root(upload_dir)
+        self.render_root = _resolve_storage_root(render_dir)
+        self.tmp_root = _resolve_storage_root(tmp_dir)
         self.upload_root.mkdir(parents=True, exist_ok=True)
         self.render_root.mkdir(parents=True, exist_ok=True)
         self.tmp_root.mkdir(parents=True, exist_ok=True)
@@ -70,4 +80,3 @@ storage = LocalStorage(
     render_dir=os.getenv("RENDER_DIR", settings.render_dir),
     tmp_dir=os.getenv("TMP_DIR", settings.tmp_dir),
 )
-

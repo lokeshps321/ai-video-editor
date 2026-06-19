@@ -1,239 +1,491 @@
-import { useEffect } from "react";
-import { motion } from "framer-motion";
-import { Link } from "react-router-dom";
-import { Clapperboard, AudioWaveform, Zap, Layers, Sparkles, Wand2, TerminalSquare } from "lucide-react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { motion, type Variants } from "framer-motion";
+import { Link, useNavigate } from "react-router-dom";
+import { SignedIn, SignedOut, UserButton } from "@clerk/clerk-react";
+import {
+  AudioWaveform,
+  Captions,
+  ChevronRight,
+  Globe2,
+  Languages,
+  Layers,
+  Menu,
+  MessageSquareText,
+  Play,
+  Scissors,
+  Smartphone,
+  Sparkles,
+  UploadCloud,
+  X,
+  Zap,
+} from "lucide-react";
+import { setPendingUploadFile } from "./lib/pendingUpload";
 import { BRAND } from "./config/brand";
+import HeroVisual from "./HeroVisual";
+import DemoStorySection from "./DemoStorySection";
+import BrandLogo from "./components/BrandLogo";
 
 import "./landing.css";
 
-function TickerRibbon() {
-    const items = [
-        "Native AI Timeline", "Generative B-Roll", "Magnetic Captions", "Transcript Cut",
-        "Viewport Render", "Zero-Latency Caching", "Exact 9:16 Export", "Creator-First Timeline"
-    ];
+const heroEase = [0.16, 1, 0.3, 1] as const;
+const sectionEase = [0.215, 0.61, 0.355, 1] as const;
 
-    return (
-        <section className="ticker-section">
-            <div className="ticker-track" aria-hidden="true">
-                {[0, 1].map((copy) => (
-                    <div key={copy} className="ticker-content">
-                        {items.map((item, i) => (
-                            <div key={`${copy}-${i}`} className="ticker-item">
-                                <Zap size={20} />
-                                {item}
-                            </div>
-                        ))}
-                    </div>
-                ))}
-            </div>
-        </section>
-    );
+const sectionReveal: Variants = {
+  hidden: { opacity: 0, y: 26 },
+  visible: {
+    opacity: 1,
+    y: 0,
+    transition: {
+      duration: 0.65,
+      ease: sectionEase,
+    },
+  },
+};
+
+const cardReveal: Variants = {
+  hidden: { opacity: 0, y: 18 },
+  visible: {
+    opacity: 1,
+    y: 0,
+    transition: {
+      duration: 0.55,
+      ease: sectionEase,
+    },
+  },
+};
+
+const gridReveal: Variants = {
+  hidden: {},
+  visible: {
+    transition: {
+      staggerChildren: 0.08,
+    },
+  },
+};
+
+const navSections = [
+  { href: "#demo", label: "Demo" },
+  { href: "#workflow", label: "Workflow" },
+];
+
+const tickerItems = [
+  "Transcript-first cuts",
+  "AI captions",
+  "9:16 exports",
+  "B-roll studio",
+  "Indian language ASR",
+  "Hook-ready timelines",
+  "Filler removal",
+  "Creator presets",
+];
+
+const workflow = [
+  {
+    icon: UploadCloud,
+    label: "Upload",
+    title: "Drop your talking-head clip",
+    text: "Upload or drag a video. ClipMind opens the same transcript-first workspace you see in the editor.",
+  },
+  {
+    icon: MessageSquareText,
+    label: "Transcript",
+    title: "Edit by spoken text",
+    text: "Generate word-level transcript, select phrases, and delete filler by text — not razor blades.",
+  },
+  {
+    icon: Zap,
+    label: "Quick Edit",
+    title: "One-click cut + captions",
+    text: "Transcribe, auto-cut pauses, and apply captions in one pass. B-roll stays optional in the studio drawer.",
+  },
+  {
+    icon: Smartphone,
+    label: "Export",
+    title: "Ship vertical",
+    text: "Render 9:16 for Reels, Shorts, and TikTok from the same timeline.",
+  },
+];
+
+const features = [
+  {
+    icon: Scissors,
+    title: "Cut by text",
+    text: "Trim video by editing the transcript, then fine-tune the timeline.",
+  },
+  {
+    icon: Captions,
+    title: "Caption engine",
+    text: "Generate short-form captions with style presets and language-aware text.",
+  },
+  {
+    icon: Layers,
+    title: "B-roll planner",
+    text: "Turn transcript moments into suggested cutaways and visual beats.",
+  },
+  {
+    icon: Languages,
+    title: "Bharat-ready ASR",
+    text: "Work across all 12 supported Indian languages with language-aware transcription and captions.",
+  },
+];
+
+function TickerRibbon() {
+  return (
+    <section className="ticker-strip" aria-label="ClipMind capabilities">
+      <div className="ticker-track" aria-hidden="true">
+        {[0, 1].map((copy) => (
+          <div className="ticker-content" key={copy}>
+            {tickerItems.map((item) => (
+              <span className="ticker-item" key={`${copy}-${item}`}>
+                <Zap size={16} />
+                {item}
+              </span>
+            ))}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
 }
 
-function BentoCard({ className, icon: Icon, title, desc, delay, children }: any) {
-    return (
-        <motion.div
-            initial={{ opacity: 0, y: 50 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true, margin: "-50px" }}
-            transition={{ duration: 0.8, delay, ease: [0.16, 1, 0.3, 1] }}
-            className={`bento-card ${className}`}
-        >
-            <div className="bento-icon-wrapper">
-                <Icon className="bento-icon" size={28} />
-            </div>
-
-            {children}
-
-            <div className="bento-content">
-                <h3 className="bento-title">{title}</h3>
-                <p className="bento-desc">{desc}</p>
-            </div>
-        </motion.div>
-    );
+function FeatureCard({
+  icon: Icon,
+  title,
+  text,
+}: {
+  icon: typeof Scissors;
+  title: string;
+  text: string;
+}) {
+  return (
+    <motion.article className="feature-card" variants={cardReveal}>
+      <div className="feature-icon">
+        <Icon size={22} />
+      </div>
+      <h3>{title}</h3>
+      <p>{text}</p>
+    </motion.article>
+  );
 }
 
 export default function LandingPage() {
-    useEffect(() => {
-        document.title = BRAND.landingDocumentTitle;
-    }, []);
+  const navigate = useNavigate();
+  const [heroDragOver, setHeroDragOver] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const dropInputRef = useRef<HTMLInputElement>(null);
 
-    return (
-        <div className="landing-page dark-theme">
-            <div className="noise-overlay" style={{ zIndex: -1 }}></div>
-            <div className="mesh-glow-1"></div>
-            <div className="mesh-glow-2"></div>
+  useEffect(() => {
+    document.title = BRAND.landingDocumentTitle;
+  }, []);
 
-            <nav className="glass-nav">
-                <div className="nav-container">
-                    <div className="nav-logo">
-                        <Zap className="nav-logo-icon" size={26} />
-                        <span className="nav-logo-text">{BRAND.lead}{BRAND.accent ? <><span> </span><span className="text-gradient">{BRAND.accent}</span></> : null}</span>
-                    </div>
-                    <div className="nav-links">
-                        <a href="#features">Features</a>
-                        <a href="#demo">Story</a>
-                        <Link to="/editor" className="btn-primary-small">Launch Editor</Link>
-                    </div>
-                </div>
-            </nav>
+  useEffect(() => {
+    if (!mobileMenuOpen) return;
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setMobileMenuOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [mobileMenuOpen]);
 
-            <main>
-                <section className="hero-section">
-                    <motion.div className="hero-content">
-                        <motion.div
-                            initial={{ opacity: 0, scale: 0.9 }}
-                            animate={{ opacity: 1, scale: 1 }}
-                            transition={{ duration: 1, ease: "easeOut" }}
-                            className="badge-wrapper"
-                        >
-                            <span className="hero-badge"><Sparkles size={16} /> Enter the next generation</span>
-                        </motion.div>
+  const handleFile = (file?: File) => {
+    if (!file?.type.startsWith("video/")) return;
+    setPendingUploadFile(file);
+    navigate("/editor");
+  };
 
-                        <motion.h1
-                            initial={{ opacity: 0, y: 30 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ duration: 0.8, delay: 0.1, ease: [0.16, 1, 0.3, 1] }}
-                            className="hero-title"
-                        >
-                            Produce video at the <br /> speed of <span className="text-gradient-accent">thought.</span>
-                        </motion.h1>
+  const openFilePicker = () => dropInputRef.current?.click();
 
-                        <motion.p
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ duration: 0.8, delay: 0.3, ease: [0.16, 1, 0.3, 1] }}
-                            className="hero-subtitle"
-                        >
-                            {BRAND.productName} is a cinematic timeline powered by reasoning AI. Draft entire videos from text, generate contextual B-roll instantly, and refine natively in a studio-grade editor.
-                        </motion.p>
+  const handleDropKey = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    openFilePicker();
+  };
 
-                        <motion.div
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ duration: 0.8, delay: 0.5, ease: [0.16, 1, 0.3, 1] }}
-                        >
-                            <Link to="/editor" className="btn-glow">
-                                Start Creating
-                                <div className="btn-glow-effect"></div>
-                            </Link>
-                        </motion.div>
-                    </motion.div>
+  return (
+    <div className="landing-page">
+      <div className="page-texture" aria-hidden="true" />
 
-                    {/* Highly Interactive 3D Editor Mockup */}
-                    <div className="hero-mockup-container">
-                        <motion.div
-                            className="hero-mockup-wrapper"
-                            initial={{ opacity: 0, y: 100 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ duration: 1.5, delay: 0.4, ease: [0.16, 1, 0.3, 1] }}
-                            style={{ height: "400px", display: "flex", justifyContent: "center", alignItems: "center" }}
-                        >
-                            {/* Empty space that the 3D model floats through */}
-
-
-                            {/* Floating Parallax Layers representing AI tools */}
-                            <div className="tilted-ui-layer">
-                                <div className="floating-panel p1">
-                                    <div style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "10px" }}>
-                                        <Wand2 size={18} style={{ color: "var(--accent-electric)" }} />
-                                        <span style={{ fontSize: "14px", fontWeight: "600" }}>Generating B-Roll...</span>
-                                    </div>
-                                    <div style={{ height: "4px", background: "rgba(255,255,255,0.1)", borderRadius: "2px", overflow: "hidden" }}>
-                                        <div style={{ width: "72%", height: "100%", background: "var(--accent-electric)" }} />
-                                    </div>
-                                </div>
-
-                                <div className="floating-panel p2">
-                                    <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-                                        <TerminalSquare size={18} style={{ color: "var(--accent-violet)" }} />
-                                        <span style={{ fontSize: "14px", fontWeight: "600" }}>Transcript Sync OK</span>
-                                    </div>
-                                </div>
-                            </div>
-                        </motion.div>
-                    </div>
-                </section>
-
-                <TickerRibbon />
-
-                <section id="features" className="bento-section">
-                    <div className="container">
-                        <motion.div className="section-header">
-                            <h2 className="section-title">A Studio in your Browser</h2>
-                            <p className="section-desc">We reimagined the non-linear editor around conversational and generative workflows.</p>
-                        </motion.div>
-
-                        <div className="bento-grid">
-                            <BentoCard
-                                className="wide" icon={Layers} delay={0}
-                                title="Generative B-Roll Matrix"
-                                desc="ClipMind reads your transcript, infers context, and automatically fetches or generates perfect cinematic B-roll to fit exactly on your timeline. All in a single click."
-                            >
-                                <div className="bento-visual">
-                                    {/* Simulated graphic or image for wide bento */}
-                                    <div style={{ width: "100%", height: "100%", background: "linear-gradient(90deg, transparent, rgba(46, 88, 255, 0.2))", borderRadius: "20px" }} />
-                                </div>
-                            </BentoCard>
-
-                            <BentoCard
-                                className="square" icon={Clapperboard} delay={0.2}
-                                title="Edit by Transcript"
-                                desc="Cut the text. The video follows. A true hybrid workflow where the script drives the timeline completely."
-                            >
-                            </BentoCard>
-
-                            <BentoCard
-                                className="square" icon={AudioWaveform} delay={0.3}
-                                title="Magnetic Captions"
-                                desc="One-click typography. Styles ranging from modern minimal to high-retention neon outlines."
-                            >
-                            </BentoCard>
-
-                            <BentoCard
-                                className="tall" icon={Wand2} delay={0.4}
-                                title="Agentic Rendering"
-                                desc="Behind the scenes, distributed agents pre-fetch assets, re-frame ratios, and transcode locally so your flow state is never interrupted."
-                            >
-                            </BentoCard>
-                        </div>
-                    </div>
-                </section>
-
-                <section className="statement-section">
-                    <motion.div
-                        initial={{ opacity: 0, y: 50, scale: 0.95 }}
-                        whileInView={{ opacity: 1, y: 0, scale: 1 }}
-                        viewport={{ once: true, margin: "-100px" }}
-                        transition={{ duration: 1, ease: [0.16, 1, 0.3, 1] }}
-                        className="big-statement-box"
-                    >
-                        <h2>Create like a Pro. <br /> <span className="text-outline">Direct like an Agent.</span></h2>
-                        <Link to="/editor" className="btn-glow" style={{ marginTop: "20px" }}>
-                            Enter the Timeline
-                            <div className="btn-glow-effect"></div>
-                        </Link>
-                    </motion.div>
-                </section>
-            </main>
-
-            <footer className="glass-footer">
-                <div className="container footer-content">
-                    <div className="footer-brand">
-                        <div className="nav-logo">
-                            <Zap className="nav-logo-icon" size={24} />
-                            <span className="nav-logo-text">{BRAND.productName}</span>
-                        </div>
-                        <p className="footer-sub">{BRAND.footerTagline}</p>
-                    </div>
-                    <div className="footer-links">
-                        <span>© 2026 {BRAND.productName}</span>
-                        <a href="#">Showcase</a>
-                        <a href="#">Documentation</a>
-                        <a href="#">Privacy</a>
-                    </div>
-                </div>
-            </footer>
+      <nav className="glass-nav">
+        <div className="nav-container">
+          <BrandLogo variant="nav" />
+          <div className="nav-actions">
+            <div
+              id="landing-nav-links"
+              className={`nav-section-links${mobileMenuOpen ? " is-open" : ""}`}
+            >
+              {navSections.map((section) => (
+                <a
+                  key={section.href}
+                  href={section.href}
+                  onClick={() => setMobileMenuOpen(false)}
+                >
+                  {section.label}
+                </a>
+              ))}
+            </div>
+            <SignedOut>
+              <Link
+                to="/sign-in"
+                className="btn-secondary-small"
+                onClick={() => setMobileMenuOpen(false)}
+              >
+                Sign In
+              </Link>
+              <Link
+                to="/sign-up"
+                className="btn-primary-small"
+                onClick={() => setMobileMenuOpen(false)}
+              >
+                Get Started
+                <ChevronRight size={16} />
+              </Link>
+            </SignedOut>
+            <SignedIn>
+              <UserButton afterSignOutUrl="/" />
+              <Link
+                to="/editor"
+                className="btn-primary-small"
+                onClick={() => setMobileMenuOpen(false)}
+              >
+                Launch Editor
+                <ChevronRight size={16} />
+              </Link>
+            </SignedIn>
+            <button
+              type="button"
+              className="nav-menu-toggle"
+              aria-label={mobileMenuOpen ? "Close menu" : "Open menu"}
+              aria-expanded={mobileMenuOpen}
+              aria-controls="landing-nav-links"
+              onClick={() => setMobileMenuOpen((open) => !open)}
+            >
+              {mobileMenuOpen ? <X size={22} /> : <Menu size={22} />}
+            </button>
+          </div>
         </div>
-    );
+      </nav>
+
+      <main>
+        <section className="hero-section">
+          <div className="hero-shell">
+            <motion.div
+              className="hero-copy"
+              initial={{ opacity: 0, y: 24 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.7, ease: heroEase }}
+            >
+              <span className="hero-badge">
+                <Sparkles size={16} />
+                AI editing studio for Reels, Shorts, and TikToks
+              </span>
+              <h1>ClipMind</h1>
+              <p className="hero-kicker">
+                Turn raw talking-head videos into captioned vertical shorts
+                without wrestling a traditional timeline.
+              </p>
+
+              <div className="hero-actions">
+                <Link to="/editor" className="btn-glow">
+                  Start editing
+                  <ChevronRight size={18} />
+                </Link>
+                <a href="#demo" className="btn-secondary">
+                  <Play size={17} fill="currentColor" />
+                  Watch flow
+                </a>
+              </div>
+
+              <div
+                className={`hero-dropzone ${heroDragOver ? "dragover" : ""}`}
+                role="button"
+                tabIndex={0}
+                onKeyDown={handleDropKey}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  setHeroDragOver(true);
+                }}
+                onDragLeave={() => setHeroDragOver(false)}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  setHeroDragOver(false);
+                  handleFile(event.dataTransfer.files[0]);
+                }}
+                onClick={openFilePicker}
+              >
+                <input
+                  ref={dropInputRef}
+                  type="file"
+                  accept="video/*"
+                  className="sr-only"
+                  onChange={(event) => handleFile(event.target.files?.[0])}
+                />
+                <UploadCloud size={19} />
+                <span>Drop a video or browse</span>
+              </div>
+
+              <div className="hero-stats" aria-label="ClipMind highlights">
+                <span>
+                  <strong>{BRAND.languageCount}</strong> Indian languages
+                </span>
+                <span className="hero-stat hero-stat-export">
+                  <strong>9:16</strong> export-first
+                </span>
+                <span>
+                  <strong>Text</strong> driven cuts
+                </span>
+              </div>
+            </motion.div>
+
+            <motion.div
+              initial={{ opacity: 0, y: 36, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              transition={{ duration: 0.9, delay: 0.12, ease: heroEase }}
+            >
+              <HeroVisual />
+            </motion.div>
+          </div>
+        </section>
+
+        <TickerRibbon />
+
+        <section
+          className="social-proof-strip"
+          aria-label="Creator social proof"
+        >
+          <blockquote className="social-proof-quote">
+            <p>{BRAND.socialProofQuote}</p>
+            <footer>{BRAND.socialProofMetric}</footer>
+          </blockquote>
+        </section>
+
+        <DemoStorySection />
+
+        <motion.section
+          id="workflow"
+          className="workflow-section"
+          variants={sectionReveal}
+          initial="hidden"
+          whileInView="visible"
+          viewport={{ once: true, amount: 0.22 }}
+          transition={{ duration: 0.55, ease: heroEase }}
+        >
+          <div className="workflow-header">
+            <span className="section-eyebrow">
+              <AudioWaveform size={16} /> Creator workflow
+            </span>
+            <h2>From raw speech to publishable short.</h2>
+          </div>
+          <motion.div
+            className="workflow-grid"
+            variants={gridReveal}
+            initial="hidden"
+            whileInView="visible"
+            viewport={{ once: true, amount: 0.24 }}
+          >
+            {workflow.map((step, index) => {
+              const Icon = step.icon;
+              return (
+                <motion.article
+                  className="workflow-card"
+                  key={step.label}
+                  variants={cardReveal}
+                >
+                  <span className="step-number">
+                    {String(index + 1).padStart(2, "0")}
+                  </span>
+                  <div className="workflow-icon">
+                    <Icon size={22} />
+                  </div>
+                  <span className="workflow-label">{step.label}</span>
+                  <h3>{step.title}</h3>
+                  <p>{step.text}</p>
+                </motion.article>
+              );
+            })}
+          </motion.div>
+        </motion.section>
+
+        <motion.section
+          className="language-section"
+          variants={sectionReveal}
+          initial="hidden"
+          whileInView="visible"
+          viewport={{ once: true, amount: 0.2 }}
+          transition={{ duration: 0.55, ease: heroEase }}
+        >
+          <motion.div className="language-card" variants={cardReveal}>
+            <div>
+              <span className="section-eyebrow">
+                <Globe2 size={16} /> Built for Bharat
+              </span>
+              <h2>Speak naturally. Edit clearly.</h2>
+              <p>{BRAND.heroSubtitle}</p>
+            </div>
+            <div className="language-grid">
+              {BRAND.supportedLanguages.map((lang) => (
+                <span key={lang}>{lang}</span>
+              ))}
+            </div>
+          </motion.div>
+        </motion.section>
+
+        <motion.section
+          className="features-section"
+          variants={sectionReveal}
+          initial="hidden"
+          whileInView="visible"
+          viewport={{ once: true, amount: 0.2 }}
+          transition={{ duration: 0.55, ease: heroEase }}
+        >
+          <div className="section-copy compact">
+            <span className="section-eyebrow">
+              <Layers size={16} /> Studio engine
+            </span>
+            <h2>{BRAND.featuresSectionTitle}</h2>
+          </div>
+          <motion.div
+            className="features-grid"
+            variants={gridReveal}
+            initial="hidden"
+            whileInView="visible"
+            viewport={{ once: true, amount: 0.24 }}
+          >
+            {features.map((feature) => (
+              <FeatureCard key={feature.title} {...feature} />
+            ))}
+          </motion.div>
+        </motion.section>
+
+        <motion.section
+          className="final-cta"
+          variants={sectionReveal}
+          initial="hidden"
+          whileInView="visible"
+          viewport={{ once: true, amount: 0.26 }}
+          transition={{ duration: 0.55, ease: heroEase }}
+        >
+          <motion.div className="final-cta-inner" variants={cardReveal}>
+            <span className="section-eyebrow">
+              <Sparkles size={16} /> Start with a clip
+            </span>
+            <h2>Create like a pro.</h2>
+            <p>
+              Upload one talking-head video and turn the strongest moments into
+              vertical shorts.
+            </p>
+            <Link to="/editor" className="btn-glow">
+              Enter the editor
+              <ChevronRight size={18} />
+            </Link>
+          </motion.div>
+        </motion.section>
+      </main>
+
+      <footer className="glass-footer">
+        <div className="container footer-content">
+          <BrandLogo variant="footer" />
+        </div>
+      </footer>
+    </div>
+  );
 }

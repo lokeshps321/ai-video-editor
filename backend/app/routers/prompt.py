@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from ..database import get_session
+from ..deps import get_current_user
 from ..models import Project
 from ..prompt_parser import parse_prompt
-from ..schemas import OperationApplyResponse, PromptApplyRequest, PromptParseRequest, PromptParseResponse
+from ..schemas import (
+    OperationApplyResponse,
+    PromptApplyRequest,
+    PromptParseRequest,
+    PromptParseResponse,
+)
 from ..timeline_service import (
     apply_operation,
     get_timeline_row,
@@ -18,7 +26,10 @@ router = APIRouter(prefix="/api/v1/prompt", tags=["prompt"])
 
 
 @router.post("/parse", response_model=PromptParseResponse)
-def parse_prompt_route(payload: PromptParseRequest) -> PromptParseResponse:
+def parse_prompt_route(
+    payload: PromptParseRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> PromptParseResponse:
     return parse_prompt(payload.prompt)
 
 
@@ -27,6 +38,7 @@ def apply_prompt(
     payload: PromptApplyRequest,
     project_id: str,
     session: Session = Depends(get_session),
+    current_user: dict[str, Any] = Depends(get_current_user),
 ) -> OperationApplyResponse:
     project = session.exec(select(Project).where(Project.id == project_id)).first()
     if not project:
@@ -34,7 +46,10 @@ def apply_prompt(
 
     parsed = parse_prompt(payload.prompt)
     if parsed.errors:
-        raise HTTPException(status_code=400, detail={"errors": parsed.errors, "suggestions": parsed.suggestions})
+        raise HTTPException(
+            status_code=400,
+            detail={"errors": parsed.errors, "suggestions": parsed.suggestions},
+        )
 
     timeline = get_timeline_row(session, project_id)
     state = load_timeline_state(timeline)
@@ -58,4 +73,3 @@ def apply_prompt(
         timeline=load_timeline_state(timeline),
         applied_ops=applied_ops,
     )
-

@@ -1,5 +1,5 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
-import { Captions, Lock, LockOpen, MapPin, RefreshCw, RotateCcw, Scissors, Trash2, Volume2, VolumeX } from "lucide-react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type RefObject } from "react";
+import { Captions, Lock, LockOpen, MapPin, Minus, Pencil, Plus, RefreshCw, RotateCcw, Scissors, Trash2, Volume2, VolumeX } from "lucide-react";
 import type { Clip, TranscriptWord } from "../types";
 
 export type TimelineLane = {
@@ -79,6 +79,16 @@ export type TimelineProps = {
   onSelectCaptionBlock?: (selection: TimelineCaptionSelection | null) => void;
   onMoveCaptionBlock?: (selection: TimelineCaptionSelection, startSec: number) => void;
   onTrimCaptionBlock?: (selection: TimelineCaptionSelection, startSec: number, durationSec: number) => void;
+  onEditWord?: (wordId: string) => void;
+  editingCaptionId?: string | null;
+  editingCaptionText?: string;
+  onStartEditCaption?: (selection: TimelineCaptionSelection) => void;
+  onCaptionTextChange?: (text: string) => void;
+  onCommitCaptionEdit?: () => void;
+  onCancelCaptionEdit?: () => void;
+  captionEditInputRef?: RefObject<HTMLInputElement | null>;
+  onDeleteLaneClip?: (selection: TimelineLaneClipSelection) => void;
+  onSplitLaneClip?: (selection: TimelineLaneClipSelection) => void;
   brollEditBusy: boolean;
 };
 
@@ -190,6 +200,22 @@ function trimInlineText(text: string, maxLength = 36): string {
   return `${text.slice(0, maxLength - 1).trimEnd()}…`;
 }
 
+function buildSpeakerIdOrder(words: TranscriptWord[]): string[] {
+  const seen: string[] = [];
+  for (const word of words) {
+    if (word.speaker_id && !seen.includes(word.speaker_id)) {
+      seen.push(word.speaker_id);
+    }
+  }
+  return seen;
+}
+
+function speakerSlotForWord(word: TranscriptWord, speakerIdOrder: string[]): number | null {
+  if (!word.speaker_id) return null;
+  const index = speakerIdOrder.indexOf(word.speaker_id);
+  return index >= 0 ? index : null;
+}
+
 function isInteractiveTarget(target: EventTarget | null): boolean {
   const node = target as HTMLElement | null;
   if (!node) return false;
@@ -233,6 +259,16 @@ function Timeline({
   onSelectCaptionBlock,
   onMoveCaptionBlock,
   onTrimCaptionBlock,
+  onEditWord,
+  editingCaptionId = null,
+  editingCaptionText = "",
+  onStartEditCaption,
+  onCaptionTextChange,
+  onCommitCaptionEdit,
+  onCancelCaptionEdit,
+  captionEditInputRef,
+  onDeleteLaneClip,
+  onSplitLaneClip,
   brollEditBusy,
 }: TimelineProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -317,19 +353,30 @@ function Timeline({
   }, [words, deletedWordIds]);
 
   const wordBlocks = useMemo(() => {
+    const speakerIdOrder = buildSpeakerIdOrder(words);
     return words.map((word) => {
       const x = word.start_sec * pxPerSec;
       const w = Math.max((word.end_sec - word.start_sec) * pxPerSec, 3);
+      const speakerSlot = speakerSlotForWord(word, speakerIdOrder);
       return {
         word,
         x,
         w,
+        speakerSlot,
         isDeleted: deletedWordIds.has(word.id),
         isSelected: selectedWordIds.has(word.id),
         isActive: activeWordId === word.id,
       };
     });
   }, [words, pxPerSec, deletedWordIds, selectedWordIds, activeWordId]);
+
+  const speakerLegend = useMemo(() => {
+    const speakerIdOrder = buildSpeakerIdOrder(words);
+    return speakerIdOrder.map((speakerId, slot) => {
+      const label = words.find((word) => word.speaker_id === speakerId)?.speaker_label || `Speaker ${slot + 1}`;
+      return { speakerId, label, slot };
+    });
+  }, [words]);
 
   const snapGuides = useMemo(() => {
     const guides: SnapGuide[] = [
@@ -953,6 +1000,20 @@ function Timeline({
           <span className="tlHint">
             Drag clips to move, drag edges to trim, press <kbd>S</kbd> to split, use <kbd>Delete</kbd> to remove.
           </span>
+          {speakerLegend.length > 1 && (
+            <div className="timelineSpeakerLegend" aria-label="Speaker legend">
+              {speakerLegend.map((entry) => (
+                <span
+                  key={entry.speakerId}
+                  className={`timelineSpeakerLegendItem ${
+                    entry.slot === 0 ? "speakerA" : entry.slot === 1 ? "speakerB" : "speakerExtra"
+                  }`}
+                >
+                  {entry.label}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
         <div className="timelineHeaderActions">
           <button
@@ -965,8 +1026,8 @@ function Timeline({
             Transcript Assist
           </button>
           <div className="zoomControls">
-            <button className="zoomBtn" onClick={() => setPxPerSec((prev) => Math.max(MIN_PX_PER_SEC, prev * 0.7))} title="Zoom out">
-              −
+            <button className="zoomBtn" onClick={() => setPxPerSec((prev) => Math.max(MIN_PX_PER_SEC, prev * 0.7))} title="Zoom out" aria-label="Zoom out">
+              <Minus size={14} aria-hidden="true" />
             </button>
             <input
               type="range"
@@ -977,8 +1038,8 @@ function Timeline({
               onChange={(event) => setPxPerSec(Number(event.target.value))}
               className="zoomSlider"
             />
-            <button className="zoomBtn" onClick={() => setPxPerSec((prev) => Math.min(MAX_PX_PER_SEC, prev * 1.4))} title="Zoom in">
-              +
+            <button className="zoomBtn" onClick={() => setPxPerSec((prev) => Math.min(MAX_PX_PER_SEC, prev * 1.4))} title="Zoom in" aria-label="Zoom in">
+              <Plus size={14} aria-hidden="true" />
             </button>
             <span className="zoomLabel">{Math.round(pxPerSec)}px/s</span>
           </div>
@@ -1120,10 +1181,44 @@ function Timeline({
                   onSelectLaneClip?.(null);
                   onSelectBrollClip?.(null);
                 }}
-                title={`Caption · ${formatTimecode(block.renderedStartSec)} · ${formatDuration(block.renderedDurationSec)}`}
+                onDoubleClick={(event) => {
+                  event.stopPropagation();
+                  if (!onStartEditCaption) return;
+                  onStartEditCaption({
+                    overlayId: block.id,
+                    clipId: block.clipId,
+                    laneId: block.laneId,
+                    laneLabel: block.laneLabel,
+                    text: block.text,
+                    style: block.style,
+                  });
+                }}
+                title={`Caption · ${formatTimecode(block.renderedStartSec)} · ${formatDuration(block.renderedDurationSec)} · double-click to edit`}
               >
                 <div className="captionBlockHandle start" onMouseDown={(event) => startCaptionDrag(event, block, "trim-start")} title="Trim caption in" />
-                <span className="captionBlockText">{block.w > 40 ? trimInlineText(block.text, 44) : ""}</span>
+                {editingCaptionId === block.id ? (
+                  <input
+                    ref={captionEditInputRef}
+                    className="captionBlockEditInput wordEditInput"
+                    value={editingCaptionText}
+                    onClick={(event) => event.stopPropagation()}
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onChange={(event) => onCaptionTextChange?.(event.target.value)}
+                    onBlur={() => onCommitCaptionEdit?.()}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        onCommitCaptionEdit?.();
+                      }
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        onCancelCaptionEdit?.();
+                      }
+                    }}
+                  />
+                ) : (
+                  <span className="captionBlockText">{block.w > 40 ? trimInlineText(block.text, 44) : ""}</span>
+                )}
                 <div className="captionBlockHandle end" onMouseDown={(event) => startCaptionDrag(event, block, "trim-end")} title="Trim caption out" />
               </div>
             ))}
@@ -1238,10 +1333,18 @@ function Timeline({
                   style={{ left: region.startSec * pxPerSec, width: (region.endSec - region.startSec) * pxPerSec }}
                 />
               ))}
-              {wordBlocks.map(({ word, x, w, isDeleted, isSelected, isActive }) => (
+              {wordBlocks.map(({ word, x, w, speakerSlot, isDeleted, isSelected, isActive }) => (
                 <div
                   key={word.id}
-                  className={["tlWord", isDeleted ? "deleted" : "", isSelected ? "selected" : "", isActive ? "active" : ""].filter(Boolean).join(" ")}
+                  className={[
+                    "tlWord",
+                    isDeleted ? "deleted" : "",
+                    isSelected ? "selected" : "",
+                    isActive ? "active" : "",
+                    speakerSlot === 0 ? "speakerA" : "",
+                    speakerSlot === 1 ? "speakerB" : "",
+                    speakerSlot !== null && speakerSlot >= 2 ? "speakerExtra" : "",
+                  ].filter(Boolean).join(" ")}
                   style={{ left: x, width: w }}
                   onMouseDown={(event) => {
                     event.stopPropagation();
@@ -1253,9 +1356,23 @@ function Timeline({
                     onSelectCaptionBlock?.(null);
                     onSelectWord(word.id, event.shiftKey);
                   }}
-                  title={word.text}
+                  onDoubleClick={(event) => {
+                    event.stopPropagation();
+                    if (!isDeleted && onEditWord) {
+                      onSeek(word.start_sec);
+                      onEditWord(word.id);
+                    }
+                  }}
+                  title={
+                    isDeleted
+                      ? `${word.text} (deleted — select and use Restore, or right-click Restore Selected Words)`
+                      : `${word.speaker_label ? `${word.speaker_label}: ` : ""}${word.text} · double-click to edit`
+                  }
                 >
                   {w > 24 ? word.text : ""}
+                  {!isDeleted && w > 24 && (
+                    <Pencil size={8} className="tlWordEditHint" aria-hidden="true" />
+                  )}
                 </div>
               ))}
             </div>
@@ -1267,38 +1384,67 @@ function Timeline({
             </div>
           )}
 
-          <div className="playhead" style={{ left: playheadX }}>
-            <div className="playheadHead" />
-            <div className="playheadLine" />
+          <div className="timeline-playhead" style={{ left: playheadX }}>
+            <div className="timeline-playheadHead" />
+            <div className="timeline-playheadLine" />
           </div>
         </div>
       </div>
 
       {contextMenu && (
         <div className="tlContextMenu" style={{ left: contextMenu.x, top: contextMenu.y }}>
+          {/* ── Word actions ── */}
           <button disabled={!selectedCount} onClick={() => { onDeleteSelected(); setContextMenu(null); }}>
             <Trash2 size={14} strokeWidth={1.9} aria-hidden="true" />
-            <span>Delete Selected ({selectedCount})</span>
+            <span>Delete Selected Words ({selectedCount})</span>
           </button>
           <button disabled={!selectedHasDeleted} onClick={() => { onRestoreSelected(); setContextMenu(null); }}>
             <RotateCcw size={14} strokeWidth={1.9} aria-hidden="true" />
-            <span>Restore Selected</span>
+            <span>Restore Selected Words</span>
           </button>
           <hr />
-          <button onClick={() => { onSeek(currentTimeSec); setContextMenu(null); }}>
-            <MapPin size={14} strokeWidth={1.9} aria-hidden="true" />
-            <span>Seek to Playhead ({formatTimecode(currentTimeSec)})</span>
-          </button>
-          {selectedLaneClipId && (
-            <button
-              onClick={() => {
-                const selected = laneBlocks.flatMap((lane) => lane.blocks).find((block) => block.clip.id === selectedLaneClipId);
-                if (selected) onSeek(selected.timelineStartSec);
-                setContextMenu(null);
-              }}
-            >
-              <Scissors size={14} strokeWidth={1.9} aria-hidden="true" />
-              <span>Selected clip ready for split</span>
+          {/* ── Clip actions ── */}
+          {selectedLaneClipId && (() => {
+            const selectedBlock = laneBlocks.flatMap((lane) => lane.blocks).find((b) => b.clip.id === selectedLaneClipId);
+            const selectedLane = laneBlocks.find((lane) => lane.blocks.some((b) => b.clip.id === selectedLaneClipId));
+            const sel = selectedBlock && selectedLane ? {
+              clipId: selectedBlock.clip.id,
+              laneId: selectedLane.id,
+              laneLabel: selectedLane.label,
+              laneKind: selectedLane.kind,
+            } as TimelineLaneClipSelection : null;
+            if (!sel) return null;
+            const clipStart = selectedBlock!.timelineStartSec;
+            const clipEnd = clipStart + selectedBlock!.duration;
+            const canSplit = currentTimeSec > clipStart + 0.01 && currentTimeSec < clipEnd - 0.01;
+            return (
+              <>
+                <button onClick={() => { if (selectedBlock) onSeek(selectedBlock.timelineStartSec); setContextMenu(null); }}>
+                  <MapPin size={14} strokeWidth={1.9} aria-hidden="true" />
+                  <span>Jump to Clip Start</span>
+                </button>
+                <button
+                  disabled={!canSplit || !onSplitLaneClip}
+                  onClick={() => { if (sel && canSplit) { onSplitLaneClip?.(sel); } setContextMenu(null); }}
+                  title={canSplit ? "Split clip at current playhead position" : "Move playhead inside the clip to split"}
+                >
+                  <Scissors size={14} strokeWidth={1.9} aria-hidden="true" />
+                  <span>Split Clip at Playhead</span>
+                </button>
+                <button
+                  className="danger"
+                  onClick={() => { onDeleteLaneClip?.(sel); setContextMenu(null); }}
+                >
+                  <Trash2 size={14} strokeWidth={1.9} aria-hidden="true" />
+                  <span>Delete Clip</span>
+                </button>
+              </>
+            );
+          })()}
+          {!selectedLaneClipId && (
+            <button onClick={() => { onSeek(currentTimeSec); setContextMenu(null); }}>
+              <MapPin size={14} strokeWidth={1.9} aria-hidden="true" />
+              <span>Seek to Playhead ({formatTimecode(currentTimeSec)})</span>
             </button>
           )}
         </div>

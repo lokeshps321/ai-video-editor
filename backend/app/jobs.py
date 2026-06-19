@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
-import queue
+import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -20,145 +21,13 @@ from .render_service import build_ffmpeg_command, ensure_parent_dir, run_ffmpeg
 from .schemas import Clip, ExportSettings
 from .storage import storage
 from .timeline_service import get_timeline_row, load_timeline_state
+from .transcription_service import precompute_vocal_isolation
 
 settings = get_settings()
-_QUEUE_POLL_TIMEOUT_SEC = 0.5
-_QUEUE_SENTINEL = object()
-
-
-class RenderJobQueue:
-    def __init__(self, max_workers: int) -> None:
-        self.max_workers = max(1, max_workers)
-        self._queue: queue.Queue[object] = queue.Queue()
-        self._threads: list[threading.Thread] = []
-        self._lock = threading.Lock()
-        self._started = False
-        self._stop_requested = False
-
-    def start(self) -> None:
-        with self._lock:
-            if self._started:
-                return
-            self._stop_requested = False
-            self._threads = []
-            for idx in range(self.max_workers):
-                thread = threading.Thread(
-                    target=self._worker_loop,
-                    name=f"render-worker-{idx + 1}",
-                    daemon=True,
-                )
-                thread.start()
-                self._threads.append(thread)
-            self._started = True
-
-    def stop(self, *, timeout_sec: float = 2.0) -> None:
-        with self._lock:
-            if not self._started:
-                return
-            self._stop_requested = True
-            threads = list(self._threads)
-            for _ in threads:
-                self._queue.put(_QUEUE_SENTINEL)
-        for thread in threads:
-            thread.join(timeout=timeout_sec)
-        with self._lock:
-            self._threads = []
-            self._started = False
-            self._stop_requested = False
-
-    def enqueue(self, job_id: str, export_settings: ExportSettings) -> None:
-        self.start()
-        self._queue.put((job_id, export_settings.model_dump()))
-
-    def size(self) -> int:
-        return self._queue.qsize()
-
-    def _worker_loop(self) -> None:
-        while True:
-            try:
-                item = self._queue.get(timeout=_QUEUE_POLL_TIMEOUT_SEC)
-            except queue.Empty:
-                with self._lock:
-                    if self._stop_requested:
-                        return
-                continue
-            try:
-                if item is _QUEUE_SENTINEL:
-                    return
-                job_id, payload = item  # type: ignore[misc]
-                export_settings = ExportSettings.model_validate(payload)
-                process_render_job(job_id, export_settings)
-            finally:
-                self._queue.task_done()
-
-
-class IngestJobQueue:
-    def __init__(self, max_workers: int) -> None:
-        self.max_workers = max(1, max_workers)
-        self._queue: queue.Queue[object] = queue.Queue()
-        self._threads: list[threading.Thread] = []
-        self._lock = threading.Lock()
-        self._started = False
-        self._stop_requested = False
-
-    def start(self) -> None:
-        with self._lock:
-            if self._started:
-                return
-            self._stop_requested = False
-            self._threads = []
-            for idx in range(self.max_workers):
-                thread = threading.Thread(
-                    target=self._worker_loop,
-                    name=f"ingest-worker-{idx + 1}",
-                    daemon=True,
-                )
-                thread.start()
-                self._threads.append(thread)
-            self._started = True
-
-    def stop(self, *, timeout_sec: float = 2.0) -> None:
-        with self._lock:
-            if not self._started:
-                return
-            self._stop_requested = True
-            threads = list(self._threads)
-            for _ in threads:
-                self._queue.put(_QUEUE_SENTINEL)
-        for thread in threads:
-            thread.join(timeout=timeout_sec)
-        with self._lock:
-            self._threads = []
-            self._started = False
-            self._stop_requested = False
-
-    def enqueue(self, job_id: str, url: str) -> None:
-        self.start()
-        self._queue.put((job_id, url))
-
-    def size(self) -> int:
-        return self._queue.qsize()
-
-    def _worker_loop(self) -> None:
-        while True:
-            try:
-                item = self._queue.get(timeout=_QUEUE_POLL_TIMEOUT_SEC)
-            except queue.Empty:
-                with self._lock:
-                    if self._stop_requested:
-                        return
-                continue
-            try:
-                if item is _QUEUE_SENTINEL:
-                    return
-                job_id, url = item  # type: ignore[misc]
-                process_ingest_url_job(job_id, str(url))
-            finally:
-                self._queue.task_done()
-
-
-_render_queue = RenderJobQueue(settings.max_concurrent_render_jobs)
-_ingest_queue = IngestJobQueue(settings.max_concurrent_ingest_jobs)
+_render_log = logging.getLogger(__name__)
+_LOCAL_RENDER_JOB_SLOTS = threading.BoundedSemaphore(
+    value=max(1, settings.max_concurrent_render_jobs)
+)
 
 
 def _utcnow() -> datetime:
@@ -190,7 +59,9 @@ def find_recent_active_job(
     *,
     within_seconds: int = 120,
 ) -> Job | None:
-    cutoff = _utcnow() - timedelta(seconds=within_seconds) if within_seconds > 0 else None
+    cutoff = (
+        _utcnow() - timedelta(seconds=within_seconds) if within_seconds > 0 else None
+    )
     jobs = session.exec(
         select(Job)
         .where(
@@ -263,9 +134,7 @@ def _set_job_status(
 
 def get_latest_job_event(session: Session, job_id: str) -> JobEvent | None:
     return session.exec(
-        select(JobEvent)
-        .where(JobEvent.job_id == job_id)
-        .order_by(JobEvent.id.desc())
+        select(JobEvent).where(JobEvent.job_id == job_id).order_by(JobEvent.id.desc())
     ).first()
 
 
@@ -310,16 +179,26 @@ def process_render_job(job_id: str, export_settings: ExportSettings) -> None:
             timeline_row = get_timeline_row(session, job.project_id)
             state = load_timeline_state(timeline_row)
 
-            video_track = next((track for track in state.tracks if track.kind == "video"), None)
+            video_track = next(
+                (track for track in state.tracks if track.kind == "video"), None
+            )
             audio_tracks = [track for track in state.tracks if track.kind == "audio"]
-            overlay_tracks = [track for track in state.tracks if track.kind == "overlay"]
+            overlay_tracks = [
+                track for track in state.tracks if track.kind == "overlay"
+            ]
             if not video_track or not video_track.clips:
-                raise RuntimeError("No video clips found. Add at least one video clip before rendering.")
+                raise RuntimeError(
+                    "No video clips found. Add at least one video clip before rendering."
+                )
 
-            assets = session.exec(select(MediaAsset).where(MediaAsset.project_id == job.project_id)).all()
+            assets = session.exec(
+                select(MediaAsset).where(MediaAsset.project_id == job.project_id)
+            ).all()
             by_id = {asset.id: asset for asset in assets}
 
-            video_clips_sorted = sorted(video_track.clips, key=lambda c: c.timeline_start_sec)
+            video_clips_sorted = sorted(
+                video_track.clips, key=lambda c: c.timeline_start_sec
+            )
             video_inputs: list[tuple[Clip, str]] = []
             video_audio_flags: list[bool] = []
             for clip in video_clips_sorted:
@@ -346,7 +225,9 @@ def process_render_job(job_id: str, export_settings: ExportSettings) -> None:
 
             active_audio_tracks = [track for track in audio_tracks if track.solo]
             if not active_audio_tracks:
-                active_audio_tracks = [track for track in audio_tracks if not track.mute]
+                active_audio_tracks = [
+                    track for track in audio_tracks if not track.mute
+                ]
 
             audio_inputs: list[tuple[Clip, str]] = []
             audio_flags: list[bool] = []
@@ -357,7 +238,9 @@ def process_render_job(job_id: str, export_settings: ExportSettings) -> None:
                         continue
                     source_path = storage.resolve_upload_asset(asset.storage_path)
                     normalized_clip = clip.model_copy(deep=True)
-                    normalized_clip.audio.volume = max(0.0, normalized_clip.audio.volume * max(0.0, track.volume))
+                    normalized_clip.audio.volume = max(
+                        0.0, normalized_clip.audio.volume * max(0.0, track.volume)
+                    )
                     if track.mute:
                         normalized_clip.audio.mute = True
                     audio_inputs.append((normalized_clip, source_path))
@@ -373,6 +256,14 @@ def process_render_job(job_id: str, export_settings: ExportSettings) -> None:
                 progress=20,
                 stage="build",
                 message="Building FFmpeg command",
+            )
+            _render_log.info(
+                "RENDER_CLIPS project=%s clips=[%s]",
+                job.project_id,
+                ", ".join(
+                    f"{c.start_sec:.3f}-{c.end_sec:.3f}(tl={c.timeline_start_sec:.3f})"
+                    for c, _ in video_inputs
+                ),
             )
             command = build_ffmpeg_command(
                 timeline=state,
@@ -470,7 +361,9 @@ def process_ingest_url_job(job_id: str, url: str) -> None:
                 stage="download",
                 message="Downloading source video",
             )
-            absolute_path, relative_path = download_video_with_ytdlp(url, job.project_id)
+            absolute_path, relative_path = download_video_with_ytdlp(
+                url, job.project_id
+            )
 
             _set_job_status(
                 session,
@@ -510,6 +403,12 @@ def process_ingest_url_job(job_id: str, url: str) -> None:
             )
             session.add(asset)
             session.commit()
+            session.refresh(asset)
+
+            # Trigger background vocal isolation if applicable
+            if should_precompute_vocal_isolation(asset):
+                vocal_job = create_job(session, job.project_id, "vocal_isolation")
+                enqueue_vocal_isolation_job(vocal_job.id, asset.id)
 
             _set_job_status(
                 session,
@@ -554,33 +453,265 @@ def _asset_has_video(asset: MediaAsset, source_path: str) -> bool:
     return probe_stream_flags(source_path).get("has_video", False)
 
 
+def _use_rq_workers() -> bool:
+    """Check if we should use RQ workers instead of local threads."""
+    return os.getenv("USE_RQ_WORKERS", "false").lower() in {"1", "true", "yes", "on"}
+
+
 def start_render_workers() -> None:
-    _render_queue.start()
+    """Start render workers (no-op when using RQ)."""
+    pass
 
 
 def stop_render_workers() -> None:
-    _render_queue.stop()
+    """Stop render workers (no-op when using RQ)."""
+    pass
+
+
+def _run_render_job_with_local_limit(
+    job_id: str, export_settings: ExportSettings
+) -> None:
+    _LOCAL_RENDER_JOB_SLOTS.acquire()
+    try:
+        process_render_job(job_id, export_settings)
+    finally:
+        _LOCAL_RENDER_JOB_SLOTS.release()
 
 
 def enqueue_render_job(job_id: str, export_settings: ExportSettings) -> None:
-    _render_queue.enqueue(job_id, export_settings)
+    """Enqueue a render job (uses RQ if enabled, otherwise processes immediately)."""
+    if _use_rq_workers():
+        from .queue import get_render_queue
+
+        queue = get_render_queue()
+        queue.enqueue(
+            execute_render_job,
+            job_id=job_id,
+            export_settings=export_settings.model_dump(),
+            job_timeout=3600,  # 1 hour timeout
+            failure_ttl=86400,  # Keep failed jobs for 24 hours
+        )
+    else:
+        # Fallback to in-process background execution (development without Redis).
+        # Bound concurrent ffmpeg work to reduce local OOM/SIGKILL risk.
+        threading.Thread(
+            target=_run_render_job_with_local_limit,
+            args=(job_id, export_settings),
+            name=f"render-job-{job_id[:8]}",
+            daemon=True,
+        ).start()
 
 
 def start_ingest_workers() -> None:
-    _ingest_queue.start()
+    """Start ingest workers (no-op when using RQ)."""
+    pass
 
 
 def stop_ingest_workers() -> None:
-    _ingest_queue.stop()
+    """Stop ingest workers (no-op when using RQ)."""
+    pass
 
 
 def enqueue_ingest_url_job(job_id: str, url: str) -> None:
-    _ingest_queue.enqueue(job_id, url)
+    """Enqueue an ingest job (uses RQ if enabled, otherwise processes immediately)."""
+    if _use_rq_workers():
+        from .queue import get_ingest_queue
+
+        queue = get_ingest_queue()
+        queue.enqueue(
+            execute_ingest_url_job,
+            job_id=job_id,
+            url=url,
+            job_timeout=1800,  # 30 minute timeout
+            failure_ttl=86400,  # Keep failed jobs for 24 hours
+        )
+    else:
+        # Fallback to in-process background execution (development without Redis).
+        threading.Thread(
+            target=process_ingest_url_job,
+            args=(job_id, url),
+            name=f"ingest-job-{job_id[:8]}",
+            daemon=True,
+        ).start()
+
+
+def execute_render_job(job_id: str, export_settings: dict) -> str:
+    """Execute render job (called by RQ worker)."""
+    settings_model = ExportSettings.model_validate(export_settings)
+    process_render_job(job_id, settings_model)
+    return job_id
+
+
+def execute_ingest_url_job(job_id: str, url: str) -> str:
+    """Execute ingest job (called by RQ worker)."""
+    process_ingest_url_job(job_id, url)
+    return job_id
 
 
 def list_job_events(session: Session, job_id: str) -> list[JobEvent]:
     return session.exec(
-        select(JobEvent)
-        .where(JobEvent.job_id == job_id)
-        .order_by(JobEvent.id.asc())
+        select(JobEvent).where(JobEvent.job_id == job_id).order_by(JobEvent.id.asc())
     ).all()
+
+
+# ---------------------------------------------------------------------------
+# Vocal Isolation Pre-compute Job
+# ---------------------------------------------------------------------------
+
+
+def process_vocal_isolation_job(job_id: str, asset_id: str) -> None:
+    """Process a vocal isolation job for a media asset.
+
+    This extracts the vocal stem from the uploaded video/audio and stores it
+    alongside the original file for fast transcription later.
+    """
+    with Session(engine) as session:
+        job = session.exec(select(Job).where(Job.id == job_id)).first()
+        if not job:
+            return
+
+        asset = session.exec(
+            select(MediaAsset).where(MediaAsset.id == asset_id)
+        ).first()
+        if not asset:
+            _set_job_status(
+                session,
+                job,
+                status="failed",
+                progress=100,
+                stage="failed",
+                message="Media asset not found",
+                error="asset_not_found",
+            )
+            return
+
+        try:
+            _set_job_status(
+                session,
+                job,
+                status="running",
+                progress=5,
+                stage="running",
+                message="Starting vocal isolation",
+            )
+
+            # Get absolute path to the source file
+            source_path = storage.resolve_upload_asset(asset.storage_path)
+
+            # Determine output directory (same as source file's directory)
+            source_dir = str(Path(source_path).parent)
+
+            _set_job_status(
+                session,
+                job,
+                status="running",
+                progress=10,
+                stage="isolating",
+                message="Extracting vocals from audio",
+            )
+
+            # Run vocal isolation
+            vocal_stem_filename = precompute_vocal_isolation(
+                source_path,
+                source_dir,
+            )
+
+            if vocal_stem_filename:
+                # Update asset metadata with vocal stem path
+                metadata = json.loads(asset.metadata_json or "{}")
+                metadata["vocal_stem_filename"] = vocal_stem_filename
+                asset.metadata_json = json.dumps(metadata)
+                session.add(asset)
+                session.commit()
+
+                _set_job_status(
+                    session,
+                    job,
+                    status="completed",
+                    progress=100,
+                    stage="complete",
+                    message=f"Vocal isolation complete: {vocal_stem_filename}",
+                    output_path=vocal_stem_filename,
+                )
+            else:
+                # Isolation failed or was skipped - not a hard error
+                _set_job_status(
+                    session,
+                    job,
+                    status="completed",
+                    progress=100,
+                    stage="complete",
+                    message="Vocal isolation skipped (disabled or not applicable)",
+                )
+
+        except Exception as exc:  # noqa: BLE001
+            _set_job_status(
+                session,
+                job,
+                status="failed",
+                progress=100,
+                stage="failed",
+                message=str(exc),
+                error=str(exc),
+            )
+
+
+def enqueue_vocal_isolation_job(job_id: str, asset_id: str) -> None:
+    """Enqueue a vocal isolation job (uses RQ if enabled, otherwise processes in thread)."""
+    if _use_rq_workers():
+        from .queue import get_vocal_isolation_queue
+
+        queue = get_vocal_isolation_queue()
+        queue.enqueue(
+            execute_vocal_isolation_job,
+            job_id=job_id,
+            asset_id=asset_id,
+            job_timeout=1800,  # 30 minute timeout for isolation
+            failure_ttl=86400,  # Keep failed jobs for 24 hours
+        )
+    else:
+        # Fallback to in-process background execution (development without Redis)
+        threading.Thread(
+            target=process_vocal_isolation_job,
+            args=(job_id, asset_id),
+            name=f"vocal-isolation-{job_id[:8]}",
+            daemon=True,
+        ).start()
+
+
+def execute_vocal_isolation_job(job_id: str, asset_id: str) -> str:
+    """Execute vocal isolation job (called by RQ worker)."""
+    process_vocal_isolation_job(job_id, asset_id)
+    return job_id
+
+
+def should_precompute_vocal_isolation(asset: MediaAsset) -> bool:
+    """Determine if vocal isolation should be pre-computed for an asset.
+
+    Returns True if:
+    - The asset is video or audio type
+    - Vocal isolation is enabled
+    - Pre-compute is enabled
+    """
+    # Only process video/audio
+    if asset.media_type not in {"video", "audio"}:
+        return False
+
+    # Check if vocal isolation is globally enabled
+    vocal_enabled = os.getenv("TRANSCRIBE_VOCAL_ISOLATION_ENABLED", "true").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not vocal_enabled:
+        return False
+
+    # Check if pre-compute is enabled (default: true when vocal isolation is enabled)
+    precompute_enabled = os.getenv(
+        "TRANSCRIBE_VOCAL_ISOLATION_PRECOMPUTE", "true"
+    ).lower() in {"1", "true", "yes", "on"}
+    if not precompute_enabled:
+        return False
+
+    return True

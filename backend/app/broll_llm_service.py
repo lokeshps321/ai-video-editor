@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import unicodedata
 from typing import Any
 from urllib.parse import urlparse
 
@@ -11,10 +13,24 @@ import httpx
 from .broll_ai_service import extract_entities
 from .models import MediaAsset
 
+logger = logging.getLogger(__name__)
+
 CandidateRow = tuple[str, str | None, str | None, str | None, float, dict[str, object]]
 
-_ALLOWED_WEAK_CODES = {"semantic_weak", "crop_weak", "talking_head_risk", "confidence_low", "generated_fallback"}
-_ALLOWED_VISUAL_INTENTS = {"literal_demo", "process_step", "environment_context", "reaction_payoff", "abstract_support"}
+_ALLOWED_WEAK_CODES = {
+    "semantic_weak",
+    "crop_weak",
+    "talking_head_risk",
+    "confidence_low",
+    "generated_fallback",
+}
+_ALLOWED_VISUAL_INTENTS = {
+    "literal_demo",
+    "process_step",
+    "environment_context",
+    "reaction_payoff",
+    "abstract_support",
+}
 _ALLOWED_QUERY_MODES = {"literal", "process", "environment", "reaction", "abstract"}
 _LOW_SIGNAL_PHRASES = {
     "general scene",
@@ -26,35 +42,181 @@ _LOW_SIGNAL_PHRASES = {
     "medium shot",
     "detail shot",
 }
-_WORD_RE = re.compile(r"[A-Za-z0-9']+")
+_WORD_RE = re.compile(r"[^\W_]+(?:'[^\W_]+)?", re.UNICODE)
 _FOCUS_STOP_WORDS = {
-    "a", "an", "and", "are", "as", "at", "be", "been", "but", "by", "can", "did", "do", "for", "from",
-    "get", "go", "going", "got", "had", "has", "have", "here", "how", "i", "if", "im", "i'm", "in",
-    "into", "is", "it", "its", "just", "like", "me", "my", "of", "on", "or", "our", "out", "really",
-    "so", "than", "that", "the", "their", "them", "there", "they", "this", "those", "to", "up", "very",
-    "was", "we", "were", "what", "when", "where", "who", "why", "with", "yeah", "you", "your",
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "been",
+    "but",
+    "by",
+    "can",
+    "did",
+    "do",
+    "for",
+    "from",
+    "get",
+    "go",
+    "going",
+    "got",
+    "had",
+    "has",
+    "have",
+    "here",
+    "how",
+    "i",
+    "if",
+    "im",
+    "i'm",
+    "in",
+    "into",
+    "is",
+    "it",
+    "its",
+    "just",
+    "like",
+    "me",
+    "my",
+    "of",
+    "on",
+    "or",
+    "our",
+    "out",
+    "really",
+    "so",
+    "than",
+    "that",
+    "the",
+    "their",
+    "them",
+    "there",
+    "they",
+    "this",
+    "those",
+    "to",
+    "up",
+    "very",
+    "was",
+    "we",
+    "were",
+    "what",
+    "when",
+    "where",
+    "who",
+    "why",
+    "with",
+    "yeah",
+    "you",
+    "your",
 }
 _DOMAIN_KEYWORDS = {
     "motorsport": {
-        "apex", "car", "cars", "cockpit", "corner", "corners", "driver", "drivers", "f1", "finish", "garage",
-        "gp", "grid", "helmet", "lap", "laps", "monza", "motorsport", "overtake", "pit", "pits", "podium",
-        "qualifying", "race", "races", "racing", "telemetry", "track", "teammate", "wheel",
+        "apex",
+        "car",
+        "cars",
+        "cockpit",
+        "corner",
+        "corners",
+        "driver",
+        "drivers",
+        "f1",
+        "finish",
+        "garage",
+        "gp",
+        "grid",
+        "helmet",
+        "lap",
+        "laps",
+        "monza",
+        "motorsport",
+        "overtake",
+        "pit",
+        "pits",
+        "podium",
+        "qualifying",
+        "race",
+        "races",
+        "racing",
+        "telemetry",
+        "track",
+        "teammate",
+        "wheel",
     },
     "technology": {
-        "app", "apps", "camera", "code", "dashboard", "device", "devices", "interface", "laptop", "mobile",
-        "phone", "product", "saas", "screen", "screens", "software", "startup", "tech", "workflow",
+        "app",
+        "apps",
+        "camera",
+        "code",
+        "dashboard",
+        "device",
+        "devices",
+        "interface",
+        "laptop",
+        "mobile",
+        "phone",
+        "product",
+        "saas",
+        "screen",
+        "screens",
+        "software",
+        "startup",
+        "tech",
+        "workflow",
     },
     "business": {
-        "analytics", "brand", "business", "campaign", "customer", "customers", "finance", "growth", "meeting",
-        "office", "revenue", "sales", "startup", "strategy", "team", "teams",
+        "analytics",
+        "brand",
+        "business",
+        "campaign",
+        "customer",
+        "customers",
+        "finance",
+        "growth",
+        "meeting",
+        "office",
+        "revenue",
+        "sales",
+        "startup",
+        "strategy",
+        "team",
+        "teams",
     },
     "fitness": {
-        "athlete", "coach", "exercise", "fitness", "gym", "run", "runner", "running", "sport", "sports",
-        "training", "workout",
+        "athlete",
+        "coach",
+        "exercise",
+        "fitness",
+        "gym",
+        "run",
+        "runner",
+        "running",
+        "sport",
+        "sports",
+        "training",
+        "workout",
     },
     "music": {
-        "album", "beat", "concert", "crowd", "feat", "hiphop", "lyrics", "music", "official", "performance",
-        "rap", "rapper", "song", "songs", "stage", "studio", "vocal",
+        "album",
+        "beat",
+        "concert",
+        "crowd",
+        "feat",
+        "hiphop",
+        "lyrics",
+        "music",
+        "official",
+        "performance",
+        "rap",
+        "rapper",
+        "song",
+        "songs",
+        "stage",
+        "studio",
+        "vocal",
     },
 }
 _DOMAIN_SUMMARIES = {
@@ -68,17 +230,29 @@ _DOMAIN_SUMMARIES = {
 
 
 def _api_key() -> str:
-    return (os.getenv("GROQ_API_KEY", "") or os.getenv("OPENAI_API_KEY", "") or "").strip()
+    return (
+        os.getenv("GROQ_API_KEY", "") or os.getenv("OPENAI_API_KEY", "") or ""
+    ).strip()
 
 
 def _base_url() -> str:
     if (os.getenv("GROQ_API_KEY", "") or "").strip():
-        return (os.getenv("OPENAI_BASE_URL", "https://api.groq.com/openai/v1") or "https://api.groq.com/openai/v1").rstrip("/")
-    return (os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1") or "https://api.openai.com/v1").rstrip("/")
+        return (
+            os.getenv("OPENAI_BASE_URL", "https://api.groq.com/openai/v1")
+            or "https://api.groq.com/openai/v1"
+        ).rstrip("/")
+    return (
+        os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        or "https://api.openai.com/v1"
+    ).rstrip("/")
 
 
 def _model() -> str:
-    default_model = "openai/gpt-oss-120b" if (os.getenv("GROQ_API_KEY", "") or "").strip() else "gpt-4.1-mini"
+    default_model = (
+        "openai/gpt-oss-120b"
+        if (os.getenv("GROQ_API_KEY", "") or "").strip()
+        else "gpt-4.1-mini"
+    )
     return (os.getenv("BROLL_RETRIEVAL_MODEL", default_model) or default_model).strip()
 
 
@@ -118,9 +292,14 @@ def _normalize_domain_label(raw: object, fallback: str = "general") -> str:
         return "motorsport"
     if any(term in value for term in ("tech", "software", "product", "app", "saas")):
         return "technology"
-    if any(term in value for term in ("business", "finance", "sales", "marketing", "office")):
+    if any(
+        term in value
+        for term in ("business", "finance", "sales", "marketing", "office")
+    ):
         return "business"
-    if any(term in value for term in ("fitness", "sport", "training", "workout", "gym")):
+    if any(
+        term in value for term in ("fitness", "sport", "training", "workout", "gym")
+    ):
         return "fitness"
     if any(term in value for term in ("music", "song", "concert", "stage", "studio")):
         return "music"
@@ -142,7 +321,47 @@ def _dedupe_strings(items: list[str], *, limit: int) -> list[str]:
     return deduped
 
 
-def _normalize_query_packets(raw_queries: object, *, max_queries: int) -> list[dict[str, str]]:
+def _contains_non_latin_letters(text: str) -> bool:
+    for char in str(text or ""):
+        if not char.isalpha():
+            continue
+        if "LATIN" not in unicodedata.name(char, ""):
+            return True
+    return False
+
+
+def _prefers_english_stock_queries(
+    *,
+    chunk_text: str,
+    concept_text: str,
+    query_hints: list[str],
+    language_hint: str | None,
+) -> bool:
+    normalized_hint = str(language_hint or "").strip().lower()
+    if normalized_hint and normalized_hint not in {"en", "en-us", "en-gb", "english"}:
+        return True
+    sample = " ".join(
+        part.strip()
+        for part in [chunk_text, concept_text, *query_hints[:4]]
+        if str(part).strip()
+    )
+    return _contains_non_latin_letters(sample)
+
+
+def _normalize_short_text(value: object) -> str:
+    return " ".join(str(value or "").split()).strip()
+
+
+def _looks_like_valid_english_search_text(text: str) -> bool:
+    normalized = _normalize_short_text(text)
+    if not normalized or _contains_non_latin_letters(normalized):
+        return False
+    return any(char.isalpha() for char in normalized)
+
+
+def _normalize_query_packets(
+    raw_queries: object, *, max_queries: int
+) -> list[dict[str, str]]:
     if not isinstance(raw_queries, list):
         return []
     packets: list[dict[str, str]] = []
@@ -175,7 +394,10 @@ def _is_low_signal_phrase(text: str) -> bool:
     if normalized in _LOW_SIGNAL_PHRASES:
         return True
     focus = _focus_terms(normalized, min_len=2)
-    if len(focus) < 2 and normalized not in {"prayer scene at night", "reflective journey"}:
+    if len(focus) < 2 and normalized not in {
+        "prayer scene at night",
+        "reflective journey",
+    }:
         return True
     return False
 
@@ -190,7 +412,9 @@ def _strip_blocked_terms(text: str, blocked_terms: list[str]) -> str:
     return " ".join(cleaned.split())
 
 
-def _fallback_domain_context(*, transcript_text: str, asset_filenames: list[str]) -> dict[str, Any]:
+def _fallback_domain_context(
+    *, transcript_text: str, asset_filenames: list[str]
+) -> dict[str, Any]:
     haystack = " ".join([transcript_text[:6000], *asset_filenames[:8]])
     tokens = _tokenize(haystack)
     scores: dict[str, int] = {}
@@ -198,7 +422,21 @@ def _fallback_domain_context(*, transcript_text: str, asset_filenames: list[str]
         score = 0
         for token in tokens:
             if token in keywords:
-                score += 2 if token in {"f1", "monza", "gp", "pit", "pitlane", "telemetry", "race", "racing"} else 1
+                score += (
+                    2
+                    if token
+                    in {
+                        "f1",
+                        "monza",
+                        "gp",
+                        "pit",
+                        "pitlane",
+                        "telemetry",
+                        "race",
+                        "racing",
+                    }
+                    else 1
+                )
         scores[domain] = score
     domain = max(scores, key=scores.get) if scores else "general"
     if scores.get(domain, 0) < 2:
@@ -214,7 +452,9 @@ def _fallback_domain_context(*, transcript_text: str, asset_filenames: list[str]
     }
 
 
-def infer_broll_domain_context(*, transcript_text: str, asset_filenames: list[str]) -> dict[str, Any]:
+def infer_broll_domain_context(
+    *, transcript_text: str, asset_filenames: list[str]
+) -> dict[str, Any]:
     fallback = _fallback_domain_context(
         transcript_text=transcript_text,
         asset_filenames=asset_filenames,
@@ -240,12 +480,18 @@ def infer_broll_domain_context(*, transcript_text: str, asset_filenames: list[st
     parsed = _chat_json(prompt)
     if not parsed:
         return fallback
-    domain = _normalize_domain_label(parsed.get("domain"), fallback=str(fallback["domain"]))
+    domain = _normalize_domain_label(
+        parsed.get("domain"), fallback=str(fallback["domain"])
+    )
     anchors = _dedupe_strings(
-        [str(item) for item in parsed.get("anchors", [])] if isinstance(parsed.get("anchors"), list) else [],
+        [str(item) for item in parsed.get("anchors", [])]
+        if isinstance(parsed.get("anchors"), list)
+        else [],
         limit=6,
     )
-    summary = " ".join(str(parsed.get("summary") or "").split()).strip() or str(fallback["summary"])
+    summary = " ".join(str(parsed.get("summary") or "").split()).strip() or str(
+        fallback["summary"]
+    )
     return {
         "domain": domain,
         "summary": summary,
@@ -259,7 +505,10 @@ def _chat_json(prompt: dict[str, Any]) -> dict[str, Any] | None:
     payload = {
         "model": _model(),
         "messages": [
-            {"role": "system", "content": "You are a B-roll retrieval assistant. Return only valid JSON."},
+            {
+                "role": "system",
+                "content": "You are a B-roll retrieval assistant. Return only valid JSON.",
+            },
             {"role": "user", "content": json.dumps(prompt, separators=(",", ":"))},
         ],
         "response_format": {"type": "json_object"},
@@ -276,7 +525,8 @@ def _chat_json(prompt: dict[str, Any]) -> dict[str, Any] | None:
         content = body["choices"][0]["message"]["content"]
         parsed = json.loads(content)
         return parsed if isinstance(parsed, dict) else None
-    except Exception:
+    except Exception as exc:
+        logger.warning("B-roll LLM chat completion failed: %s", exc)
         return None
 
 
@@ -288,7 +538,16 @@ def _fallback_motorsport_packets(
 ) -> tuple[str, str, str, list[dict[str, str]], str]:
     packs: list[tuple[set[str], str, str, list[tuple[str, str]], str]] = [
         (
-            {"plan", "combat", "battle", "attack", "penalized", "strategy", "cellar", "monza"},
+            {
+                "plan",
+                "combat",
+                "battle",
+                "attack",
+                "penalized",
+                "strategy",
+                "cellar",
+                "monza",
+            },
             "race strategy and team pressure",
             "process_step",
             [
@@ -301,7 +560,16 @@ def _fallback_motorsport_packets(
             "Converted aggressive race commentary into motorsport strategy visuals.",
         ),
         (
-            {"upgraded", "apex", "strength", "tenths", "gain", "corner", "corners", "telemetry"},
+            {
+                "upgraded",
+                "apex",
+                "strength",
+                "tenths",
+                "gain",
+                "corner",
+                "corners",
+                "telemetry",
+            },
             "motorsport telemetry and performance",
             "process_step",
             [
@@ -314,7 +582,17 @@ def _fallback_motorsport_packets(
             "Mapped specific team or car references to stock-friendly telemetry visuals.",
         ),
         (
-            {"inside", "line", "pass", "passing", "past", "midfield", "threads", "overtake", "lap"},
+            {
+                "inside",
+                "line",
+                "pass",
+                "passing",
+                "past",
+                "midfield",
+                "threads",
+                "overtake",
+                "lap",
+            },
             "motorsport overtake and track action",
             "literal_demo",
             [
@@ -340,7 +618,17 @@ def _fallback_motorsport_packets(
             "Specific names were replaced with generic team-conflict visuals.",
         ),
         (
-            {"finish", "win", "best", "brilliant", "fantastic", "valiant", "sixth", "love", "payoff"},
+            {
+                "finish",
+                "win",
+                "best",
+                "brilliant",
+                "fantastic",
+                "valiant",
+                "sixth",
+                "love",
+                "payoff",
+            },
             "motorsport celebration and finish",
             "reaction_payoff",
             [
@@ -375,7 +663,11 @@ def _fallback_motorsport_packets(
         ],
         max_queries=max_queries,
     )
-    default_intent = visual_intent if visual_intent in _ALLOWED_VISUAL_INTENTS else "environment_context"
+    default_intent = (
+        visual_intent
+        if visual_intent in _ALLOWED_VISUAL_INTENTS
+        else "environment_context"
+    )
     return (
         "motorsport support visual",
         default_intent,
@@ -419,7 +711,15 @@ def _fallback_music_packets(
             "Converted the lyric into prayer and streetlight visuals that stock libraries can actually satisfy.",
         ),
         (
-            {"gangster", "paradise", "hood", "homies", "pistol", "smoke", "streetlight"},
+            {
+                "gangster",
+                "paradise",
+                "hood",
+                "homies",
+                "pistol",
+                "smoke",
+                "streetlight",
+            },
             "urban rap life",
             "abstract_support",
             [
@@ -472,22 +772,243 @@ def _fallback_music_packets(
             )
     default_queries = _normalize_query_packets(
         [
-            {"query": "urban rap performance", "mode": "literal"},
-            {"query": "urban night street with neon lights", "mode": "environment"},
-            {"query": "graffiti covered wall with vibrant colors", "mode": "environment"},
-            {"query": "moody city skyline night", "mode": "abstract"},
-            {"query": "crowd silhouette under stage lights", "mode": "reaction"},
+            {"query": "singer silhouette under stage lights", "mode": "literal"},
+            {"query": "recording studio microphone close up", "mode": "process"},
+            {"query": "city lights bokeh night", "mode": "abstract"},
+            {"query": "couple walking at sunset cinematic", "mode": "environment"},
+            {"query": "crowd silhouette under concert lights", "mode": "reaction"},
         ],
         max_queries=max_queries,
     )
-    default_intent = visual_intent if visual_intent in _ALLOWED_VISUAL_INTENTS else "abstract_support"
+    default_intent = (
+        visual_intent
+        if visual_intent in _ALLOWED_VISUAL_INTENTS
+        else "abstract_support"
+    )
     return (
-        "urban rap performance",
+        "cinematic music performance",
         default_intent,
         "medium",
         default_queries,
-        "Used music-video fallback visuals instead of the low-signal general-scene placeholder.",
+        "Used cinematic music-video support visuals instead of a low-signal placeholder query.",
     )
+
+
+def _fallback_cross_lingual_music_packets(
+    *,
+    visual_intent: str,
+    max_queries: int,
+) -> tuple[str, str, str, list[dict[str, str]], str]:
+    packet_map: dict[str, tuple[str, list[tuple[str, str]]]] = {
+        "literal_demo": (
+            "music performance",
+            [
+                ("singer performing on stage lights", "literal"),
+                ("musician recording in studio", "process"),
+                ("microphone close up cinematic", "literal"),
+                ("hands playing guitar close up", "literal"),
+                ("concert crowd waving lights", "reaction"),
+            ],
+        ),
+        "process_step": (
+            "studio music performance",
+            [
+                ("recording studio microphone close up", "process"),
+                ("musician adjusting headphones studio", "process"),
+                ("hands on audio mixer close up", "process"),
+                ("singer rehearsal in studio", "literal"),
+                ("concert stage lights background", "environment"),
+            ],
+        ),
+        "environment_context": (
+            "cinematic song environment",
+            [
+                ("couple walking on beach at sunset", "environment"),
+                ("empty road golden hour cinematic", "environment"),
+                ("city street night rain cinematic", "environment"),
+                ("ocean waves shoreline slow motion", "abstract"),
+                ("temple exterior evening lights", "environment"),
+            ],
+        ),
+        "reaction_payoff": (
+            "emotional song payoff",
+            [
+                ("smiling couple reunion slow motion", "reaction"),
+                ("joyful face close up cinematic", "reaction"),
+                ("friends celebrating outdoors sunset", "reaction"),
+                ("crowd waving lights concert", "reaction"),
+                ("dance silhouette golden hour", "reaction"),
+            ],
+        ),
+        "abstract_support": (
+            "cinematic music emotion",
+            [
+                ("rain on window cinematic close up", "abstract"),
+                ("woman looking out window slow motion", "reaction"),
+                ("silhouette walking alone at sunset", "abstract"),
+                ("city lights bokeh night", "abstract"),
+                ("ocean waves slow motion cinematic", "abstract"),
+            ],
+        ),
+    }
+    resolved_intent = (
+        visual_intent if visual_intent in packet_map else "abstract_support"
+    )
+    search_concept, raw_queries = packet_map[resolved_intent]
+    return (
+        search_concept,
+        resolved_intent,
+        "medium",
+        _normalize_query_packets(
+            [{"query": query, "mode": mode} for query, mode in raw_queries],
+            max_queries=max_queries,
+        ),
+        "Converted non-English music lyrics into English cinematic search queries because stock search does not reliably index Kannada lyrics.",
+    )
+
+
+def _fallback_cross_lingual_visual_gloss(
+    *,
+    domain_context: dict[str, Any],
+    visual_intent: str,
+    max_queries: int,
+) -> dict[str, Any]:
+    domain = _normalize_domain_label(domain_context.get("domain"), fallback="general")
+    if domain == "music":
+        search_concept, resolved_intent, _stockability, queries, rationale = (
+            _fallback_cross_lingual_music_packets(
+                visual_intent=visual_intent,
+                max_queries=max_queries,
+            )
+        )
+        english_gloss_map = {
+            "literal_demo": "music performance with singer, instruments, and stage lights",
+            "process_step": "studio recording moment with musician, microphone, and audio mixer",
+            "environment_context": "cinematic song setting with couple, road, rain, or evening atmosphere",
+            "reaction_payoff": "emotional song payoff with reunion, celebration, and expressive faces",
+            "abstract_support": "poetic romantic mood with rain, sunset, city lights, and reflective emotion",
+        }
+        return {
+            "english_gloss": english_gloss_map.get(
+                resolved_intent, english_gloss_map["abstract_support"]
+            ),
+            "english_search_concept": search_concept,
+            "english_query_hints": [str(item.get("query") or "") for item in queries],
+            "rationale": rationale,
+        }
+    summary = _normalize_short_text(
+        domain_context.get("summary") or _DOMAIN_SUMMARIES["general"]
+    )
+    summary_focus = _focus_terms(summary)
+    english_concept = " ".join(summary_focus[:4]).strip() or "supportive visual moment"
+    english_query_hints = _dedupe_strings(
+        [
+            english_concept,
+            summary,
+            f"{english_concept} cinematic",
+            f"{english_concept} background",
+        ],
+        limit=max_queries,
+    )
+    return {
+        "english_gloss": summary or english_concept,
+        "english_search_concept": english_concept,
+        "english_query_hints": english_query_hints,
+        "rationale": "Used domain summary as an English visual gloss because the beat text was non-English.",
+    }
+
+
+def _build_cross_lingual_visual_gloss(
+    *,
+    chunk_text: str,
+    concept_text: str,
+    visual_intent: str,
+    query_hints: list[str],
+    domain_context: dict[str, Any],
+    max_queries: int,
+    language_hint: str | None,
+) -> dict[str, Any]:
+    fallback = _fallback_cross_lingual_visual_gloss(
+        domain_context=domain_context,
+        visual_intent=visual_intent,
+        max_queries=max_queries,
+    )
+    if not _llm_enabled():
+        return fallback
+    prompt = {
+        "goal": "Translate a non-English transcript beat into English meaning for B-roll search.",
+        "language_hint": language_hint or "",
+        "beat_text": chunk_text[:700],
+        "concept_text": concept_text[:240],
+        "visual_intent": visual_intent,
+        "domain_context": domain_context,
+        "query_hints": query_hints[:8],
+        "fallback_gloss": fallback,
+        "rules": [
+            "Translate meaning into natural English. Do not transliterate the original language.",
+            "For lyrics, capture the emotional or visual meaning, not a rigid word-for-word translation.",
+            "Keep the gloss short and useful for stock search or image generation.",
+            "All returned text must be English only.",
+        ],
+        "output_schema": {
+            "english_gloss": "string",
+            "english_search_concept": "string",
+            "english_query_hints": ["string"],
+            "rationale": "string",
+        },
+    }
+    parsed = _chat_json(prompt)
+    if not parsed:
+        return fallback
+    english_gloss = _normalize_short_text(parsed.get("english_gloss"))
+    english_search_concept = _normalize_short_text(parsed.get("english_search_concept"))
+    english_query_hints = _dedupe_strings(
+        [str(item) for item in parsed.get("english_query_hints", [])]
+        if isinstance(parsed.get("english_query_hints"), list)
+        else [],
+        limit=max_queries,
+    )
+    if not _looks_like_valid_english_search_text(english_gloss):
+        return fallback
+    if not _looks_like_valid_english_search_text(english_search_concept):
+        english_search_concept = english_gloss
+    valid_hints = [
+        hint
+        for hint in english_query_hints
+        if _looks_like_valid_english_search_text(hint)
+    ]
+    if not valid_hints:
+        valid_hints = list(fallback["english_query_hints"])
+    return {
+        "english_gloss": english_gloss,
+        "english_search_concept": english_search_concept,
+        "english_query_hints": valid_hints[:max_queries],
+        "rationale": _normalize_short_text(parsed.get("rationale"))
+        or str(fallback["rationale"]),
+    }
+
+
+def _manual_visual_gloss(
+    *,
+    english_gloss_override: str,
+    max_queries: int,
+) -> dict[str, Any]:
+    normalized = _normalize_short_text(english_gloss_override)
+    hints = _dedupe_strings(
+        [
+            normalized,
+            f"{normalized} cinematic",
+            f"{normalized} close up",
+            f"{normalized} atmosphere",
+        ],
+        limit=max_queries,
+    )
+    return {
+        "english_gloss": normalized,
+        "english_search_concept": normalized,
+        "english_query_hints": hints,
+        "rationale": "Used the manually edited English gloss from the user.",
+    }
 
 
 def _fallback_generic_packets(
@@ -518,11 +1039,17 @@ def _fallback_generic_packets(
             continue
         query = " ".join(focus[:4]).strip()
         if query:
-            compact_queries.append({"query": query, "mode": mode_map.get(visual_intent, "literal")})
-    domain_summary = str(domain_context.get("summary") or _DOMAIN_SUMMARIES["general"]).strip()
+            compact_queries.append(
+                {"query": query, "mode": mode_map.get(visual_intent, "literal")}
+            )
+    domain_summary = str(
+        domain_context.get("summary") or _DOMAIN_SUMMARIES["general"]
+    ).strip()
     summary_focus = _focus_terms(domain_summary)
     if summary_focus:
-        compact_queries.append({"query": " ".join(summary_focus[:4]), "mode": "environment"})
+        compact_queries.append(
+            {"query": " ".join(summary_focus[:4]), "mode": "environment"}
+        )
     packets = _normalize_query_packets(compact_queries, max_queries=max_queries)
     if not packets:
         packets = _normalize_query_packets(
@@ -531,7 +1058,9 @@ def _fallback_generic_packets(
         )
     cleaned_concept = _strip_blocked_terms(concept_text, blocked_terms)
     concept_focus = _focus_terms(cleaned_concept) or _focus_terms(chunk_text)
-    search_concept = " ".join(concept_focus[:4]).strip() or str(domain_context.get("summary") or "support visual")
+    search_concept = " ".join(concept_focus[:4]).strip() or str(
+        domain_context.get("summary") or "support visual"
+    )
     stockability = "medium" if concept_focus else "low"
     return (
         search_concept,
@@ -550,34 +1079,57 @@ def _fallback_search_strategy(
     query_hints: list[str],
     domain_context: dict[str, Any] | None,
     max_queries: int,
+    language_hint: str | None = None,
 ) -> dict[str, Any]:
     resolved_domain = dict(domain_context or {})
     if not resolved_domain:
-        resolved_domain = _fallback_domain_context(transcript_text=chunk_text, asset_filenames=[])
+        resolved_domain = _fallback_domain_context(
+            transcript_text=chunk_text, asset_filenames=[]
+        )
     domain = _normalize_domain_label(resolved_domain.get("domain"), fallback="general")
     entity_terms = _dedupe_strings(extract_entities(chunk_text)[:6], limit=6)
     token_set = set(_focus_terms(f"{chunk_text} {concept_text}", min_len=2))
+    cross_lingual_source = _prefers_english_stock_queries(
+        chunk_text=chunk_text,
+        concept_text=concept_text,
+        query_hints=query_hints,
+        language_hint=language_hint,
+    )
     if domain == "motorsport":
-        search_concept, resolved_intent, stockability, queries, rationale = _fallback_motorsport_packets(
-            token_set=token_set,
-            visual_intent=visual_intent,
-            max_queries=max_queries,
+        search_concept, resolved_intent, stockability, queries, rationale = (
+            _fallback_motorsport_packets(
+                token_set=token_set,
+                visual_intent=visual_intent,
+                max_queries=max_queries,
+            )
         )
     elif domain == "music":
-        search_concept, resolved_intent, stockability, queries, rationale = _fallback_music_packets(
-            token_set=token_set,
-            visual_intent=visual_intent,
-            max_queries=max_queries,
-        )
+        if cross_lingual_source:
+            search_concept, resolved_intent, stockability, queries, rationale = (
+                _fallback_cross_lingual_music_packets(
+                    visual_intent=visual_intent,
+                    max_queries=max_queries,
+                )
+            )
+        else:
+            search_concept, resolved_intent, stockability, queries, rationale = (
+                _fallback_music_packets(
+                    token_set=token_set,
+                    visual_intent=visual_intent,
+                    max_queries=max_queries,
+                )
+            )
     else:
-        search_concept, resolved_intent, stockability, queries, rationale = _fallback_generic_packets(
-            chunk_text=chunk_text,
-            concept_text=concept_text,
-            visual_intent=visual_intent,
-            query_hints=query_hints,
-            blocked_terms=entity_terms,
-            domain_context=resolved_domain,
-            max_queries=max_queries,
+        search_concept, resolved_intent, stockability, queries, rationale = (
+            _fallback_generic_packets(
+                chunk_text=chunk_text,
+                concept_text=concept_text,
+                visual_intent=visual_intent,
+                query_hints=query_hints,
+                blocked_terms=entity_terms,
+                domain_context=resolved_domain,
+                max_queries=max_queries,
+            )
         )
     return {
         "search_concept": search_concept,
@@ -589,6 +1141,26 @@ def _fallback_search_strategy(
     }
 
 
+def _gloss_query_packets(
+    *,
+    english_query_hints: list[str],
+    visual_intent: str,
+    max_queries: int,
+) -> list[dict[str, str]]:
+    mode_map = {
+        "literal_demo": "literal",
+        "process_step": "process",
+        "environment_context": "environment",
+        "reaction_payoff": "reaction",
+        "abstract_support": "abstract",
+    }
+    resolved_mode = mode_map.get(visual_intent, "abstract")
+    return _normalize_query_packets(
+        [{"query": hint, "mode": resolved_mode} for hint in english_query_hints],
+        max_queries=max_queries,
+    )
+
+
 def build_broll_search_strategy(
     *,
     chunk_text: str,
@@ -597,27 +1169,121 @@ def build_broll_search_strategy(
     query_hints: list[str],
     max_queries: int,
     domain_context: dict[str, Any] | None = None,
+    language_hint: str | None = None,
+    english_gloss_override: str | None = None,
 ) -> dict[str, Any]:
     resolved_domain = dict(domain_context or {})
     if not resolved_domain:
-        resolved_domain = _fallback_domain_context(transcript_text=chunk_text, asset_filenames=[])
-    fallback = _fallback_search_strategy(
+        resolved_domain = _fallback_domain_context(
+            transcript_text=chunk_text, asset_filenames=[]
+        )
+    cross_lingual_source = _prefers_english_stock_queries(
         chunk_text=chunk_text,
         concept_text=concept_text,
-        visual_intent=visual_intent,
         query_hints=query_hints,
+        language_hint=language_hint,
+    )
+    visual_gloss: dict[str, Any] | None = None
+    strategy_chunk_text = chunk_text
+    strategy_concept_text = concept_text
+    strategy_query_hints = list(query_hints)
+    strategy_language_hint = language_hint
+    normalized_override = _normalize_short_text(english_gloss_override)
+    if normalized_override and _looks_like_valid_english_search_text(
+        normalized_override
+    ):
+        visual_gloss = _manual_visual_gloss(
+            english_gloss_override=normalized_override,
+            max_queries=max_queries,
+        )
+        strategy_chunk_text = str(visual_gloss.get("english_gloss") or chunk_text)
+        strategy_concept_text = str(
+            visual_gloss.get("english_search_concept") or concept_text
+        )
+        strategy_query_hints = list(visual_gloss.get("english_query_hints") or [])
+        strategy_language_hint = "en"
+    elif cross_lingual_source:
+        visual_gloss = _build_cross_lingual_visual_gloss(
+            chunk_text=chunk_text,
+            concept_text=concept_text,
+            visual_intent=visual_intent,
+            query_hints=query_hints,
+            domain_context=resolved_domain,
+            max_queries=max_queries,
+            language_hint=language_hint,
+        )
+        strategy_chunk_text = str(visual_gloss.get("english_gloss") or chunk_text)
+        strategy_concept_text = str(
+            visual_gloss.get("english_search_concept") or concept_text
+        )
+        strategy_query_hints = _dedupe_strings(
+            [
+                str(visual_gloss.get("english_search_concept") or ""),
+                *[
+                    str(item)
+                    for item in visual_gloss.get("english_query_hints", [])
+                    if isinstance(item, str)
+                ],
+                *[
+                    str(item)
+                    for item in query_hints
+                    if _looks_like_valid_english_search_text(str(item))
+                ],
+            ],
+            limit=max_queries,
+        )
+        strategy_language_hint = "en"
+    fallback = _fallback_search_strategy(
+        chunk_text=strategy_chunk_text,
+        concept_text=strategy_concept_text,
+        visual_intent=visual_intent,
+        query_hints=strategy_query_hints,
         domain_context=resolved_domain,
         max_queries=max_queries,
+        language_hint=strategy_language_hint,
     )
+    if visual_gloss:
+        gloss_search_concept = _normalize_short_text(
+            visual_gloss.get("english_search_concept")
+        )
+        if gloss_search_concept:
+            fallback["search_concept"] = gloss_search_concept
+        gloss_packets = _gloss_query_packets(
+            english_query_hints=[
+                str(item)
+                for item in visual_gloss.get("english_query_hints", [])
+                if isinstance(item, str)
+            ],
+            visual_intent=str(fallback.get("visual_intent") or visual_intent),
+            max_queries=max_queries,
+        )
+        if gloss_packets:
+            fallback["queries"] = gloss_packets
+        fallback["english_gloss"] = str(visual_gloss.get("english_gloss") or "")
+        fallback["original_chunk_text"] = _normalize_short_text(chunk_text[:700])
+        if normalized_override:
+            fallback["gloss_override_used"] = normalized_override
+        fallback["rationale"] = " ".join(
+            part
+            for part in [
+                _normalize_short_text(visual_gloss.get("rationale")),
+                str(fallback.get("rationale") or ""),
+            ]
+            if part
+        ).strip()
     if not _llm_enabled():
         return fallback
     prompt = {
         "goal": "Convert one noisy transcript beat into strong stock-video retrieval queries.",
-        "beat_text": chunk_text[:700],
-        "concept_text": concept_text[:240],
+        "language_hint": strategy_language_hint or "",
+        "english_gloss_override": normalized_override,
+        "original_beat_text": chunk_text[:700] if cross_lingual_source else "",
+        "beat_text": strategy_chunk_text[:700],
+        "concept_text": strategy_concept_text[:240],
         "visual_intent": visual_intent,
         "domain_context": resolved_domain,
-        "query_hints": query_hints[:8],
+        "query_hints": strategy_query_hints[:8],
+        "english_visual_gloss": visual_gloss or {},
         "fallback_strategy": fallback,
         "rules": [
             "Stock libraries will not have exact movie scenes, copyrighted footage, public figures, fictional teams, or branded IP shots.",
@@ -625,6 +1291,7 @@ def build_broll_search_strategy(
             "Use domain context to disambiguate words. In motorsport, combat or attack means race battle, not military footage.",
             "If the line is lyrical, noisy, or not visually literal, choose a faithful supporting visual rather than a literal but wrong query.",
             "Avoid person-only or brand-only queries.",
+            "IMPORTANT: Stock libraries use English. If the input beat_text or concept_text is in another language, you MUST translate the concepts into English for the queries (e.g. return 'city street', not 'shahar ki sadak').",
             "Return 4 to 8 concise stock-search queries.",
         ],
         "output_schema": {
@@ -633,7 +1300,10 @@ def build_broll_search_strategy(
             "stockability": "high|medium|low",
             "blocked_terms": ["string"],
             "queries": [
-                {"query": "string", "mode": "literal|process|environment|reaction|abstract"}
+                {
+                    "query": "string",
+                    "mode": "literal|process|environment|reaction|abstract",
+                }
             ],
             "rationale": "string",
         },
@@ -642,25 +1312,47 @@ def build_broll_search_strategy(
     if not parsed:
         return fallback
     queries = _normalize_query_packets(parsed.get("queries"), max_queries=max_queries)
-    parsed_search_concept = " ".join(str(parsed.get("search_concept") or "").split()).strip()
+    parsed_search_concept = " ".join(
+        str(parsed.get("search_concept") or "").split()
+    ).strip()
     if not queries or _is_low_signal_phrase(parsed_search_concept):
         return fallback
+    if cross_lingual_source:
+        if _contains_non_latin_letters(parsed_search_concept) or any(
+            _contains_non_latin_letters(str(item.get("query") or ""))
+            for item in queries
+        ):
+            return fallback
     blocked_terms = _dedupe_strings(
-        [str(item) for item in parsed.get("blocked_terms", [])] if isinstance(parsed.get("blocked_terms"), list) else [],
+        [str(item) for item in parsed.get("blocked_terms", [])]
+        if isinstance(parsed.get("blocked_terms"), list)
+        else [],
         limit=8,
     )
     fallback_blocked = list(fallback["blocked_terms"])
     for item in fallback_blocked:
         if item not in blocked_terms:
             blocked_terms.append(item)
-    return {
+    result = {
         "search_concept": parsed_search_concept or str(fallback["search_concept"]),
-        "visual_intent": _normalize_visual_intent(parsed.get("visual_intent"), str(fallback["visual_intent"])),
-        "stockability": str(parsed.get("stockability") or fallback["stockability"]).strip().lower() or str(fallback["stockability"]),
+        "visual_intent": _normalize_visual_intent(
+            parsed.get("visual_intent"), str(fallback["visual_intent"])
+        ),
+        "stockability": str(parsed.get("stockability") or fallback["stockability"])
+        .strip()
+        .lower()
+        or str(fallback["stockability"]),
         "blocked_terms": blocked_terms[:8],
         "queries": queries,
-        "rationale": " ".join(str(parsed.get("rationale") or "").split()).strip() or str(fallback["rationale"]),
+        "rationale": " ".join(str(parsed.get("rationale") or "").split()).strip()
+        or str(fallback["rationale"]),
     }
+    if visual_gloss:
+        result["english_gloss"] = str(visual_gloss.get("english_gloss") or "")
+        result["original_chunk_text"] = _normalize_short_text(chunk_text[:700])
+        if normalized_override:
+            result["gloss_override_used"] = normalized_override
+    return result
 
 
 def build_broll_search_packets(
@@ -671,6 +1363,7 @@ def build_broll_search_packets(
     query_hints: list[str],
     max_queries: int,
     domain_context: dict[str, Any] | None = None,
+    language_hint: str | None = None,
 ) -> list[dict[str, str]] | None:
     strategy = build_broll_search_strategy(
         chunk_text=chunk_text,
@@ -679,12 +1372,15 @@ def build_broll_search_packets(
         query_hints=query_hints,
         max_queries=max_queries,
         domain_context=domain_context,
+        language_hint=language_hint,
     )
     packets = strategy.get("queries")
     return list(packets) if isinstance(packets, list) and packets else None
 
 
-def _candidate_doc(row: CandidateRow, assets_by_id: dict[str, MediaAsset]) -> dict[str, Any]:
+def _candidate_doc(
+    row: CandidateRow, assets_by_id: dict[str, MediaAsset]
+) -> dict[str, Any]:
     source_type, asset_id, source_url, source_label, score, reason = row
     asset = assets_by_id.get(asset_id or "")
     metadata_text = ""
@@ -696,7 +1392,9 @@ def _candidate_doc(row: CandidateRow, assets_by_id: dict[str, MediaAsset]) -> di
         "query": str(reason.get("query") or ""),
         "query_mode": str(reason.get("query_mode") or ""),
         "tags": reason.get("tags") if isinstance(reason.get("tags"), list) else [],
-        "keyword_hits": reason.get("keyword_hits") if isinstance(reason.get("keyword_hits"), list) else [],
+        "keyword_hits": reason.get("keyword_hits")
+        if isinstance(reason.get("keyword_hits"), list)
+        else [],
         "crop_score": reason.get("crop_score"),
         "width": reason.get("width"),
         "height": reason.get("height"),
@@ -794,7 +1492,18 @@ def llm_rerank_broll_candidates(
                 weak_codes.append(code)
         merged_reason["weak_reason_codes"] = weak_codes
         merged_reason["llm_retrieval_score"] = round(float(extra["score"]), 3)
-        blended_score = max(0.0, min((0.55 * float(base_score)) + (0.45 * float(extra["score"])), 0.99))
-        reranked.append((source_type, asset_id, source_url, source_label, round(blended_score, 3), merged_reason))
+        blended_score = max(
+            0.0, min((0.55 * float(base_score)) + (0.45 * float(extra["score"])), 0.99)
+        )
+        reranked.append(
+            (
+                source_type,
+                asset_id,
+                source_url,
+                source_label,
+                round(blended_score, 3),
+                merged_reason,
+            )
+        )
     reranked.sort(key=lambda item: item[4], reverse=True)
     return reranked

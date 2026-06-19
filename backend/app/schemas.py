@@ -54,7 +54,16 @@ class ClipAudio(BaseModel):
 
 
 class Transition(BaseModel):
-    type: Literal["fade", "dissolve", "slide_left", "slide_right", "slide_up", "slide_down", "zoom", "wipe"] = "fade"
+    type: Literal[
+        "fade",
+        "dissolve",
+        "slide_left",
+        "slide_right",
+        "slide_up",
+        "slide_down",
+        "zoom",
+        "wipe",
+    ] = "fade"
     duration_sec: float = 0.5
 
 
@@ -143,6 +152,9 @@ class ProjectResponse(BaseModel):
     width: int
     height: int
     timeline: TimelineState
+    timeline_version: int = 0
+    timeline_can_undo: bool = False
+    timeline_can_redo: bool = False
 
 
 class OperationPayload(BaseModel):
@@ -160,6 +172,8 @@ class OperationApplyResponse(BaseModel):
     version: int
     timeline: TimelineState
     applied_ops: list[str]
+    timeline_can_undo: bool = False
+    timeline_can_redo: bool = False
 
 
 class PromptParseRequest(BaseModel):
@@ -194,12 +208,17 @@ class MediaUploadResponse(BaseModel):
 class TranscriptWord(BaseModel):
     id: str
     text: str
+    display_text: Optional[str] = None
+    script_tag: Optional[Literal["latin", "indic", "arabic", "mixed", "other"]] = None
+    language_hint: Optional[str] = None
     start_sec: float
     end_sec: float
     confidence: Optional[float] = None
     quality_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     quality_label: Optional[Literal["trusted", "weak"]] = None
     source_pass: Optional[Literal["primary", "retry", "rescue", "manual"]] = None
+    speaker_id: Optional[str] = None
+    speaker_label: Optional[str] = None
 
 
 class TranscriptRegion(BaseModel):
@@ -212,8 +231,11 @@ class TranscriptRegion(BaseModel):
 
 class TranscriptGenerateRequest(BaseModel):
     asset_id: str
+    mode: Literal["auto", "speech", "song"] = "auto"
     language: Optional[str] = None
     prompt: Optional[str] = None
+    translate_to_english: Optional[bool] = None
+    force_regenerate: bool = False
 
 
 class TranscriptCutRequest(BaseModel):
@@ -228,7 +250,7 @@ class TranscriptRangeUpdateRequest(BaseModel):
     start_word_id: str
     end_word_id: str
     text: Optional[str] = None
-    mode: Literal["replace", "blank", "preserve"] = "replace"
+    mode: Literal["replace", "blank", "preserve", "delete"] = "replace"
 
     @model_validator(mode="after")
     def validate_payload(self) -> "TranscriptRangeUpdateRequest":
@@ -245,15 +267,40 @@ class TranscriptResponse(BaseModel):
     language: Optional[str]
     text: str
     words: list[TranscriptWord]
+    word_count: int = 0
+    words_truncated: bool = False
     regions: list[TranscriptRegion] = Field(default_factory=list)
+    quality_score: float = Field(default=1.0, ge=0.0, le=1.0)
+    quality_label: Literal["trusted", "needs_review"] = "trusted"
+    weak_word_count: int = 0
+    weak_word_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    issue_region_count: int = 0
+    script_tags: list[str] = Field(default_factory=list)
+    mixed_script: bool = False
     duration_sec: float
     is_mock: bool
     created_at: str
 
 
+class TranscriptWordPageResponse(BaseModel):
+    transcript_id: str
+    project_id: str
+    offset: int
+    limit: int
+    total_words: int
+    words: list[TranscriptWord]
+
+
 class TranscriptGenerateResponse(BaseModel):
     transcript: TranscriptResponse
     timeline: TimelineState
+    reused_transcript: bool = False
+
+
+class TranscriptEditResponse(BaseModel):
+    transcript: TranscriptResponse
+    timeline: TimelineState
+    captions_synced: bool = False
 
 
 class TranscriptCutResponse(BaseModel):
@@ -289,6 +336,7 @@ class BrollRerollRequest(BaseModel):
     include_project_assets: bool = True
     include_external_sources: bool = True
     ai_rerank: bool = True
+    english_gloss_override: Optional[str] = None
 
 
 class BrollChooseRequest(BaseModel):
@@ -409,8 +457,25 @@ class BrollAutoApplyResponse(BaseModel):
     synced_clip_count: int
     skipped_slots: int
     confidence_threshold: float
+    skipped_slot_summaries: list["BrollAutoApplySkipSummary"] = Field(default_factory=list)
     timeline: TimelineState
     slots: list[BrollSlotResponse]
+
+
+class BrollAutoApplySkipSummary(BaseModel):
+    slot_id: str
+    concept_text: str
+    reason: str
+    detail: Optional[str] = None
+
+
+class BrollConfigResponse(BaseModel):
+    external_enabled: bool
+    pexels_configured: bool
+    pixabay_configured: bool
+    stock_search_available: bool
+    generative_enabled: bool
+    llm_rerank_available: bool
 
 
 class BrollSyncRequest(BaseModel):

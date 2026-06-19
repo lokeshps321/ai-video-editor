@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from ..database import get_session
+from ..deps import get_current_user
 from ..ingest_service import validate_ingest_url
 from ..jobs import create_job, enqueue_ingest_url_job, find_recent_active_job
 from ..models import Job, Project
@@ -29,6 +32,7 @@ def ingest_url(
     payload: IngestUrlRequest,
     project_id: str,
     session: Session = Depends(get_session),
+    current_user: dict[str, Any] = Depends(get_current_user),
 ) -> JobResponse:
     project = session.exec(select(Project).where(Project.id == project_id)).first()
     if not project:
@@ -39,7 +43,9 @@ def ingest_url(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    active = find_recent_active_job(session, project_id, kind="ingest_url", within_seconds=0)
+    active = find_recent_active_job(
+        session, project_id, kind="ingest_url", within_seconds=0
+    )
     if active:
         return _to_job_response(active)
 

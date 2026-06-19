@@ -1,4 +1,12 @@
 services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - clipmind_redis:/data
+    expose:
+      - "6379"
+
   db:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -8,6 +16,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
     volumes:
       - clipmind_postgres:/var/lib/postgresql/data
+    depends_on:
+      - redis
 
   backend:
     build:
@@ -15,12 +25,15 @@ services:
     restart: unless-stopped
     depends_on:
       - db
+      - redis
     env_file:
       - ./backend/.env.production
     environment:
       UPLOAD_DIR: /app/uploads
       RENDER_DIR: /app/renders
       TMP_DIR: /app/tmp
+      REDIS_URL: redis://redis:6379/0
+      USE_RQ_WORKERS: "true"
     volumes:
       - clipmind_uploads:/app/uploads
       - clipmind_renders:/app/renders
@@ -28,11 +41,33 @@ services:
     expose:
       - "8000"
 
+  worker:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - db
+    env_file:
+      - ./backend/.env.production
+    environment:
+      UPLOAD_DIR: /app/uploads
+      RENDER_DIR: /app/renders
+      TMP_DIR: /app/tmp
+      REDIS_URL: redis://redis:6379/0
+      USE_RQ_WORKERS: "true"
+    volumes:
+      - clipmind_uploads:/app/uploads
+      - clipmind_renders:/app/renders
+      - clipmind_tmp:/app/tmp
+    command: python worker.py --queues renders,ingests --verbosity INFO
+
   frontend:
     build:
       context: ./frontend
       args:
         VITE_API_BASE: ${VITE_API_BASE:-}
+        VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY:-}
     restart: unless-stopped
     depends_on:
       - backend
@@ -40,6 +75,7 @@ services:
       - "${FRONTEND_PORT:-80}:80"
 
 volumes:
+  clipmind_redis:
   clipmind_postgres:
   clipmind_uploads:
   clipmind_renders:

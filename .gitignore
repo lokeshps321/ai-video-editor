@@ -14,10 +14,13 @@ venv/
 backend/.env.local
 backend/.env.production
 frontend/.env.local
-backend/app.db
+backend/app.db*
 backend/uploads/
 backend/renders/
 backend/tmp/
+backend/tests/fixtures/language_clips/*.wav
+backend/tests/fixtures/language_clips/*.mp3
+backend/tests/fixtures/language_clips/*.mp4
 uploads/
 renders/
 tmp/

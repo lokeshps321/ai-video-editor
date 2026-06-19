@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shlex
@@ -13,6 +14,7 @@ from typing import Callable, Iterable
 from .config import get_settings
 from .schemas import Clip, ExportSettings, Resolution, TimelineState
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
@@ -141,6 +143,15 @@ def _color_to_ass(color: str | None, fallback: str = "&H00FFFFFF") -> str:
     return fallback
 
 
+def _ass_color_with_alpha(color: str, alpha_hex: str, fallback: str = "&HA0000000") -> str:
+    raw = str(color or "").strip().upper()
+    match = re.match(r"^&H([0-9A-F]{8})$", raw)
+    if not match:
+        return fallback
+    packed = match.group(1)
+    return f"&H{alpha_hex.upper()}{packed[2:]}"
+
+
 def _clamp_int(value: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(value, maximum))
 
@@ -213,13 +224,16 @@ def _build_ass_subtitle_file(
     font_size = 48
     primary = "&H00FFFFFF"
     outline_color = "&H00000000"
+    back_color = "&HA0000000"
     outline_w = 2
     shadow = 1
     font_name = "DejaVu Sans" # Better fallback for Linux than Arial
     bold = 0
+    indic_font_name: str | None = None
 
     if text_overlays:
         sample = text_overlays[0]
+        sample_style = _normalize_caption_style(str(sample.get("style", "")))
         font_size = int(sample.get("font_size", 48))
         primary = _color_to_ass(str(sample.get("color", "white")))
         outline_color = _color_to_ass(str(sample.get("outline_color", "black")))
@@ -237,6 +251,25 @@ def _build_ass_subtitle_file(
         if font_name.lower() in ("arial", "helvetica", "inter", "roboto"):
             font_name = "DejaVu Sans"
 
+        # Detect Indic scripts and override font if needed
+        all_text = " ".join([str(o.get("text", "")) for o in text_overlays])
+        indic_font_name = _pick_ass_font_name(all_text)
+        if indic_font_name:
+            font_name = indic_font_name
+            # Synthetic bold breaks shaping and can clip diacritics on complex-script fallback fonts.
+            bold = 0
+            # Indic shaping is stable only when we avoid inline karaoke color tags.
+            # Preserve style identity only for explicitly color-led presets by promoting
+            # the preset highlight color to the whole line. Neutral presets such as
+            # basic_white must keep their primary color.
+            sample_highlight = _color_to_ass(str(sample.get("highlight_color", "")), fallback=primary)
+            if sample_highlight and sample_highlight != primary:
+                back_color = _ass_color_with_alpha(sample_highlight, "96")
+                shadow = max(shadow, 3)
+                outline_w = max(outline_w, 3)
+                if sample_style in _INDIC_HIGHLIGHT_TO_PRIMARY_STYLES:
+                    primary = sample_highlight
+
         font_size, margin_v, outline_w, shadow = _scale_ass_caption_metrics(
             font_size,
             margin_v,
@@ -247,7 +280,10 @@ def _build_ass_subtitle_file(
             out_h,
         )
             
-    print(f"DEBUG ASS: generating with font='{font_name}', size={font_size}, color={primary}, align={alignment}, margin_v={margin_v}, overlays={len(text_overlays)}")
+    logger.debug(
+        "ASS subtitle: font=%r size=%d color=%s align=%d margin_v=%d overlays=%d",
+        font_name, font_size, primary, alignment, margin_v, len(text_overlays),
+    )
 
     lines = [
         "[Script Info]",
@@ -258,7 +294,7 @@ def _build_ass_subtitle_file(
         "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        f"Style: Default,{font_name},{font_size},{primary},&H000000FF,{outline_color},&HA0000000,{bold},0,0,0,100,100,0,0,1,{outline_w},{shadow},{alignment},10,10,{margin_v},1",
+        f"Style: Default,{font_name},{font_size},{primary},&H000000FF,{outline_color},{back_color},{bold},0,0,0,100,100,0,0,1,{outline_w},{shadow},{alignment},10,10,{margin_v},1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -269,12 +305,22 @@ def _build_ass_subtitle_file(
         raw_text = str(overlay.get("text", "")).replace("\n", "\\N")
         # Escape special ASS characters
         raw_text = raw_text.replace("{", "").replace("}", "")
-        
+
         words = overlay.get("word_timings", [])
         highlight_color = overlay.get("highlight_color")
+        overlay_uses_indic_font = indic_font_name is not None or _pick_ass_font_name(raw_text.replace("\\N", " ")) is not None
+
+        # Disable karaoke highlights for Indic languages due to a known libass bug
+        # where inline ASS tags (like {\c}) permanently break HarfBuzz complex text 
+        # shaping for the adjacent text segment, causing disjointed characters.
+        if overlay_uses_indic_font:
+            highlight_color = None
 
         # If we have word timings AND a highlight color, do a word-by-word karaoke style reveal!
-        if words and highlight_color:
+        # IMPORTANT: Limit karaoke entries to prevent OOM crashes in FFmpeg's libass renderer
+        max_karaoke_words = int(os.environ.get("RENDER_MAX_KARAOKE_WORDS", "50"))
+        
+        if words and highlight_color and len(words) <= max_karaoke_words:
             hl_ass_color = _color_to_ass(str(highlight_color), fallback=primary)
             
             # The raw_text is exactly the words joined by spaces (maybe some uppercasing).
@@ -384,6 +430,17 @@ _CAPTION_STYLE_ALIASES = {
     "impact": "street_impact",
     "urban": "street_impact",
 }
+_INDIC_HIGHLIGHT_TO_PRIMARY_STYLES = {
+    "hormozi_bold",
+    "hormozi_green",
+    "shorts_viral",
+    "neon_gamer",
+    "retro_vhs",
+    "pop_color",
+    "pop_cyan",
+    "elegant_gold",
+    "street_impact",
+}
 
 
 def _even(value: int) -> int:
@@ -483,6 +540,18 @@ def _pick_drawtext_fontfile(text: str) -> str | None:
     for path in _GENERIC_FONT_CANDIDATES:
         if _font_exists(path):
             return path
+    return None
+
+
+def _pick_ass_font_name(text: str) -> str | None:
+    for ranges, candidates in _SCRIPT_FONT_CANDIDATES:
+        if not _contains_script(text, ranges):
+            continue
+        for path in candidates:
+            if _font_exists(path):
+                # E.g. /usr/share/fonts/truetype/lohit-kannada/Lohit-Kannada.ttf -> "Lohit Kannada"
+                filename = Path(path).stem
+                return filename.replace("-", " ")
     return None
 
 
@@ -1186,7 +1255,7 @@ def build_ffmpeg_command(
         dst = "vtxt_ass"
         # Escape path for ffmpeg filter string (backslashes and colons)
         esc_path = _ass_subtitle_path.replace("\\", "\\\\").replace(":", "\\:")
-        filter_parts.append(f"[{src}]subtitles='{esc_path}'[{dst}]")
+        filter_parts.append(f"[{src}]ass='{esc_path}':fontsdir=/usr/share/fonts:shaping=complex[{dst}]")
         last_video_stream = dst
 
     has_audio = True
@@ -1292,7 +1361,7 @@ def build_ffmpeg_command(
     if not overlay_inputs:
         cmd.append("-shortest")
     cmd.append(output_path)
-    print(f"DEBUG FFMPEG: {' '.join(shlex.quote(p) for p in cmd)}")
+    logger.debug("FFmpeg command: %s", " ".join(shlex.quote(p) for p in cmd))
     return cmd
 
 
@@ -1327,6 +1396,26 @@ def run_ffmpeg(
     duration_sec: float | None = None,
     progress_callback: Callable[[float], None] | None = None,
 ) -> None:
+    # Memory check before FFmpeg to prevent OOM kills
+    min_available_mb = int(os.environ.get("RENDER_MIN_AVAILABLE_MEMORY_MB", "500"))
+    try:
+        import psutil
+        available_mb = psutil.virtual_memory().available / (1024 * 1024)
+        if available_mb < min_available_mb:
+            raise RuntimeError(
+                f"Insufficient memory for render: {available_mb:.0f}MB available, "
+                f"need at least {min_available_mb}MB. "
+                "Close other applications or wait for other renders to finish."
+            )
+    except ImportError:
+        logger.debug("psutil not installed; skipping render memory pre-check")
+    except Exception as exc:
+        logger.warning("Render memory pre-check failed; continuing anyway: %s", exc)
+    
+    # Garbage collect before FFmpeg to free any lingering memory
+    import gc
+    gc.collect()
+    
     filter_script_paths: list[Path] = []
     ass_paths: list[Path] = []
     for idx, part in enumerate(command):
@@ -1336,7 +1425,7 @@ def run_ffmpeg(
         if part == "-filter_complex" and idx + 1 < len(command):
             fc = command[idx + 1]
             import re as _re
-            for match in _re.finditer(r"subtitles='([^']+\.ass)'", fc):
+            for match in _re.finditer(r"(?:subtitles|ass)='([^']+\.ass)'", fc):
                 ass_paths.append(Path(match.group(1).replace("\\:", ":").replace("\\\\", "\\")))
     try:
         ffmpeg_command = command[:-1] + ["-progress", "pipe:1", "-nostats", command[-1]]

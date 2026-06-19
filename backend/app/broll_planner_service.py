@@ -11,7 +11,7 @@ import httpx
 
 from .broll_ai_service import extract_entities
 
-_WORD_RE = re.compile(r"[A-Za-z0-9']+")
+_WORD_RE = re.compile(r"[\w']+")
 _SENTENCE_END_RE = re.compile(r"[.!?]$")
 _NUMBER_RE = re.compile(r"(?:\b\d+(?:\.\d+)?\b|[%$])")
 _STOP_WORDS = {

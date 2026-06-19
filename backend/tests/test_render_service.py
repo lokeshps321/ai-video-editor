@@ -35,7 +35,7 @@ def _timeline() -> TimelineState:
 
 def _extract_ass_path(command: list[str]) -> Path:
     joined = " ".join(command)
-    match = re.search(r"subtitles='([^']+\.ass)'", joined)
+    match = re.search(r"(?:subtitles|ass)='([^']+\.ass)'", joined)
     assert match is not None
     return Path(match.group(1))
 
@@ -135,6 +135,99 @@ def test_build_ass_subtitle_file_keeps_portrait_captions_in_lower_third() -> Non
     margin_v = int(fields[21])
     assert 80 <= font_size <= 110
     assert 160 <= margin_v <= 250
+
+
+def test_build_ass_subtitle_file_disables_synthetic_bold_for_indic_fallback_fonts() -> None:
+    ass_path = Path(
+        _build_ass_subtitle_file(
+            [
+                {
+                    "text": "ಬಿಸಿಲುದರೆ ಎಂದು",
+                    "start": 0.0,
+                    "end": 1.2,
+                    "font_name": "Arial-Bold",
+                    "font_size": 30,
+                    "highlight_color": "&H0000FF00",
+                    "word_timings": [
+                        {"text": "ಬಿಸಿಲುದರೆ", "start_tl": 0.0, "end_tl": 0.7},
+                        {"text": "ಎಂದು", "start_tl": 0.7, "end_tl": 1.2},
+                    ],
+                }
+            ],
+            out_w=1080,
+            out_h=1920,
+        )
+    )
+    content = ass_path.read_text(encoding="utf-8")
+    ass_path.unlink(missing_ok=True)
+    style_line = next(line for line in content.splitlines() if line.startswith("Style: Default,"))
+    fields = style_line.split(",")
+    assert fields[1] == "Lohit Kannada"
+    assert fields[8] == "0"
+    assert "{\\c" not in content
+
+
+def test_build_ass_subtitle_file_keeps_basic_white_primary_for_indic_styles() -> None:
+    ass_path = Path(
+        _build_ass_subtitle_file(
+            [
+                {
+                    "text": "ಬಿಸಿಲುದರೆ ಎಂದು",
+                    "start": 0.0,
+                    "end": 1.2,
+                    "style": "basic_white",
+                    "font_name": "Arial-Bold",
+                    "font_size": 30,
+                    "color": "&H00FFFFFF",
+                    "highlight_color": "&H0000FF00",
+                    "word_timings": [
+                        {"text": "ಬಿಸಿಲುದರೆ", "start_tl": 0.0, "end_tl": 0.7},
+                        {"text": "ಎಂದು", "start_tl": 0.7, "end_tl": 1.2},
+                    ],
+                }
+            ],
+            out_w=1080,
+            out_h=1920,
+        )
+    )
+    content = ass_path.read_text(encoding="utf-8")
+    ass_path.unlink(missing_ok=True)
+    style_line = next(line for line in content.splitlines() if line.startswith("Style: Default,"))
+    fields = style_line.split(",")
+    assert fields[3] == "&H00FFFFFF"
+    assert fields[6] == "&H9600FF00"
+    assert fields[17] == "4"
+
+
+def test_build_ass_subtitle_file_uses_highlight_color_as_primary_for_indic_color_led_styles() -> None:
+    ass_path = Path(
+        _build_ass_subtitle_file(
+            [
+                {
+                    "text": "ಬಿಸಿಲುದರೆ ಎಂದು",
+                    "start": 0.0,
+                    "end": 1.2,
+                    "style": "hormozi_green",
+                    "font_name": "Arial-Bold",
+                    "font_size": 30,
+                    "color": "&H00FFFFFF",
+                    "highlight_color": "&H0000FF00",
+                    "word_timings": [
+                        {"text": "ಬಿಸಿಲುದರೆ", "start_tl": 0.0, "end_tl": 0.7},
+                        {"text": "ಎಂದು", "start_tl": 0.7, "end_tl": 1.2},
+                    ],
+                }
+            ],
+            out_w=1080,
+            out_h=1920,
+        )
+    )
+    content = ass_path.read_text(encoding="utf-8")
+    ass_path.unlink(missing_ok=True)
+    style_line = next(line for line in content.splitlines() if line.startswith("Style: Default,"))
+    fields = style_line.split(",")
+    assert fields[3] == "&H0000FF00"
+    assert fields[6] == "&H9600FF00"
 
 
 def test_build_ffmpeg_command_uses_fast_preset_for_low_quality(monkeypatch) -> None:
@@ -246,7 +339,8 @@ def test_build_ffmpeg_command_karaoke_style_uses_compatible_drawtext_options() -
         export_settings=ExportSettings(format="mp4", resolution="1080p", fps=30, quality="high"),
     )
     joined = " ".join(command)
-    assert "subtitles='" in joined
+    assert "ass='" in joined
+    assert "shaping=complex" in joined
     assert "drawtext=" not in joined
     ass_path = _extract_ass_path(command)
     ass_content = ass_path.read_text(encoding="utf-8")
@@ -351,7 +445,7 @@ def test_build_ffmpeg_command_applies_text_after_broll_overlay() -> None:
     )
     joined = " ".join(command)
     overlay_idx = joined.find("overlay=(W-w)/2:(H-h)/2")
-    subtitles_idx = joined.find("subtitles='")
+    subtitles_idx = joined.find("ass='")
     assert overlay_idx != -1
     assert subtitles_idx != -1
     assert overlay_idx < subtitles_idx
@@ -382,7 +476,8 @@ def test_build_ffmpeg_command_uses_filter_complex_script_for_large_graph(monkeyp
     assert "-filter_complex_script" in command
     script_path = Path(command[command.index("-filter_complex_script") + 1])
     script_content = script_path.read_text(encoding="utf-8")
-    assert "subtitles='" in script_content
+    assert "ass='" in script_content
+    assert "shaping=complex" in script_content
     ass_path = _extract_ass_path(["ffmpeg", "-filter_complex", script_content])
     ass_content = ass_path.read_text(encoding="utf-8")
     script_path.unlink(missing_ok=True)

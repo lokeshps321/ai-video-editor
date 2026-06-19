@@ -51,6 +51,12 @@ export const TRANSCRIPT_LANGUAGE_OPTIONS: ReadonlyArray<{ value: string; label: 
   { value: "ur", label: "Urdu" },
 ];
 
+export const TRANSCRIPT_MODE_OPTIONS: ReadonlyArray<{ value: "auto" | "speech" | "song"; label: string }> = [
+  { value: "auto", label: "Mode: Auto" },
+  { value: "speech", label: "Speech" },
+  { value: "song", label: "Song" },
+];
+
 export type CaptionStylePreset = {
   id: string;
   name: string;
@@ -185,6 +191,44 @@ export const CAPTION_STYLE_PRESETS: ReadonlyArray<CaptionStylePreset> = [
       shadow: 0,
       alignment: 2,
       margin_v: 60,
+    },
+  },
+  {
+    id: "desi_gold",
+    name: "Desi Gold",
+    desc: "Warm gold accents — made for Indian creators",
+    color: "#FFD700",
+    preview_words: ["Namaste", "DESI", "vibes"],
+    preview_class: "desi",
+    config: {
+      font_name: "Noto-Sans-Devanagari-Bold",
+      font_size: 28,
+      primary_color: "&H00FFFFFF",
+      highlight_color: "&H0000D7FF",
+      outline_color: "&H00000000",
+      outline_width: 3,
+      shadow: 2,
+      alignment: 2,
+      margin_v: 120,
+    },
+  },
+  {
+    id: "indic_clean",
+    name: "Indic Clean",
+    desc: "Clean Indic-script captions with native font rendering",
+    color: "#80DEEA",
+    preview_words: ["clear", "script", "clean"],
+    preview_class: "indic",
+    config: {
+      font_name: "Noto-Sans-Kannada-Bold",
+      font_size: 26,
+      primary_color: "&H00FFFFFF",
+      highlight_color: "&H00EADE80",
+      outline_color: "&H00222222",
+      outline_width: 2,
+      shadow: 1,
+      alignment: 2,
+      margin_v: 80,
     },
   },
 ];

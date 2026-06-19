@@ -1,12 +1,24 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlmodel import Session, select
 
 from ..database import get_session
-from ..media_utils import infer_media_type, probe_duration_seconds, probe_stream_flags, extract_waveform_peaks
+from ..deps import get_current_user
+from ..jobs import (
+    create_job,
+    enqueue_vocal_isolation_job,
+    should_precompute_vocal_isolation,
+)
+from ..media_utils import (
+    extract_waveform_peaks,
+    infer_media_type,
+    probe_duration_seconds,
+    probe_stream_flags,
+)
 from ..models import MediaAsset, Project
 from ..schemas import MediaUploadResponse
 from ..storage import storage
@@ -19,6 +31,7 @@ async def upload_media(
     project_id: str = Form(...),
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
+    current_user: dict[str, Any] = Depends(get_current_user),
 ) -> MediaUploadResponse:
     project = session.exec(select(Project).where(Project.id == project_id)).first()
     if not project:
@@ -29,8 +42,16 @@ async def upload_media(
 
     absolute_path, relative_path = await storage.save_upload(file, project_id)
     media_type = infer_media_type(file.content_type or "", file.filename)
-    duration_sec = probe_duration_seconds(absolute_path) if media_type in {"video", "audio"} else None
-    stream_flags = probe_stream_flags(absolute_path) if media_type in {"video", "audio"} else {"has_video": False, "has_audio": False}
+    duration_sec = (
+        probe_duration_seconds(absolute_path)
+        if media_type in {"video", "audio"}
+        else None
+    )
+    stream_flags = (
+        probe_stream_flags(absolute_path)
+        if media_type in {"video", "audio"}
+        else {"has_video": False, "has_audio": False}
+    )
     metadata = {"content_type": file.content_type, **stream_flags}
 
     asset = MediaAsset(
@@ -46,6 +67,11 @@ async def upload_media(
     session.commit()
     session.refresh(asset)
 
+    # Trigger background vocal isolation if applicable
+    if should_precompute_vocal_isolation(asset):
+        job = create_job(session, project_id, "vocal_isolation")
+        enqueue_vocal_isolation_job(job.id, asset.id)
+
     return MediaUploadResponse(
         id=asset.id,
         project_id=asset.project_id,
@@ -57,9 +83,15 @@ async def upload_media(
 
 
 @router.get("", response_model=list[MediaUploadResponse])
-def list_media(project_id: str, session: Session = Depends(get_session)) -> list[MediaUploadResponse]:
+def list_media(
+    project_id: str,
+    session: Session = Depends(get_session),
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> list[MediaUploadResponse]:
     items = session.exec(
-        select(MediaAsset).where(MediaAsset.project_id == project_id).order_by(MediaAsset.created_at.desc())
+        select(MediaAsset)
+        .where(MediaAsset.project_id == project_id)
+        .order_by(MediaAsset.created_at.desc())
     ).all()
     return [
         MediaUploadResponse(
@@ -79,6 +111,7 @@ def get_waveform(
     asset_id: str,
     num_peaks: int = 800,
     session: Session = Depends(get_session),
+    current_user: dict[str, Any] = Depends(get_current_user),
 ) -> dict:
     """Return audio amplitude peaks for waveform visualisation."""
     asset = session.exec(select(MediaAsset).where(MediaAsset.id == asset_id)).first()
@@ -97,4 +130,3 @@ def get_waveform(
         "duration_sec": asset.duration_sec,
         "peaks": peaks,
     }
-

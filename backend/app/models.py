@@ -18,6 +18,7 @@ class Project(SQLModel, table=True):
     width: int = 1080
     height: int = 1920
     created_at: datetime = Field(default_factory=_utcnow, nullable=False)
+    owner_id: Optional[str] = Field(default=None, index=True)
 
 
 class Timeline(SQLModel, table=True):

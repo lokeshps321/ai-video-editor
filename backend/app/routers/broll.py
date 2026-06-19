@@ -1,16 +1,19 @@
 from __future__ import annotations
 
-from bisect import bisect_left
 import json
+import logging
 import mimetypes
+import os
 import re
+import subprocess
 import threading
+from bisect import bisect_left
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-import subprocess
+from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -19,7 +22,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, delete, select
 
 from ..broll_ai_service import expand_broll_queries, rerank_broll_candidates
-from ..broll_external_service import ExternalBrollCandidate, search_external_broll_candidates
+from ..broll_external_service import (
+    ExternalBrollCandidate,
+    search_external_broll_candidates,
+)
 from ..broll_generative_service import generate_generative_broll_candidates
 from ..broll_llm_service import (
     build_broll_search_strategy,
@@ -28,45 +34,128 @@ from ..broll_llm_service import (
 )
 from ..broll_planner_service import plan_broll
 from ..config import get_settings
+
+logger = logging.getLogger(__name__)
 from ..database import engine, get_session
+from ..deps import get_current_user
 from ..jobs import create_job, find_recent_active_job, set_job_status
 from ..media_utils import probe_duration_seconds, probe_stream_flags
-from ..models import BrollCandidate, BrollChoice, BrollPlan, BrollPlanBeat, BrollSlot, Job, MediaAsset, Project, Transcript
-from ..storage import storage
+from ..models import (
+    BrollCandidate,
+    BrollChoice,
+    BrollPlan,
+    BrollPlanBeat,
+    BrollSlot,
+    Job,
+    MediaAsset,
+    Project,
+    Transcript,
+)
 from ..schemas import (
     BrollAutoApplyRequest,
     BrollAutoApplyResponse,
+    BrollAutoApplySkipSummary,
     BrollCandidateResponse,
-    BrollCoverageSectionResponse,
     BrollChooseRequest,
+    BrollConfigResponse,
+    BrollCoverageSectionResponse,
     BrollPlanBeatResponse,
     BrollPlanRequest,
     BrollPlanResponse,
     BrollRejectRequest,
     BrollRerollRequest,
-    BrollSyncRequest,
-    BrollSyncResponse,
     BrollSlotResponse,
     BrollSuggestRequest,
     BrollSuggestResponse,
+    BrollSyncRequest,
+    BrollSyncResponse,
     BrollUndoResponse,
     Clip,
     JobResponse,
     OperationPayload,
 )
-from ..timeline_service import apply_operation, get_timeline_row, load_timeline_state, save_timeline_state
+from ..storage import storage
+from ..timeline_service import (
+    apply_operation,
+    get_timeline_row,
+    load_timeline_state,
+    save_timeline_state,
+)
 
 router = APIRouter(prefix="/api/v1/broll", tags=["broll"])
 settings = get_settings()
 
 _SENTENCE_END_RE = re.compile(r"[.!?]$")
-_WORD_RE = re.compile(r"[A-Za-z0-9']+")
+_WORD_RE = re.compile(r"[\w']+")
 _STOP_WORDS = {
-    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "has", "have", "i", "if",
-    "in", "into", "is", "it", "its", "of", "on", "or", "our", "that", "the", "their", "there", "this",
-    "to", "was", "we", "were", "with", "you", "your", "about", "after", "before", "during", "then", "than",
-    "here", "now", "yeah", "okay", "ok", "just", "really", "very", "got", "going", "go", "back", "last",
-    "round", "team", "new", "what", "who", "when", "where", "why", "how", "im", "i'm", "ive", "i've",
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "but",
+    "by",
+    "for",
+    "from",
+    "has",
+    "have",
+    "i",
+    "if",
+    "in",
+    "into",
+    "is",
+    "it",
+    "its",
+    "of",
+    "on",
+    "or",
+    "our",
+    "that",
+    "the",
+    "their",
+    "there",
+    "this",
+    "to",
+    "was",
+    "we",
+    "were",
+    "with",
+    "you",
+    "your",
+    "about",
+    "after",
+    "before",
+    "during",
+    "then",
+    "than",
+    "here",
+    "now",
+    "yeah",
+    "okay",
+    "ok",
+    "just",
+    "really",
+    "very",
+    "got",
+    "going",
+    "go",
+    "back",
+    "last",
+    "round",
+    "team",
+    "new",
+    "what",
+    "who",
+    "when",
+    "where",
+    "why",
+    "how",
+    "im",
+    "i'm",
+    "ive",
+    "i've",
 }
 _THREE_WAYS_SHOTS: tuple[tuple[str, str], ...] = (
     ("wide", "wide shot"),
@@ -75,24 +164,122 @@ _THREE_WAYS_SHOTS: tuple[tuple[str, str], ...] = (
 )
 _BROLL_TX_SLOT_ID = "__broll_transaction__"
 _POSITIVE_ENERGY_WORDS = {
-    "amazing", "awesome", "boom", "build", "crazy", "fast", "fire", "go", "great",
-    "hype", "insane", "massive", "power", "rapid", "rush", "strong", "top", "viral", "win",
+    "amazing",
+    "awesome",
+    "boom",
+    "build",
+    "crazy",
+    "fast",
+    "fire",
+    "go",
+    "great",
+    "hype",
+    "insane",
+    "massive",
+    "power",
+    "rapid",
+    "rush",
+    "strong",
+    "top",
+    "viral",
+    "win",
 }
 _NEGATIVE_ENERGY_WORDS = {
-    "alone", "broken", "calm", "dark", "death", "empty", "fear", "lost", "pain",
-    "sad", "silent", "slow", "soft", "still", "tired", "weak", "worry",
+    "alone",
+    "broken",
+    "calm",
+    "dark",
+    "death",
+    "empty",
+    "fear",
+    "lost",
+    "pain",
+    "sad",
+    "silent",
+    "slow",
+    "soft",
+    "still",
+    "tired",
+    "weak",
+    "worry",
 }
 _LOCAL_VISUAL_INTENT_CUES: dict[str, set[str]] = {
-    "literal_demo": {"app", "camera", "demo", "device", "phone", "product", "screen", "tutorial"},
-    "process_step": {"build", "dashboard", "editing", "hands", "keyboard", "packing", "process", "screen", "testing", "workflow"},
-    "environment_context": {"city", "crowd", "factory", "meeting", "office", "shop", "street", "studio", "warehouse", "workspace"},
-    "reaction_payoff": {"celebration", "crowd", "growth", "launch", "result", "smile", "success", "team", "win"},
+    "literal_demo": {
+        "app",
+        "camera",
+        "demo",
+        "device",
+        "phone",
+        "product",
+        "screen",
+        "tutorial",
+    },
+    "process_step": {
+        "build",
+        "dashboard",
+        "editing",
+        "hands",
+        "keyboard",
+        "packing",
+        "process",
+        "screen",
+        "testing",
+        "workflow",
+    },
+    "environment_context": {
+        "city",
+        "crowd",
+        "factory",
+        "meeting",
+        "office",
+        "shop",
+        "street",
+        "studio",
+        "warehouse",
+        "workspace",
+    },
+    "reaction_payoff": {
+        "celebration",
+        "crowd",
+        "growth",
+        "launch",
+        "result",
+        "smile",
+        "success",
+        "team",
+        "win",
+    },
     "abstract_support": {"background", "bokeh", "light", "motion", "shadow", "texture"},
 }
 _LOCAL_SHOT_STYLE_CUES: dict[str, set[str]] = {
-    "wide": {"city", "crowd", "factory", "group", "landscape", "office", "room", "shop", "stage", "street", "team", "warehouse", "wide"},
+    "wide": {
+        "city",
+        "crowd",
+        "factory",
+        "group",
+        "landscape",
+        "office",
+        "room",
+        "shop",
+        "stage",
+        "street",
+        "team",
+        "warehouse",
+        "wide",
+    },
     "medium": {"desk", "host", "meeting", "person", "speaker", "studio", "team"},
-    "detail": {"close", "dashboard", "detail", "device", "editing", "hands", "keyboard", "macro", "phone", "screen"},
+    "detail": {
+        "close",
+        "dashboard",
+        "detail",
+        "device",
+        "editing",
+        "hands",
+        "keyboard",
+        "macro",
+        "phone",
+        "screen",
+    },
 }
 _VISUAL_INTENT_QUERY_MODE = {
     "literal_demo": "literal",
@@ -154,7 +341,9 @@ def _load_transcript_words(row: Transcript) -> list[dict[str, object]]:
     try:
         payload = json.loads(row.words_json or "[]")
     except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=500, detail="Stored transcript words are invalid") from exc
+        raise HTTPException(
+            status_code=500, detail="Stored transcript words are invalid"
+        ) from exc
 
     words: list[dict[str, object]] = []
     for item in payload:
@@ -228,14 +417,22 @@ def _to_plan_beat_response(row: BrollPlanBeat) -> BrollPlanBeatResponse:
     )
 
 
-def _load_plan_response(session: Session, plan_id: str, *, project_id: str) -> BrollPlanResponse:
-    plan = session.exec(select(BrollPlan).where(BrollPlan.id == plan_id, BrollPlan.project_id == project_id)).first()
+def _load_plan_response(
+    session: Session, plan_id: str, *, project_id: str
+) -> BrollPlanResponse:
+    plan = session.exec(
+        select(BrollPlan).where(
+            BrollPlan.id == plan_id, BrollPlan.project_id == project_id
+        )
+    ).first()
     if not plan:
         raise HTTPException(status_code=404, detail="B-roll plan not found")
     beats = list(
         session.exec(
             select(BrollPlanBeat)
-            .where(BrollPlanBeat.plan_id == plan.id, BrollPlanBeat.project_id == project_id)
+            .where(
+                BrollPlanBeat.plan_id == plan.id, BrollPlanBeat.project_id == project_id
+            )
             .order_by(BrollPlanBeat.beat_index.asc(), BrollPlanBeat.created_at.asc())
         ).all()
     )
@@ -243,8 +440,12 @@ def _load_plan_response(session: Session, plan_id: str, *, project_id: str) -> B
         coverage = json.loads(plan.coverage_json or "{}")
     except json.JSONDecodeError:
         coverage = {}
-    uncovered_ranges = coverage.get("uncovered_ranges", []) if isinstance(coverage, dict) else []
-    coverage_sections = coverage.get("coverage_sections", []) if isinstance(coverage, dict) else []
+    uncovered_ranges = (
+        coverage.get("uncovered_ranges", []) if isinstance(coverage, dict) else []
+    )
+    coverage_sections = (
+        coverage.get("coverage_sections", []) if isinstance(coverage, dict) else []
+    )
     return BrollPlanResponse(
         id=plan.id,
         project_id=plan.project_id,
@@ -277,7 +478,9 @@ def _build_broll_plan(
     assets = list(
         session.exec(
             select(MediaAsset)
-            .where(MediaAsset.project_id == project.id, MediaAsset.media_type == "video")
+            .where(
+                MediaAsset.project_id == project.id, MediaAsset.media_type == "video"
+            )
             .order_by(MediaAsset.created_at.desc())
         ).all()
     )
@@ -305,14 +508,18 @@ def _build_broll_plan(
     )
     beats = planner_result.get("beats")
     if not isinstance(beats, list) or not beats:
-        raise HTTPException(status_code=400, detail="Planner produced no usable B-roll beats")
+        raise HTTPException(
+            status_code=400, detail="Planner produced no usable B-roll beats"
+        )
 
     plan = BrollPlan(
         project_id=project.id,
         transcript_id=transcript.id,
         plan_version=str(planner_result.get("plan_version") or "v1"),
         fallback_used=bool(planner_result.get("fallback_used", True)),
-        planner_model=str(planner_result.get("planner_model")) if planner_result.get("planner_model") else None,
+        planner_model=str(planner_result.get("planner_model"))
+        if planner_result.get("planner_model")
+        else None,
         request_json=_json_dumps(payload.model_dump(mode="json")),
         coverage_json=_json_dumps(planner_result.get("coverage") or {}),
     )
@@ -323,7 +530,9 @@ def _build_broll_plan(
             continue
         start_sec = round(float(beat.get("start_sec", 0.0)), 3)
         end_sec = round(float(beat.get("end_sec", start_sec + 0.5)), 3)
-        timeline_window = _resolve_slot_timeline_window(start_sec, end_sec, video_clips=video_clips)
+        timeline_window = _resolve_slot_timeline_window(
+            start_sec, end_sec, video_clips=video_clips
+        )
         timeline_start_sec = timeline_window[0] if timeline_window else None
         timeline_end_sec = timeline_window[1] if timeline_window else None
         session.add(
@@ -363,9 +572,14 @@ def _resolve_broll_transcript(
     transcript_query = select(Transcript).where(Transcript.project_id == project_id)
     if transcript_id:
         transcript_query = transcript_query.where(Transcript.id == transcript_id)
-    transcript = session.exec(transcript_query.order_by(Transcript.created_at.desc())).first()
+    transcript = session.exec(
+        transcript_query.order_by(Transcript.created_at.desc())
+    ).first()
     if not transcript:
-        raise HTTPException(status_code=404, detail="Transcript not found. Generate transcript before requesting B-roll.")
+        raise HTTPException(
+            status_code=404,
+            detail="Transcript not found. Generate transcript before requesting B-roll.",
+        )
     return transcript
 
 
@@ -401,7 +615,11 @@ def _chunk_words(
         if len(current) < max(1, min_chunk_words):
             current = []
             return
-        if not force_short and min_chunk_duration_sec > 0 and duration < min_chunk_duration_sec:
+        if (
+            not force_short
+            and min_chunk_duration_sec > 0
+            and duration < min_chunk_duration_sec
+        ):
             current = []
             return
         chunks.append(
@@ -426,8 +644,12 @@ def _chunk_words(
         sentence_end = bool(_SENTENCE_END_RE.search(token))
         cap_reached = len(current) >= 16
         duration = float(current[-1]["end_sec"]) - float(current[0]["start_sec"])
-        duration_reached = max_chunk_duration_sec > 0 and duration >= max_chunk_duration_sec
-        min_duration_reached = min_chunk_duration_sec <= 0 or duration >= min_chunk_duration_sec
+        duration_reached = (
+            max_chunk_duration_sec > 0 and duration >= max_chunk_duration_sec
+        )
+        min_duration_reached = (
+            min_chunk_duration_sec <= 0 or duration >= min_chunk_duration_sec
+        )
         if duration_reached or cap_reached or (sentence_end and min_duration_reached):
             flush(force_short=duration_reached or cap_reached)
             if len(chunks) >= max_slots:
@@ -440,9 +662,13 @@ def _chunk_words(
 
 def _extract_concepts(text: str) -> tuple[str, list[str]]:
     tokens = [token.lower() for token in _WORD_RE.findall(text)]
-    filtered = [token for token in tokens if len(token) >= 3 and token not in _STOP_WORDS]
+    filtered = [
+        token for token in tokens if len(token) >= 3 and token not in _STOP_WORDS
+    ]
     if not filtered:
-        fallback = [token for token in tokens if len(token) >= 4 and token not in _STOP_WORDS]
+        fallback = [
+            token for token in tokens if len(token) >= 4 and token not in _STOP_WORDS
+        ]
         filtered = fallback[:3]
     if not filtered:
         return ("general scene", ["general"])
@@ -469,7 +695,9 @@ def _focus_terms(text: str) -> set[str]:
     }
 
 
-def _local_duration_fit(candidate_duration: float | None, slot_duration: float) -> float:
+def _local_duration_fit(
+    candidate_duration: float | None, slot_duration: float
+) -> float:
     if not candidate_duration or candidate_duration <= 0:
         return 0.45
     baseline = max(slot_duration, 0.6)
@@ -505,14 +733,18 @@ def _empty_sequence_state() -> dict[str, list[object]]:
     }
 
 
-def _push_recent_item(items: list[object], value: object, *, limit: int = _SEQUENCE_MEMORY) -> None:
+def _push_recent_item(
+    items: list[object], value: object, *, limit: int = _SEQUENCE_MEMORY
+) -> None:
     if value in (None, "", []):
         return
     items.insert(0, value)
     del items[limit:]
 
 
-def _candidate_label_key(source_label: str | None, asset_id: str | None, source_url: str | None) -> str:
+def _candidate_label_key(
+    source_label: str | None, asset_id: str | None, source_url: str | None
+) -> str:
     base = source_label or asset_id or source_url or ""
     return " ".join(base.strip().lower().split())
 
@@ -536,21 +768,31 @@ def _candidate_signature_terms(
 
 
 def _sequence_diversify_candidates(
-    candidates: list[tuple[str, str | None, str | None, str | None, float, dict[str, object]]],
+    candidates: list[
+        tuple[str, str | None, str | None, str | None, float, dict[str, object]]
+    ],
     *,
     sequence_state: dict[str, list[object]],
 ) -> list[tuple[str, str | None, str | None, str | None, float, dict[str, object]]]:
     if not candidates:
         return []
 
-    diversified: list[tuple[str, str | None, str | None, str | None, float, dict[str, object]]] = []
+    diversified: list[
+        tuple[str, str | None, str | None, str | None, float, dict[str, object]]
+    ] = []
     for source_type, asset_id, source_url, source_label, score, reason in candidates:
         reason_payload = dict(reason) if isinstance(reason, dict) else {}
-        breakdown = dict(reason_payload.get("score_breakdown") or {}) if isinstance(reason_payload.get("score_breakdown"), dict) else {}
+        breakdown = (
+            dict(reason_payload.get("score_breakdown") or {})
+            if isinstance(reason_payload.get("score_breakdown"), dict)
+            else {}
+        )
         diversity_multiplier = 1.0
         query_mode = str(reason_payload.get("query_mode") or "").strip().lower()
         label_key = _candidate_label_key(source_label, asset_id, source_url)
-        signature = _candidate_signature_terms(source_label=source_label, reason=reason_payload)
+        signature = _candidate_signature_terms(
+            source_label=source_label, reason=reason_payload
+        )
 
         if asset_id and asset_id in sequence_state["asset_ids"]:
             diversity_multiplier *= 0.68
@@ -569,7 +811,9 @@ def _sequence_diversify_candidates(
             for prior in sequence_state["signatures"]:
                 if not isinstance(prior, set) or not prior:
                     continue
-                overlap = len(signature.intersection(prior)) / max(min(len(signature), 4), 1)
+                overlap = len(signature.intersection(prior)) / max(
+                    min(len(signature), 4), 1
+                )
                 recent_overlap = max(recent_overlap, overlap)
             if recent_overlap >= 0.75:
                 diversity_multiplier *= 0.86
@@ -580,7 +824,15 @@ def _sequence_diversify_candidates(
         reason_payload["score_breakdown"] = breakdown
         if "confidence" in reason_payload:
             try:
-                reason_payload["confidence"] = round(_clamp(float(reason_payload["confidence"]) * max(diversity_multiplier, 0.88), 0.0, 1.0), 3)
+                reason_payload["confidence"] = round(
+                    _clamp(
+                        float(reason_payload["confidence"])
+                        * max(diversity_multiplier, 0.88),
+                        0.0,
+                        1.0,
+                    ),
+                    3,
+                )
             except (TypeError, ValueError):
                 pass
         diversified.append(
@@ -600,7 +852,10 @@ def _sequence_diversify_candidates(
 
 def _remember_sequence_candidate(
     sequence_state: dict[str, list[object]],
-    candidate_row: tuple[str, str | None, str | None, str | None, float, dict[str, object]] | None,
+    candidate_row: tuple[
+        str, str | None, str | None, str | None, float, dict[str, object]
+    ]
+    | None,
 ) -> None:
     if candidate_row is None:
         return
@@ -632,14 +887,20 @@ def _is_vertical_project(project: Project) -> bool:
 
 def _resolve_slot_pacing(project: Project) -> tuple[float, float]:
     if _is_vertical_project(project):
-        minimum = max(0.25, min(settings.broll_shortform_min_sec, settings.broll_shortform_max_sec))
+        minimum = max(
+            0.25,
+            min(settings.broll_shortform_min_sec, settings.broll_shortform_max_sec),
+        )
         maximum = max(minimum + 0.05, settings.broll_shortform_max_sec)
         return (minimum, maximum)
     return (0.35, 4.5)
 
 
 def _clip_timeline_duration_sec(clip: Clip) -> float:
-    return max((float(clip.end_sec) - float(clip.start_sec)) / max(float(clip.speed), 0.01), 0.0)
+    return max(
+        (float(clip.end_sec) - float(clip.start_sec)) / max(float(clip.speed), 0.01),
+        0.0,
+    )
 
 
 def _video_track_clips_sorted(timeline_state: object) -> list[Clip]:
@@ -647,7 +908,11 @@ def _video_track_clips_sorted(timeline_state: object) -> list[Clip]:
     for track in tracks:
         if getattr(track, "kind", "") != "video":
             continue
-        clips = [clip for clip in getattr(track, "clips", []) if float(clip.end_sec) > float(clip.start_sec)]
+        clips = [
+            clip
+            for clip in getattr(track, "clips", [])
+            if float(clip.end_sec) > float(clip.start_sec)
+        ]
         clips.sort(key=lambda item: float(item.timeline_start_sec))
         return clips
     return []
@@ -675,8 +940,12 @@ def _resolve_slot_timeline_window(
             continue
 
         speed = max(float(clip.speed), 0.01)
-        timeline_start = float(clip.timeline_start_sec) + ((overlap_start - source_start) / speed)
-        timeline_end = float(clip.timeline_start_sec) + ((overlap_end - source_start) / speed)
+        timeline_start = float(clip.timeline_start_sec) + (
+            (overlap_start - source_start) / speed
+        )
+        timeline_end = float(clip.timeline_start_sec) + (
+            (overlap_end - source_start) / speed
+        )
         overlap = overlap_end - overlap_start
 
         if overlap > best_overlap + 1e-6:
@@ -787,8 +1056,14 @@ def _rank_candidates(
         metadata_text = _asset_metadata_text(asset)
         asset_terms = _focus_terms(metadata_text)
         filename_terms = _filename_tokens(asset.filename)
-        concept_hits = [token for token in concept_tokens if token in asset_terms or token in filename_terms]
-        semantic_match = (len(concept_hits) / max(len(concept_tokens), 1)) if concept_tokens else 0.0
+        concept_hits = [
+            token
+            for token in concept_tokens
+            if token in asset_terms or token in filename_terms
+        ]
+        semantic_match = (
+            (len(concept_hits) / max(len(concept_tokens), 1)) if concept_tokens else 0.0
+        )
         semantic_score = min(semantic_match * 0.42, 0.42)
 
         diversity_score = 0.16 if asset.id != transcript_asset_id else 0.02
@@ -798,7 +1073,9 @@ def _rank_candidates(
         metadata_density = min(len(asset_terms), 8) / 8 if asset_terms else 0.0
         recency_ratio = 1.0 - (idx / total)
         recency_score = recency_ratio * 0.1
-        primary_penalty = 0.84 if asset.id == transcript_asset_id and semantic_match < 0.5 else 1.0
+        primary_penalty = (
+            0.84 if asset.id == transcript_asset_id and semantic_match < 0.5 else 1.0
+        )
 
         score = max(
             0.0,
@@ -814,7 +1091,8 @@ def _rank_candidates(
                         + (shot_score * 0.1)
                         + (metadata_density * 0.08)
                         + recency_score
-                    ) * primary_penalty,
+                    )
+                    * primary_penalty,
                     3,
                 ),
             ),
@@ -851,7 +1129,9 @@ def _rank_candidates(
                     "keyword_hits": concept_hits,
                     "shot_type": shot_style or "",
                     "visual_intent": visual_intent or "",
-                    "query_mode": _VISUAL_INTENT_QUERY_MODE.get((visual_intent or "").strip().lower(), "literal"),
+                    "query_mode": _VISUAL_INTENT_QUERY_MODE.get(
+                        (visual_intent or "").strip().lower(), "literal"
+                    ),
                     "crop_score": 0.9,
                 },
             )
@@ -870,7 +1150,9 @@ def _mix_candidates(
     if limit <= 0:
         return []
 
-    merged: list[tuple[str, str | None, str | None, str | None, float, dict[str, object]]] = []
+    merged: list[
+        tuple[str, str | None, str | None, str | None, float, dict[str, object]]
+    ] = []
 
     local_target = 0
     external_target = 0
@@ -908,9 +1190,13 @@ def _mix_candidates(
     if len(merged) < limit:
         remaining_local = local_candidates[local_target:]
         remaining_external = external_candidates[external_target:]
-        leftovers: list[tuple[str, str | None, str | None, str | None, float, dict[str, object]]] = []
+        leftovers: list[
+            tuple[str, str | None, str | None, str | None, float, dict[str, object]]
+        ] = []
         for asset, score, reason in remaining_local:
-            leftovers.append(("project_asset", asset.id, None, asset.filename, score, reason))
+            leftovers.append(
+                ("project_asset", asset.id, None, asset.filename, score, reason)
+            )
         for candidate in remaining_external:
             leftovers.append(
                 (
@@ -926,7 +1212,9 @@ def _mix_candidates(
         merged.extend(leftovers[: max(0, limit - len(merged))])
 
     merged.sort(key=lambda item: item[4], reverse=True)
-    deduped: list[tuple[str, str | None, str | None, str | None, float, dict[str, object]]] = []
+    deduped: list[
+        tuple[str, str | None, str | None, str | None, float, dict[str, object]]
+    ] = []
     seen_asset_ids: set[str] = set()
     seen_urls: set[str] = set()
     for entry in merged:
@@ -1059,7 +1347,9 @@ def _extract_audio_transients(
     return times
 
 
-def _snap_time_to_transient(value: float, transients: tuple[float, ...], window_sec: float) -> float:
+def _snap_time_to_transient(
+    value: float, transients: tuple[float, ...], window_sec: float
+) -> float:
     if not transients:
         return value
     idx = bisect_left(transients, value)
@@ -1120,7 +1410,9 @@ def _snap_chunks_to_audio_grid(
     return snapped
 
 
-def _detect_focus_track(path: str, *, max_samples: int = 60) -> list[dict[str, float]] | None:
+def _detect_focus_track(
+    path: str, *, max_samples: int = 60
+) -> list[dict[str, float]] | None:
     try:
         import cv2  # type: ignore
     except Exception:
@@ -1139,7 +1431,9 @@ def _detect_focus_track(path: str, *, max_samples: int = 60) -> list[dict[str, f
         if fps <= 0.0:
             fps = 30.0
 
-        face_detector = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+        face_detector = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        )
         samples: list[tuple[float, float]] = []
         previous_gray = None
         frame_idx = 0
@@ -1154,7 +1448,9 @@ def _detect_focus_track(path: str, *, max_samples: int = 60) -> list[dict[str, f
                 continue
             frame_idx += 1
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            faces = face_detector.detectMultiScale(gray, scaleFactor=1.15, minNeighbors=5, minSize=(36, 36))
+            faces = face_detector.detectMultiScale(
+                gray, scaleFactor=1.15, minNeighbors=5, minSize=(36, 36)
+            )
             if len(faces) > 0:
                 largest = max(faces, key=lambda item: int(item[2]) * int(item[3]))
                 focus = float(largest[0] + (largest[2] / 2)) / float(width)
@@ -1191,20 +1487,32 @@ def _detect_focus_track(path: str, *, max_samples: int = 60) -> list[dict[str, f
                 keyframes.append({"time_sec": 0.0, "x_ratio": round(focus, 4)})
                 continue
             prev = keyframes[-1]
-            if abs(float(prev["x_ratio"]) - float(focus)) < 0.008 and (time_sec - float(prev["time_sec"])) < 0.20:
+            if (
+                abs(float(prev["x_ratio"]) - float(focus)) < 0.008
+                and (time_sec - float(prev["time_sec"])) < 0.20
+            ):
                 continue
-            keyframes.append({"time_sec": round(time_sec, 3), "x_ratio": round(focus, 4)})
+            keyframes.append(
+                {"time_sec": round(time_sec, 3), "x_ratio": round(focus, 4)}
+            )
 
         if not keyframes:
             return None
         duration = max(float(samples[-1][0]), 0.0)
         if duration > 0.05 and keyframes[-1]["time_sec"] < duration:
-            keyframes.append({"time_sec": round(duration, 3), "x_ratio": float(keyframes[-1]["x_ratio"])})
+            keyframes.append(
+                {
+                    "time_sec": round(duration, 3),
+                    "x_ratio": float(keyframes[-1]["x_ratio"]),
+                }
+            )
 
         if len(keyframes) > 24:
             stride = max(1, len(keyframes) // 24)
             reduced = [keyframes[0]]
-            reduced.extend(keyframes[idx] for idx in range(stride, len(keyframes), stride))
+            reduced.extend(
+                keyframes[idx] for idx in range(stride, len(keyframes), stride)
+            )
             if reduced[-1]["time_sec"] != keyframes[-1]["time_sec"]:
                 reduced.append(keyframes[-1])
             keyframes = reduced[:24]
@@ -1223,7 +1531,9 @@ def _detect_focus_x_ratio(path: str) -> float | None:
     return values[len(values) // 2]
 
 
-def _analyze_center_visual_risk(path: str, *, max_samples: int = 40) -> tuple[float, float, str]:
+def _analyze_center_visual_risk(
+    path: str, *, max_samples: int = 40
+) -> tuple[float, float, str]:
     try:
         import cv2  # type: ignore
         import numpy as np  # type: ignore
@@ -1289,7 +1599,9 @@ def _parse_asset_metadata(asset: MediaAsset | None) -> dict[str, object]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _ensure_asset_focus_metadata(session: Session, asset: MediaAsset) -> dict[str, object]:
+def _ensure_asset_focus_metadata(
+    session: Session, asset: MediaAsset
+) -> dict[str, object]:
     metadata = _parse_asset_metadata(asset)
     path = Path(_resolve_asset_video_path(asset))
     if not path.exists():
@@ -1298,12 +1610,19 @@ def _ensure_asset_focus_metadata(session: Session, asset: MediaAsset) -> dict[st
     width = int(metadata.get("width") or 0)
     height = int(metadata.get("height") or 0)
     if width <= 0 or height <= 0:
-        width, height = _probe_video_dimensions(str(path.resolve()), path.stat().st_mtime_ns)
+        width, height = _probe_video_dimensions(
+            str(path.resolve()), path.stat().st_mtime_ns
+        )
         if width > 0 and height > 0:
             metadata["width"] = width
             metadata["height"] = height
 
-    if settings.broll_auto_reframe_enabled and width > 0 and height > 0 and width > height:
+    if (
+        settings.broll_auto_reframe_enabled
+        and width > 0
+        and height > 0
+        and width > height
+    ):
         if "focus_track" not in metadata:
             focus_track = _detect_focus_track(str(path.resolve()))
             if focus_track:
@@ -1313,7 +1632,10 @@ def _ensure_asset_focus_metadata(session: Session, asset: MediaAsset) -> dict[st
             if focus_x is not None:
                 metadata["focus_x"] = round(float(focus_x), 4)
 
-    if any(key not in metadata for key in ("center_brightness", "center_texture", "text_safety_risk")):
+    if any(
+        key not in metadata
+        for key in ("center_brightness", "center_texture", "text_safety_risk")
+    ):
         brightness, texture, risk = _analyze_center_visual_risk(str(path.resolve()))
         metadata["center_brightness"] = brightness
         metadata["center_texture"] = texture
@@ -1324,7 +1646,9 @@ def _ensure_asset_focus_metadata(session: Session, asset: MediaAsset) -> dict[st
     return metadata
 
 
-def _build_vertical_crop(project: Project, width: int, height: int, focus_x: float | None) -> dict[str, int] | None:
+def _build_vertical_crop(
+    project: Project, width: int, height: int, focus_x: float | None
+) -> dict[str, int] | None:
     if width <= 0 or height <= 0:
         return None
     if not _is_vertical_project(project):
@@ -1412,10 +1736,17 @@ def _build_vertical_crop_keyframes(
 
     deduped: list[dict[str, float | int]] = []
     for item in keyframes:
-        if deduped and abs(float(item["time_sec"]) - float(deduped[-1]["time_sec"])) < 0.001:
+        if (
+            deduped
+            and abs(float(item["time_sec"]) - float(deduped[-1]["time_sec"])) < 0.001
+        ):
             deduped[-1] = item
             continue
-        if deduped and abs(float(item["x"]) - float(deduped[-1]["x"])) < 1 and (float(item["time_sec"]) - float(deduped[-1]["time_sec"])) < 0.12:
+        if (
+            deduped
+            and abs(float(item["x"]) - float(deduped[-1]["x"])) < 1
+            and (float(item["time_sec"]) - float(deduped[-1]["time_sec"])) < 0.12
+        ):
             continue
         deduped.append(item)
     if len(deduped) > 24:
@@ -1428,7 +1759,9 @@ def _build_vertical_crop_keyframes(
     return deduped
 
 
-def _text_safety_preset_from_metadata(metadata: dict[str, object]) -> tuple[str | None, float]:
+def _text_safety_preset_from_metadata(
+    metadata: dict[str, object],
+) -> tuple[str | None, float]:
     risk = str(metadata.get("text_safety_risk") or "").strip().lower()
     if risk == "high":
         return ("text_safe_soft", 0.76)
@@ -1446,9 +1779,13 @@ def _snapshot_overlay_clips(timeline_state: object) -> list[dict[str, object]]:
     return []
 
 
-def _restore_overlay_clips_from_snapshot(timeline_state: object, snapshot: list[dict[str, object]]) -> int:
+def _restore_overlay_clips_from_snapshot(
+    timeline_state: object, snapshot: list[dict[str, object]]
+) -> int:
     tracks = getattr(timeline_state, "tracks", [])
-    overlay_track = next((track for track in tracks if getattr(track, "kind", "") == "overlay"), None)
+    overlay_track = next(
+        (track for track in tracks if getattr(track, "kind", "") == "overlay"), None
+    )
     if overlay_track is None:
         return 0
     restored: list[Clip] = []
@@ -1515,9 +1852,15 @@ def _download_external_video(project_id: str, source_url: str) -> tuple[str, str
 
     total = 0
     try:
-        with httpx.stream("GET", source_url, timeout=timeout, follow_redirects=True) as response:
+        with httpx.stream(
+            "GET", source_url, timeout=timeout, follow_redirects=True
+        ) as response:
             response.raise_for_status()
-            content_type = (response.headers.get("content-type") or "video/mp4").split(";")[0].strip()
+            content_type = (
+                (response.headers.get("content-type") or "video/mp4")
+                .split(";")[0]
+                .strip()
+            )
             with destination.open("wb") as stream:
                 for chunk in response.iter_bytes(1024 * 256):
                     if not chunk:
@@ -1536,7 +1879,9 @@ def _download_external_video(project_id: str, source_url: str) -> tuple[str, str
     except Exception as exc:
         if destination.exists():
             destination.unlink(missing_ok=True)
-        raise HTTPException(status_code=502, detail=f"Failed to download external B-roll: {exc}") from exc
+        raise HTTPException(
+            status_code=502, detail=f"Failed to download external B-roll: {exc}"
+        ) from exc
 
     relative = str(destination.resolve().relative_to(storage.upload_root))
     mime_type = mimetypes.guess_type(destination.name)[0] or "video/mp4"
@@ -1556,7 +1901,9 @@ def _find_existing_asset_for_source_url(
     assets = list(
         session.exec(
             select(MediaAsset)
-            .where(MediaAsset.project_id == project_id, MediaAsset.media_type == "video")
+            .where(
+                MediaAsset.project_id == project_id, MediaAsset.media_type == "video"
+            )
             .order_by(MediaAsset.created_at.desc())
         ).all()
     )
@@ -1569,15 +1916,21 @@ def _find_existing_asset_for_source_url(
     return None
 
 
-def _materialize_candidate_asset(session: Session, project_id: str, candidate: BrollCandidate) -> MediaAsset:
+def _materialize_candidate_asset(
+    session: Session, project_id: str, candidate: BrollCandidate
+) -> MediaAsset:
     if candidate.asset_id:
         existing = session.exec(
-            select(MediaAsset).where(MediaAsset.id == candidate.asset_id, MediaAsset.project_id == project_id)
+            select(MediaAsset).where(
+                MediaAsset.id == candidate.asset_id, MediaAsset.project_id == project_id
+            )
         ).first()
         if existing:
             return existing
     if not candidate.source_url:
-        raise HTTPException(status_code=422, detail="Selected candidate has no importable source URL")
+        raise HTTPException(
+            status_code=422, detail="Selected candidate has no importable source URL"
+        )
 
     existing_for_source = _find_existing_asset_for_source_url(
         session,
@@ -1604,6 +1957,7 @@ def _materialize_candidate_asset(session: Session, project_id: str, candidate: B
         dest_name = f"ai_broll_{src_path.stem}.mp4"
         dest_path = upload_dir / dest_name
         import shutil
+
         shutil.copy2(str(src_path), str(dest_path))
         absolute_path = str(dest_path.resolve())
         relative_path = f"{project_id}/{dest_name}"
@@ -1614,16 +1968,22 @@ def _materialize_candidate_asset(session: Session, project_id: str, candidate: B
         except OSError:
             pass
     else:
-        absolute_path, relative_path, guessed_mime = _download_external_video(project_id, candidate.source_url)
+        absolute_path, relative_path, guessed_mime = _download_external_video(
+            project_id, candidate.source_url
+        )
 
     stream_flags = probe_stream_flags(absolute_path)
     if not stream_flags.get("has_video", False):
         Path(absolute_path).unlink(missing_ok=True)
-        raise HTTPException(status_code=422, detail="Selected B-roll source has no video stream")
+        raise HTTPException(
+            status_code=422, detail="Selected B-roll source has no video stream"
+        )
 
     reason_payload = _parse_reason_json(candidate)
     path_obj = Path(absolute_path)
-    probe_width, probe_height = _probe_video_dimensions(str(path_obj.resolve()), path_obj.stat().st_mtime_ns)
+    probe_width, probe_height = _probe_video_dimensions(
+        str(path_obj.resolve()), path_obj.stat().st_mtime_ns
+    )
     width = int(reason_payload.get("width") or probe_width or 0)
     height = int(reason_payload.get("height") or probe_height or 0)
 
@@ -1631,9 +1991,17 @@ def _materialize_candidate_asset(session: Session, project_id: str, candidate: B
     focus_track = None
     focus_x = None
     if not is_local_generated:
-        focus_track = _detect_focus_track(str(path_obj.resolve())) if settings.broll_auto_reframe_enabled and width > height else None
+        focus_track = (
+            _detect_focus_track(str(path_obj.resolve()))
+            if settings.broll_auto_reframe_enabled and width > height
+            else None
+        )
         if focus_track:
-            ratios = sorted(float(item.get("x_ratio", 0.5)) for item in focus_track if isinstance(item, dict))
+            ratios = sorted(
+                float(item.get("x_ratio", 0.5))
+                for item in focus_track
+                if isinstance(item, dict)
+            )
             if ratios:
                 focus_x = ratios[len(ratios) // 2]
         if focus_x is None and settings.broll_auto_reframe_enabled and width > height:
@@ -1743,7 +2111,9 @@ def _visual_intent_from_reason(reason: dict[str, object]) -> str | None:
     return raw or None
 
 
-def _review_status_for_slot(row: BrollSlot, ordered_candidates: list[BrollCandidate]) -> tuple[str, list[str], str | None, str | None]:
+def _review_status_for_slot(
+    row: BrollSlot, ordered_candidates: list[BrollCandidate]
+) -> tuple[str, list[str], str | None, str | None]:
     if row.status == "rejected":
         return ("rejected", [], None, "Rejected by user")
     if row.status == "chosen":
@@ -1752,10 +2122,15 @@ def _review_status_for_slot(row: BrollSlot, ordered_candidates: list[BrollCandid
         return ("unfilled", ["no_candidates"], None, "No candidates available")
 
     top_reason = _parse_reason_json(ordered_candidates[0])
-    confidence = _confidence_from_reason(top_reason, float(ordered_candidates[0].score)) or 0.0
+    confidence = (
+        _confidence_from_reason(top_reason, float(ordered_candidates[0].score)) or 0.0
+    )
     weak_reason_codes = _weak_reason_codes_from_reason(top_reason)
     visual_intent = _visual_intent_from_reason(top_reason)
-    if confidence >= settings.broll_confidence_autopick_threshold and not weak_reason_codes:
+    if (
+        confidence >= settings.broll_confidence_autopick_threshold
+        and not weak_reason_codes
+    ):
         return ("ready", [], visual_intent, "Ready for auto-apply")
     summary = "Review recommended before syncing"
     if weak_reason_codes:
@@ -1774,14 +2149,27 @@ def _visual_intent_for_beat(beat: BrollPlanBeatResponse, beat_text: str) -> str:
         return "environment_context"
     if "screen" in text or "demo" in text or "product" in text:
         return "literal_demo"
-    if any(token in text for token in ("office", "studio", "warehouse", "street", "factory")):
+    if any(
+        token in text
+        for token in ("office", "studio", "warehouse", "street", "factory")
+    ):
         return "environment_context"
-    return "abstract_support" if beat.section_label in {"hook", "outro"} else "literal_demo"
+    return (
+        "abstract_support"
+        if beat.section_label in {"hook", "outro"}
+        else "literal_demo"
+    )
 
 
-def _domain_context_for_retrieval(transcript_text: str, assets: list[MediaAsset]) -> dict[str, object]:
+def _domain_context_for_retrieval(
+    transcript_text: str, assets: list[MediaAsset]
+) -> dict[str, object]:
     asset_descriptors = [
-        " ".join(part for part in (asset.filename, str(asset.metadata_json or "")[:200]) if part).strip()
+        " ".join(
+            part
+            for part in (asset.filename, str(asset.metadata_json or "")[:200])
+            if part
+        ).strip()
         for asset in assets[:8]
     ]
     return infer_broll_domain_context(
@@ -1797,6 +2185,8 @@ def _prepare_search_strategy(
     visual_intent: str,
     expanded_queries: list[str],
     domain_context: dict[str, object],
+    language_hint: str | None = None,
+    english_gloss_override: str | None = None,
 ) -> dict[str, object]:
     strategy = build_broll_search_strategy(
         chunk_text=chunk_text,
@@ -1805,9 +2195,17 @@ def _prepare_search_strategy(
         query_hints=expanded_queries,
         max_queries=max(4, min(len(expanded_queries) + 2, 8)),
         domain_context=dict(domain_context),
+        language_hint=language_hint,
+        english_gloss_override=english_gloss_override,
     )
-    search_concept = " ".join(str(strategy.get("search_concept") or concept_text).split()).strip() or concept_text
-    search_visual_intent = str(strategy.get("visual_intent") or visual_intent).strip().lower() or visual_intent
+    search_concept = (
+        " ".join(str(strategy.get("search_concept") or concept_text).split()).strip()
+        or concept_text
+    )
+    search_visual_intent = (
+        str(strategy.get("visual_intent") or visual_intent).strip().lower()
+        or visual_intent
+    )
     raw_packets = strategy.get("queries")
     query_packets: list[dict[str, str]] = []
     if isinstance(raw_packets, list):
@@ -1829,10 +2227,48 @@ def _prepare_search_strategy(
         "visual_intent": search_visual_intent,
         "query_packets": query_packets,
         "blocked_terms": list(blocked_terms) if isinstance(blocked_terms, list) else [],
-        "stockability": str(strategy.get("stockability") or "medium").strip().lower() or "medium",
+        "stockability": str(strategy.get("stockability") or "medium").strip().lower()
+        or "medium",
         "rationale": str(strategy.get("rationale") or "").strip(),
         "domain_context": dict(domain_context),
         "raw_strategy": strategy,
+    }
+
+
+def _query_packet_labels(search_strategy: dict[str, object]) -> list[str]:
+    raw_packets = search_strategy.get("query_packets")
+    if not isinstance(raw_packets, list):
+        return []
+    queries: list[str] = []
+    seen: set[str] = set()
+    for item in raw_packets:
+        if not isinstance(item, dict):
+            continue
+        query = " ".join(str(item.get("query") or "").split()).strip()
+        if not query:
+            continue
+        key = query.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        queries.append(query)
+    return queries[:8]
+
+
+def _strategy_debug_fields(
+    *,
+    search_strategy: dict[str, object],
+    fallback_chunk_text: str,
+) -> dict[str, object]:
+    raw_strategy = search_strategy.get("raw_strategy")
+    raw_dict = dict(raw_strategy) if isinstance(raw_strategy, dict) else {}
+    return {
+        "search_queries": _query_packet_labels(search_strategy),
+        "original_chunk_text": str(
+            raw_dict.get("original_chunk_text") or fallback_chunk_text
+        ),
+        "english_gloss": str(raw_dict.get("english_gloss") or ""),
+        "gloss_override_used": str(raw_dict.get("gloss_override_used") or ""),
     }
 
 
@@ -1857,9 +2293,13 @@ def _to_candidate_response(row: BrollCandidate) -> BrollCandidateResponse:
     )
 
 
-def _to_slot_response(row: BrollSlot, candidates: list[BrollCandidate]) -> BrollSlotResponse:
+def _to_slot_response(
+    row: BrollSlot, candidates: list[BrollCandidate]
+) -> BrollSlotResponse:
     ordered_candidates = sorted(candidates, key=lambda item: item.score, reverse=True)
-    review_status, weak_reason_codes, visual_intent, review_summary = _review_status_for_slot(row, ordered_candidates)
+    review_status, weak_reason_codes, visual_intent, review_summary = (
+        _review_status_for_slot(row, ordered_candidates)
+    )
     return BrollSlotResponse(
         id=row.id,
         project_id=row.project_id,
@@ -1877,7 +2317,9 @@ def _to_slot_response(row: BrollSlot, candidates: list[BrollCandidate]) -> Broll
         chosen_candidate_id=row.chosen_candidate_id,
         created_at=row.created_at.isoformat(),
         updated_at=row.updated_at.isoformat(),
-        candidates=[_to_candidate_response(candidate) for candidate in ordered_candidates],
+        candidates=[
+            _to_candidate_response(candidate) for candidate in ordered_candidates
+        ],
     )
 
 
@@ -1894,7 +2336,11 @@ def _load_slots_with_candidates(
     if slot_ids:
         slot_query = slot_query.where(BrollSlot.id.in_(slot_ids))
 
-    slots = list(session.exec(slot_query.order_by(BrollSlot.start_sec.asc(), BrollSlot.created_at.asc())).all())
+    slots = list(
+        session.exec(
+            slot_query.order_by(BrollSlot.start_sec.asc(), BrollSlot.created_at.asc())
+        ).all()
+    )
     if not slots:
         return []
 
@@ -1902,7 +2348,9 @@ def _load_slots_with_candidates(
     candidates = list(
         session.exec(
             select(BrollCandidate)
-            .where(BrollCandidate.project_id == project_id, BrollCandidate.slot_id.in_(ids))
+            .where(
+                BrollCandidate.project_id == project_id, BrollCandidate.slot_id.in_(ids)
+            )
             .order_by(BrollCandidate.score.desc(), BrollCandidate.created_at.asc())
         ).all()
     )
@@ -1945,7 +2393,8 @@ def _resolve_slot_chunk_text(slot: BrollSlot, transcript: Transcript | None) -> 
     overlap_tokens = [
         str(item["text"]).strip()
         for item in words
-        if float(item["start_sec"]) < float(slot.end_sec) and float(item["end_sec"]) > float(slot.start_sec)
+        if float(item["start_sec"]) < float(slot.end_sec)
+        and float(item["end_sec"]) > float(slot.start_sec)
     ]
     overlap_text = " ".join(token for token in overlap_tokens if token).strip()
     if overlap_text:
@@ -1953,15 +2402,42 @@ def _resolve_slot_chunk_text(slot: BrollSlot, transcript: Transcript | None) -> 
     return slot.concept_text.strip()
 
 
+@router.get("/config", response_model=BrollConfigResponse)
+def broll_config(
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> BrollConfigResponse:
+    current = get_settings()
+    pexels_configured = bool(current.pexels_api_key)
+    pixabay_configured = bool(current.pixabay_api_key)
+    stock_search_available = current.broll_external_enabled and (
+        pexels_configured or pixabay_configured
+    )
+    llm_raw = (os.getenv("BROLL_LLM_ENABLED", "true") or "true").strip().lower()
+    llm_rerank_available = llm_raw in {"1", "true", "yes", "on"}
+    return BrollConfigResponse(
+        external_enabled=current.broll_external_enabled,
+        pexels_configured=pexels_configured,
+        pixabay_configured=pixabay_configured,
+        stock_search_available=stock_search_available,
+        generative_enabled=current.broll_generative_enabled,
+        llm_rerank_available=llm_rerank_available,
+    )
+
+
 @router.post("/plan", response_model=BrollPlanResponse)
 def create_broll_plan(
     payload: BrollPlanRequest,
     project_id: str,
     session: Session = Depends(get_session),
+    current_user: dict[str, Any] = Depends(get_current_user),
 ) -> BrollPlanResponse:
     project = _require_project(session, project_id)
-    transcript = _resolve_broll_transcript(session, project_id=project_id, transcript_id=payload.transcript_id)
-    return _build_broll_plan(session, project=project, transcript=transcript, payload=payload)
+    transcript = _resolve_broll_transcript(
+        session, project_id=project_id, transcript_id=payload.transcript_id
+    )
+    return _build_broll_plan(
+        session, project=project, transcript=transcript, payload=payload
+    )
 
 
 @router.get("/plans/{plan_id}", response_model=BrollPlanResponse)
@@ -1969,6 +2445,7 @@ def get_broll_plan(
     plan_id: str,
     project_id: str,
     session: Session = Depends(get_session),
+    current_user: dict[str, Any] = Depends(get_current_user),
 ) -> BrollPlanResponse:
     _require_project(session, project_id)
     return _load_plan_response(session, plan_id, project_id=project_id)
@@ -1979,23 +2456,34 @@ def suggest_broll(
     payload: BrollSuggestRequest,
     project_id: str,
     session: Session = Depends(get_session),
+    current_user: dict[str, Any] = Depends(get_current_user),
 ) -> BrollSuggestResponse:
     project = _require_project(session, project_id)
-    transcript = _resolve_broll_transcript(session, project_id=project_id, transcript_id=payload.transcript_id)
+    transcript = _resolve_broll_transcript(
+        session, project_id=project_id, transcript_id=payload.transcript_id
+    )
     plan_response = _build_broll_plan(
         session,
         project=project,
         transcript=transcript,
         payload=_plan_request_from_suggest(payload),
     )
-    beats = [beat for beat in plan_response.beats if beat.should_place and beat.end_sec > beat.start_sec]
+    beats = [
+        beat
+        for beat in plan_response.beats
+        if beat.should_place and beat.end_sec > beat.start_sec
+    ]
     if not beats:
-        raise HTTPException(status_code=400, detail="Planner produced no eligible B-roll beats")
+        raise HTTPException(
+            status_code=400, detail="Planner produced no eligible B-roll beats"
+        )
 
     assets = list(
         session.exec(
             select(MediaAsset)
-            .where(MediaAsset.project_id == project_id, MediaAsset.media_type == "video")
+            .where(
+                MediaAsset.project_id == project_id, MediaAsset.media_type == "video"
+            )
             .order_by(MediaAsset.created_at.desc())
         ).all()
     )
@@ -2007,13 +2495,19 @@ def suggest_broll(
     if payload.replace_existing:
         existing_slots = list(
             session.exec(
-                select(BrollSlot).where(BrollSlot.project_id == project_id, BrollSlot.transcript_id == transcript.id)
+                select(BrollSlot).where(
+                    BrollSlot.project_id == project_id,
+                    BrollSlot.transcript_id == transcript.id,
+                )
             ).all()
         )
         existing_slot_ids = [row.id for row in existing_slots]
         if existing_slot_ids:
             session.exec(
-                delete(BrollChoice).where(BrollChoice.project_id == project_id, BrollChoice.slot_id.in_(existing_slot_ids))
+                delete(BrollChoice).where(
+                    BrollChoice.project_id == project_id,
+                    BrollChoice.slot_id.in_(existing_slot_ids),
+                )
             )
             session.exec(
                 delete(BrollCandidate).where(
@@ -2021,7 +2515,12 @@ def suggest_broll(
                     BrollCandidate.slot_id.in_(existing_slot_ids),
                 )
             )
-            session.exec(delete(BrollSlot).where(BrollSlot.project_id == project_id, BrollSlot.id.in_(existing_slot_ids)))
+            session.exec(
+                delete(BrollSlot).where(
+                    BrollSlot.project_id == project_id,
+                    BrollSlot.id.in_(existing_slot_ids),
+                )
+            )
 
     now = _utcnow()
     created_slot_ids: list[str] = []
@@ -2029,7 +2528,9 @@ def suggest_broll(
     for idx, beat in enumerate(beats):
         beat_text = beat.segment_text.strip() or beat.concept_text.strip()
         concept_text = beat.concept_text.strip() or _extract_concepts(beat_text)[0]
-        _ignored, concept_tokens = _extract_concepts(f"{concept_text} {beat_text}".strip())
+        _ignored, concept_tokens = _extract_concepts(
+            f"{concept_text} {beat_text}".strip()
+        )
         shot_style = beat.shot_style.strip() or _shot_variant_for_index(idx)[0]
         shot_hint = f"{shot_style} shot".strip()
         visual_intent = _visual_intent_for_beat(beat, beat_text)
@@ -2052,6 +2553,7 @@ def suggest_broll(
             visual_intent=visual_intent,
             expanded_queries=expanded_queries,
             domain_context=domain_context,
+            language_hint=transcript.language,
         )
         search_concept_text = str(search_strategy["search_concept"])
         search_concept_tokens = list(search_strategy["search_tokens"])  # type: ignore[arg-type]
@@ -2073,28 +2575,32 @@ def suggest_broll(
                 visual_intent=search_visual_intent,
             )
 
-        beat_metas.append({
-            "idx": idx,
-            "beat": beat,
-            "beat_text": beat_text,
-            "concept_text": search_concept_text,
-            "concept_tokens": search_concept_tokens,
-            "expanded_queries": expanded_queries,
-            "query_packets": query_packets,
-            "slot_duration_sec": slot_duration_sec,
-            "candidate_limit": candidate_limit,
-            "retrieval_limit": retrieval_limit,
-            "shot_style": shot_style,
-            "shot_hint": shot_hint,
-            "visual_intent": search_visual_intent,
-            "source_strategy": beat.source_strategy,
-            "ranked_candidates": ranked_candidates,
-            "search_strategy": search_strategy,
-            "original_concept_text": concept_text,
-        })
+        beat_metas.append(
+            {
+                "idx": idx,
+                "beat": beat,
+                "beat_text": beat_text,
+                "concept_text": search_concept_text,
+                "concept_tokens": search_concept_tokens,
+                "expanded_queries": expanded_queries,
+                "query_packets": query_packets,
+                "slot_duration_sec": slot_duration_sec,
+                "candidate_limit": candidate_limit,
+                "retrieval_limit": retrieval_limit,
+                "shot_style": shot_style,
+                "shot_hint": shot_hint,
+                "visual_intent": search_visual_intent,
+                "source_strategy": beat.source_strategy,
+                "ranked_candidates": ranked_candidates,
+                "search_strategy": search_strategy,
+                "original_concept_text": concept_text,
+            }
+        )
 
     # ── Phase 2: Fetch external candidates in PARALLEL ────────────────
-    def _fetch_external_for_slot(meta: dict[str, object]) -> list[ExternalBrollCandidate]:
+    def _fetch_external_for_slot(
+        meta: dict[str, object],
+    ) -> list[ExternalBrollCandidate]:
         """Fetch external + generative candidates for a single slot (thread-safe)."""
         concept_text = str(meta["concept_text"])
         concept_tokens = list(meta["concept_tokens"])  # type: ignore[arg-type]
@@ -2131,9 +2637,13 @@ def suggest_broll(
                         "shot_type": shot_style,
                         "visual_intent": visual_intent,
                         "search_concept": concept_text,
-                        "search_strategy_rationale": str(search_strategy.get("rationale") or ""),
+                        "search_strategy_rationale": str(
+                            search_strategy.get("rationale") or ""
+                        ),
                         "stockability": str(search_strategy.get("stockability") or ""),
-                        "blocked_terms": list(search_strategy.get("blocked_terms") or []),
+                        "blocked_terms": list(
+                            search_strategy.get("blocked_terms") or []
+                        ),
                         "domain_label": str(domain_context.get("domain") or ""),
                     },
                 )
@@ -2201,8 +2711,10 @@ def suggest_broll(
                     assets_by_id=assets_by_id,
                     visual_intent=visual_intent,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "B-roll AI rerank failed; using pre-rerank candidates: %s", exc
+                )
         if payload.ai_rerank and merged_candidates:
             try:
                 llm_ranked = llm_rerank_broll_candidates(
@@ -2215,8 +2727,10 @@ def suggest_broll(
                 )
                 if llm_ranked:
                     merged_candidates = llm_ranked
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "B-roll LLM rerank failed; using pre-LLM candidates: %s", exc
+                )
         merged_candidates = _sequence_diversify_candidates(
             merged_candidates,
             sequence_state=sequence_state,
@@ -2240,7 +2754,14 @@ def suggest_broll(
         session.add(slot)
         created_slot_ids.append(slot.id)
 
-        for source_type, asset_id, source_url, source_label, score, reason in merged_candidates:
+        for (
+            source_type,
+            asset_id,
+            source_url,
+            source_label,
+            score,
+            reason,
+        ) in merged_candidates:
             session.add(
                 BrollCandidate(
                     project_id=project_id,
@@ -2262,9 +2783,19 @@ def suggest_broll(
                             "planner_confidence": round(float(beat.confidence), 3),
                             "planner_rationale": beat.rationale,
                             "query_hints": expanded_queries[:8],
-                            "search_strategy_rationale": str(search_strategy.get("rationale") or ""),
-                            "stockability": str(search_strategy.get("stockability") or ""),
-                            "blocked_terms": list(search_strategy.get("blocked_terms") or []),
+                            **_strategy_debug_fields(
+                                search_strategy=search_strategy,
+                                fallback_chunk_text=beat_text,
+                            ),
+                            "search_strategy_rationale": str(
+                                search_strategy.get("rationale") or ""
+                            ),
+                            "stockability": str(
+                                search_strategy.get("stockability") or ""
+                            ),
+                            "blocked_terms": list(
+                                search_strategy.get("blocked_terms") or []
+                            ),
                             "domain_label": str(domain_context.get("domain") or ""),
                         }
                     ),
@@ -2273,7 +2804,10 @@ def suggest_broll(
         _remember_sequence_candidate(sequence_state, merged_candidates[0])
 
     if not created_slot_ids:
-        raise HTTPException(status_code=400, detail="No B-roll candidates available for current settings")
+        raise HTTPException(
+            status_code=400,
+            detail="No B-roll candidates available for current settings",
+        )
 
     session.commit()
 
@@ -2345,10 +2879,13 @@ def suggest_broll_async(
     project_id: str,
     force: bool = False,
     session: Session = Depends(get_session),
+    current_user: dict[str, Any] = Depends(get_current_user),
 ) -> JobResponse:
     _require_project(session, project_id)
     if not force:
-        active = find_recent_active_job(session, project_id, kind="broll_suggest", within_seconds=0)
+        active = find_recent_active_job(
+            session, project_id, kind="broll_suggest", within_seconds=0
+        )
         if active:
             return _to_job_response(active)
 
@@ -2371,6 +2908,7 @@ def get_suggest_broll_result(
     job_id: str,
     project_id: str,
     session: Session = Depends(get_session),
+    current_user: dict[str, Any] = Depends(get_current_user),
 ) -> BrollSuggestResponse:
     _require_project(session, project_id)
     job = session.exec(
@@ -2383,7 +2921,9 @@ def get_suggest_broll_result(
     if not job:
         raise HTTPException(status_code=404, detail="B-roll suggest job not found")
     if job.status == "failed":
-        raise HTTPException(status_code=409, detail=job.error or "B-roll suggest job failed")
+        raise HTTPException(
+            status_code=409, detail=job.error or "B-roll suggest job failed"
+        )
     if job.status != "completed":
         raise HTTPException(status_code=409, detail="B-roll suggest job not completed")
 
@@ -2393,7 +2933,9 @@ def get_suggest_broll_result(
     try:
         payload = json.loads(result_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=500, detail="B-roll suggest result payload invalid") from exc
+        raise HTTPException(
+            status_code=500, detail="B-roll suggest result payload invalid"
+        ) from exc
     return BrollSuggestResponse.model_validate(payload)
 
 
@@ -2402,13 +2944,18 @@ def auto_apply_broll(
     payload: BrollAutoApplyRequest,
     project_id: str,
     session: Session = Depends(get_session),
+    current_user: dict[str, Any] = Depends(get_current_user),
 ) -> BrollAutoApplyResponse:
     project = _require_project(session, project_id)
 
-    suggest_response = suggest_broll(_to_suggest_request(payload), project_id=project_id, session=session)
+    suggest_response = suggest_broll(
+        _to_suggest_request(payload), project_id=project_id, session=session
+    )
     slot_ids = [slot.id for slot in suggest_response.slots]
     if not slot_ids:
-        raise HTTPException(status_code=400, detail="No B-roll slots available to auto-apply")
+        raise HTTPException(
+            status_code=400, detail="No B-roll slots available to auto-apply"
+        )
 
     confidence_threshold = payload.min_confidence
     if confidence_threshold is None:
@@ -2425,7 +2972,10 @@ def auto_apply_broll(
     candidates = list(
         session.exec(
             select(BrollCandidate)
-            .where(BrollCandidate.project_id == project_id, BrollCandidate.slot_id.in_(slot_ids))
+            .where(
+                BrollCandidate.project_id == project_id,
+                BrollCandidate.slot_id.in_(slot_ids),
+            )
             .order_by(BrollCandidate.score.desc(), BrollCandidate.created_at.asc())
         ).all()
     )
@@ -2436,14 +2986,49 @@ def auto_apply_broll(
     selected_pairs: list[tuple[BrollSlot, BrollCandidate]] = []
     auto_chosen_slots = 0
     skipped_slots = 0
+    skipped_slot_summaries: list[BrollAutoApplySkipSummary] = []
     for slot in slots:
         ordered = by_slot.get(slot.id, [])
         selected_candidate: BrollCandidate | None = None
+        if not ordered:
+            slot.status = "needs_review"
+            slot.chosen_candidate_id = None
+            slot.updated_at = _utcnow()
+            session.add(slot)
+            session.add(
+                BrollChoice(
+                    project_id=project_id,
+                    slot_id=slot.id,
+                    candidate_id=None,
+                    action="auto_skip",
+                    payload_json=_json_dumps(
+                        {
+                            "reason": "no_candidates",
+                            "threshold": round(confidence_threshold, 3),
+                        }
+                    ),
+                )
+            )
+            skipped_slot_summaries.append(
+                BrollAutoApplySkipSummary(
+                    slot_id=slot.id,
+                    concept_text=slot.concept_text or "",
+                    reason="no_candidates",
+                    detail="No B-roll candidates were found for this slot.",
+                )
+            )
+            skipped_slots += 1
+            session.commit()
+            continue
         for candidate in ordered:
             reason = _parse_reason_json(candidate)
             confidence = _confidence_from_reason(reason, float(candidate.score))
             weak_reason_codes = _weak_reason_codes_from_reason(reason)
-            if confidence is not None and confidence >= confidence_threshold and not weak_reason_codes:
+            if (
+                confidence is not None
+                and confidence >= confidence_threshold
+                and not weak_reason_codes
+            ):
                 selected_candidate = candidate
                 break
         if selected_candidate is None and payload.fallback_to_top_candidate and ordered:
@@ -2465,6 +3050,16 @@ def auto_apply_broll(
                             "reason": "needs_review",
                             "threshold": round(confidence_threshold, 3),
                         }
+                    ),
+                )
+            )
+            skipped_slot_summaries.append(
+                BrollAutoApplySkipSummary(
+                    slot_id=slot.id,
+                    concept_text=slot.concept_text or "",
+                    reason="needs_review",
+                    detail=(
+                        f"No candidate met the {(confidence_threshold * 100):.0f}% confidence threshold."
                     ),
                 )
             )
@@ -2492,6 +3087,14 @@ def auto_apply_broll(
                             "detail": str(exc.detail),
                         }
                     ),
+                )
+            )
+            skipped_slot_summaries.append(
+                BrollAutoApplySkipSummary(
+                    slot_id=slot.id,
+                    concept_text=slot.concept_text or "",
+                    reason="materialize_failed",
+                    detail=str(exc.detail),
                 )
             )
             skipped_slots += 1
@@ -2531,24 +3134,34 @@ def auto_apply_broll(
     previous_overlay_clips = _snapshot_overlay_clips(timeline_state)
     timeline_changed = False
     if payload.clear_existing_overlay:
-        overlay_track = next((track for track in timeline_state.tracks if track.kind == "overlay"), None)
+        overlay_track = next(
+            (track for track in timeline_state.tracks if track.kind == "overlay"), None
+        )
         for clip in list(overlay_track.clips) if overlay_track else []:
             try:
                 apply_operation(
                     timeline_state,
-                    OperationPayload(op_type="delete_broll_clip", params={"clip": clip.id}, source="ui"),
+                    OperationPayload(
+                        op_type="delete_broll_clip",
+                        params={"clip": clip.id},
+                        source="ui",
+                    ),
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             timeline_changed = True
 
-    selected_asset_ids = [candidate.asset_id for _slot, candidate in selected_pairs if candidate.asset_id]
+    selected_asset_ids = [
+        candidate.asset_id for _slot, candidate in selected_pairs if candidate.asset_id
+    ]
     assets_by_id: dict[str, MediaAsset] = {}
     if selected_asset_ids:
         assets = list(
             session.exec(
-                select(MediaAsset)
-                .where(MediaAsset.project_id == project_id, MediaAsset.id.in_(selected_asset_ids))
+                select(MediaAsset).where(
+                    MediaAsset.project_id == project_id,
+                    MediaAsset.id.in_(selected_asset_ids),
+                )
             ).all()
         )
         assets_by_id = {asset.id: asset for asset in assets}
@@ -2569,7 +3182,11 @@ def auto_apply_broll(
             metadata = _ensure_asset_focus_metadata(session, asset)
             if asset.duration_sec and asset.duration_sec > 0:
                 source_duration = min(float(asset.duration_sec), slot_duration)
-                if _is_vertical_project(project) and source_duration < min_slot_sec and float(asset.duration_sec) >= min_slot_sec:
+                if (
+                    _is_vertical_project(project)
+                    and source_duration < min_slot_sec
+                    and float(asset.duration_sec) >= min_slot_sec
+                ):
                     source_duration = min(float(asset.duration_sec), min_slot_sec)
 
         crop_payload: dict[str, int] | None = None
@@ -2578,7 +3195,11 @@ def auto_apply_broll(
         preset: str | None = None
         if asset:
             try:
-                focus_x = float(metadata.get("focus_x")) if metadata.get("focus_x") is not None else None
+                focus_x = (
+                    float(metadata.get("focus_x"))
+                    if metadata.get("focus_x") is not None
+                    else None
+                )
             except (TypeError, ValueError):
                 focus_x = None
             crop_payload = _build_vertical_crop(
@@ -2672,6 +3293,7 @@ def auto_apply_broll(
         synced_clip_count=synced_clip_count,
         skipped_slots=skipped_slots,
         confidence_threshold=round(confidence_threshold, 3),
+        skipped_slot_summaries=skipped_slot_summaries,
         timeline=load_timeline_state(timeline),
         slots=refreshed_slots,
     )
@@ -2682,6 +3304,7 @@ def sync_broll_to_timeline(
     payload: BrollSyncRequest,
     project_id: str,
     session: Session = Depends(get_session),
+    current_user: dict[str, Any] = Depends(get_current_user),
 ) -> BrollSyncResponse:
     project = _require_project(session, project_id)
 
@@ -2690,7 +3313,11 @@ def sync_broll_to_timeline(
         slot_query = slot_query.where(BrollSlot.transcript_id == payload.transcript_id)
     if payload.slot_ids:
         slot_query = slot_query.where(BrollSlot.id.in_(payload.slot_ids))
-    slots = list(session.exec(slot_query.order_by(BrollSlot.start_sec.asc(), BrollSlot.created_at.asc())).all())
+    slots = list(
+        session.exec(
+            slot_query.order_by(BrollSlot.start_sec.asc(), BrollSlot.created_at.asc())
+        ).all()
+    )
 
     chosen_slots = [slot for slot in slots if slot.chosen_candidate_id]
     if not chosen_slots:
@@ -2708,11 +3335,16 @@ def sync_broll_to_timeline(
             ),
         )
 
-    candidate_ids = [slot.chosen_candidate_id for slot in chosen_slots if slot.chosen_candidate_id]
+    candidate_ids = [
+        slot.chosen_candidate_id for slot in chosen_slots if slot.chosen_candidate_id
+    ]
     candidates = list(
         session.exec(
             select(BrollCandidate)
-            .where(BrollCandidate.project_id == project_id, BrollCandidate.id.in_(candidate_ids))
+            .where(
+                BrollCandidate.project_id == project_id,
+                BrollCandidate.id.in_(candidate_ids),
+            )
             .order_by(BrollCandidate.created_at.asc())
         ).all()
     )
@@ -2731,7 +3363,9 @@ def sync_broll_to_timeline(
             selected_pairs.append((slot, candidate))
 
     if not selected_pairs:
-        raise HTTPException(status_code=400, detail="No chosen B-roll candidates available to sync")
+        raise HTTPException(
+            status_code=400, detail="No chosen B-roll candidates available to sync"
+        )
 
     session.commit()
 
@@ -2740,24 +3374,34 @@ def sync_broll_to_timeline(
     previous_overlay_clips = _snapshot_overlay_clips(timeline_state)
     timeline_changed = False
     if payload.clear_existing_overlay:
-        overlay_track = next((track for track in timeline_state.tracks if track.kind == "overlay"), None)
+        overlay_track = next(
+            (track for track in timeline_state.tracks if track.kind == "overlay"), None
+        )
         for clip in list(overlay_track.clips) if overlay_track else []:
             try:
                 apply_operation(
                     timeline_state,
-                    OperationPayload(op_type="delete_broll_clip", params={"clip": clip.id}, source="ui"),
+                    OperationPayload(
+                        op_type="delete_broll_clip",
+                        params={"clip": clip.id},
+                        source="ui",
+                    ),
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             timeline_changed = True
 
-    selected_asset_ids = [candidate.asset_id for _slot, candidate in selected_pairs if candidate.asset_id]
+    selected_asset_ids = [
+        candidate.asset_id for _slot, candidate in selected_pairs if candidate.asset_id
+    ]
     assets_by_id: dict[str, MediaAsset] = {}
     if selected_asset_ids:
         assets = list(
             session.exec(
-                select(MediaAsset)
-                .where(MediaAsset.project_id == project_id, MediaAsset.id.in_(selected_asset_ids))
+                select(MediaAsset).where(
+                    MediaAsset.project_id == project_id,
+                    MediaAsset.id.in_(selected_asset_ids),
+                )
             ).all()
         )
         assets_by_id = {asset.id: asset for asset in assets}
@@ -2778,7 +3422,11 @@ def sync_broll_to_timeline(
             metadata = _ensure_asset_focus_metadata(session, asset)
             if asset.duration_sec and asset.duration_sec > 0:
                 source_duration = min(float(asset.duration_sec), slot_duration)
-                if _is_vertical_project(project) and source_duration < min_slot_sec and float(asset.duration_sec) >= min_slot_sec:
+                if (
+                    _is_vertical_project(project)
+                    and source_duration < min_slot_sec
+                    and float(asset.duration_sec) >= min_slot_sec
+                ):
                     source_duration = min(float(asset.duration_sec), min_slot_sec)
 
         crop_payload: dict[str, int] | None = None
@@ -2787,7 +3435,11 @@ def sync_broll_to_timeline(
         preset: str | None = None
         if asset:
             try:
-                focus_x = float(metadata.get("focus_x")) if metadata.get("focus_x") is not None else None
+                focus_x = (
+                    float(metadata.get("focus_x"))
+                    if metadata.get("focus_x") is not None
+                    else None
+                )
             except (TypeError, ValueError):
                 focus_x = None
             crop_payload = _build_vertical_crop(
@@ -2884,6 +3536,7 @@ def sync_broll_to_timeline(
 def undo_last_broll_transaction(
     project_id: str,
     session: Session = Depends(get_session),
+    current_user: dict[str, Any] = Depends(get_current_user),
 ) -> BrollUndoResponse:
     _require_project(session, project_id)
     row = session.exec(
@@ -2896,12 +3549,16 @@ def undo_last_broll_transaction(
         .order_by(BrollChoice.id.desc())
     ).first()
     if not row:
-        raise HTTPException(status_code=404, detail="No B-roll transaction found to undo")
+        raise HTTPException(
+            status_code=404, detail="No B-roll transaction found to undo"
+        )
 
     try:
         payload = json.loads(row.payload_json or "{}")
     except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=500, detail="Stored B-roll transaction payload is invalid") from exc
+        raise HTTPException(
+            status_code=500, detail="Stored B-roll transaction payload is invalid"
+        ) from exc
     if not isinstance(payload, dict):
         payload = {}
     snapshot = payload.get("previous_overlay_clips")
@@ -2954,9 +3611,12 @@ def list_broll_slots(
     project_id: str,
     transcript_id: str | None = None,
     session: Session = Depends(get_session),
+    current_user: dict[str, Any] = Depends(get_current_user),
 ) -> list[BrollSlotResponse]:
     _require_project(session, project_id)
-    return _load_slots_with_candidates(session, project_id=project_id, transcript_id=transcript_id)
+    return _load_slots_with_candidates(
+        session, project_id=project_id, transcript_id=transcript_id
+    )
 
 
 @router.post("/slots/{slot_id}/reroll", response_model=BrollSlotResponse)
@@ -2965,10 +3625,15 @@ def reroll_broll_slot(
     payload: BrollRerollRequest,
     project_id: str,
     session: Session = Depends(get_session),
+    current_user: dict[str, Any] = Depends(get_current_user),
 ) -> BrollSlotResponse:
     _require_project(session, project_id)
 
-    slot = session.exec(select(BrollSlot).where(BrollSlot.id == slot_id, BrollSlot.project_id == project_id)).first()
+    slot = session.exec(
+        select(BrollSlot).where(
+            BrollSlot.id == slot_id, BrollSlot.project_id == project_id
+        )
+    ).first()
     if not slot:
         raise HTTPException(status_code=404, detail="B-roll slot not found")
     if slot.locked:
@@ -2977,7 +3642,9 @@ def reroll_broll_slot(
     transcript: Transcript | None = None
     if slot.transcript_id:
         transcript = session.exec(
-            select(Transcript).where(Transcript.id == slot.transcript_id, Transcript.project_id == project_id)
+            select(Transcript).where(
+                Transcript.id == slot.transcript_id, Transcript.project_id == project_id
+            )
         ).first()
 
     chunk_text = _resolve_slot_chunk_text(slot, transcript)
@@ -2986,12 +3653,19 @@ def reroll_broll_slot(
     existing_slot_rows = list(
         session.exec(
             select(BrollCandidate)
-            .where(BrollCandidate.project_id == project_id, BrollCandidate.slot_id == slot.id)
+            .where(
+                BrollCandidate.project_id == project_id,
+                BrollCandidate.slot_id == slot.id,
+            )
             .order_by(BrollCandidate.score.desc(), BrollCandidate.created_at.asc())
         ).all()
     )
-    existing_top_reason = _parse_reason_json(existing_slot_rows[0]) if existing_slot_rows else {}
-    visual_intent = _visual_intent_from_reason(existing_top_reason) or _visual_intent_for_beat(
+    existing_top_reason = (
+        _parse_reason_json(existing_slot_rows[0]) if existing_slot_rows else {}
+    )
+    visual_intent = _visual_intent_from_reason(
+        existing_top_reason
+    ) or _visual_intent_for_beat(
         BrollPlanBeatResponse(
             id=slot.id,
             beat_index=0,
@@ -3018,7 +3692,10 @@ def reroll_broll_slot(
     ordered_slot_ids = list(
         session.exec(
             select(BrollSlot.id)
-            .where(BrollSlot.project_id == project_id, BrollSlot.transcript_id == slot.transcript_id)
+            .where(
+                BrollSlot.project_id == project_id,
+                BrollSlot.transcript_id == slot.transcript_id,
+            )
             .order_by(BrollSlot.start_sec.asc(), BrollSlot.created_at.asc())
         ).all()
     )
@@ -3054,7 +3731,9 @@ def reroll_broll_slot(
     assets = list(
         session.exec(
             select(MediaAsset)
-            .where(MediaAsset.project_id == project_id, MediaAsset.media_type == "video")
+            .where(
+                MediaAsset.project_id == project_id, MediaAsset.media_type == "video"
+            )
             .order_by(MediaAsset.created_at.desc())
         ).all()
     )
@@ -3067,6 +3746,8 @@ def reroll_broll_slot(
         visual_intent=visual_intent,
         expanded_queries=expanded_queries,
         domain_context=domain_context,
+        language_hint=transcript.language if transcript is not None else None,
+        english_gloss_override=payload.english_gloss_override,
     )
     search_concept_text = str(search_strategy["search_concept"])
     search_concept_tokens = list(search_strategy["search_tokens"])  # type: ignore[arg-type]
@@ -3110,7 +3791,9 @@ def reroll_broll_slot(
                     "shot_type": shot_style,
                     "visual_intent": visual_intent,
                     "search_concept": search_concept_text,
-                    "search_strategy_rationale": str(search_strategy.get("rationale") or ""),
+                    "search_strategy_rationale": str(
+                        search_strategy.get("rationale") or ""
+                    ),
                     "stockability": str(search_strategy.get("stockability") or ""),
                     "blocked_terms": list(search_strategy.get("blocked_terms") or []),
                     "domain_label": str(domain_context.get("domain") or ""),
@@ -3118,7 +3801,9 @@ def reroll_broll_slot(
             )
             for candidate in external_candidates
         ]
-        top_external_score = max((candidate.score for candidate in external_candidates), default=0.0)
+        top_external_score = max(
+            (candidate.score for candidate in external_candidates), default=0.0
+        )
         if top_external_score < settings.broll_generative_min_external_score:
             generated = generate_generative_broll_candidates(
                 concept_text=search_concept_text,
@@ -3146,8 +3831,11 @@ def reroll_broll_slot(
                 assets_by_id=assets_by_id,
                 visual_intent=visual_intent,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "B-roll AI rerank failed during reroll; using pre-rerank candidates: %s",
+                exc,
+            )
     if payload.ai_rerank and merged_candidates:
         try:
             llm_ranked = llm_rerank_broll_candidates(
@@ -3160,12 +3848,18 @@ def reroll_broll_slot(
             )
             if llm_ranked:
                 merged_candidates = llm_ranked
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "B-roll LLM rerank failed during reroll; using pre-LLM candidates: %s",
+                exc,
+            )
     existing_candidates = list(
         session.exec(
             select(BrollCandidate)
-            .where(BrollCandidate.project_id == project_id, BrollCandidate.slot_id == slot.id)
+            .where(
+                BrollCandidate.project_id == project_id,
+                BrollCandidate.slot_id == slot.id,
+            )
             .order_by(BrollCandidate.score.desc(), BrollCandidate.created_at.asc())
         ).all()
     )
@@ -3189,24 +3883,52 @@ def reroll_broll_slot(
     merged_candidates = merged_candidates[:candidate_limit]
 
     if not merged_candidates:
-        raise HTTPException(status_code=400, detail="No B-roll candidates available for reroll")
+        raise HTTPException(
+            status_code=400, detail="No B-roll candidates available for reroll"
+        )
 
-    seen_asset_ids = {candidate.asset_id for candidate in existing_candidates if candidate.asset_id}
-    seen_urls = {candidate.source_url for candidate in existing_candidates if candidate.source_url}
+    seen_asset_ids = {
+        candidate.asset_id for candidate in existing_candidates if candidate.asset_id
+    }
+    seen_urls = {
+        candidate.source_url
+        for candidate in existing_candidates
+        if candidate.source_url
+    }
 
-    new_candidates: list[tuple[str, str | None, str | None, str | None, float, dict[str, object]]] = []
-    for source_type, asset_id, source_url, source_label, score, reason in merged_candidates:
+    new_candidates: list[
+        tuple[str, str | None, str | None, str | None, float, dict[str, object]]
+    ] = []
+    for (
+        source_type,
+        asset_id,
+        source_url,
+        source_label,
+        score,
+        reason,
+    ) in merged_candidates:
         if asset_id and asset_id in seen_asset_ids:
             continue
         if source_url and source_url in seen_urls:
             continue
-        new_candidates.append((source_type, asset_id, source_url, source_label, score, reason))
+        new_candidates.append(
+            (source_type, asset_id, source_url, source_label, score, reason)
+        )
 
     if not new_candidates:
-        raise HTTPException(status_code=400, detail="No new B-roll variants found for this slot")
+        raise HTTPException(
+            status_code=400, detail="No new B-roll variants found for this slot"
+        )
 
     added_candidate_ids: list[str] = []
-    for source_type, asset_id, source_url, source_label, score, reason in new_candidates:
+    for (
+        source_type,
+        asset_id,
+        source_url,
+        source_label,
+        score,
+        reason,
+    ) in new_candidates:
         row = BrollCandidate(
             project_id=project_id,
             slot_id=slot.id,
@@ -3221,13 +3943,24 @@ def reroll_broll_slot(
                     "visual_intent": visual_intent,
                     "search_concept": search_concept_text,
                     "original_concept_text": concept_text,
-                    "section_label": str(existing_top_reason.get("section_label") or "body"),
+                    "section_label": str(
+                        existing_top_reason.get("section_label") or "body"
+                    ),
                     "shot_style": shot_style,
-                    "source_strategy": str(existing_top_reason.get("source_strategy") or "local_first"),
+                    "source_strategy": str(
+                        existing_top_reason.get("source_strategy") or "local_first"
+                    ),
                     "planner_confidence": existing_top_reason.get("planner_confidence"),
-                    "planner_rationale": str(existing_top_reason.get("planner_rationale") or ""),
+                    "planner_rationale": str(
+                        existing_top_reason.get("planner_rationale") or ""
+                    ),
                     "query_hints": expanded_queries[:8],
-                    "search_strategy_rationale": str(search_strategy.get("rationale") or ""),
+                    **_strategy_debug_fields(
+                        search_strategy=search_strategy, fallback_chunk_text=chunk_text
+                    ),
+                    "search_strategy_rationale": str(
+                        search_strategy.get("rationale") or ""
+                    ),
                     "stockability": str(search_strategy.get("stockability") or ""),
                     "blocked_terms": list(search_strategy.get("blocked_terms") or []),
                     "domain_label": str(domain_context.get("domain") or ""),
@@ -3263,7 +3996,9 @@ def reroll_broll_slot(
         slot_ids=[slot.id],
     )
     if not updated:
-        raise HTTPException(status_code=500, detail="Failed to load rerolled B-roll slot")
+        raise HTTPException(
+            status_code=500, detail="Failed to load rerolled B-roll slot"
+        )
     return updated[0]
 
 
@@ -3273,10 +4008,15 @@ def choose_broll_candidate(
     payload: BrollChooseRequest,
     project_id: str,
     session: Session = Depends(get_session),
+    current_user: dict[str, Any] = Depends(get_current_user),
 ) -> BrollSlotResponse:
     _require_project(session, project_id)
 
-    slot = session.exec(select(BrollSlot).where(BrollSlot.id == slot_id, BrollSlot.project_id == project_id)).first()
+    slot = session.exec(
+        select(BrollSlot).where(
+            BrollSlot.id == slot_id, BrollSlot.project_id == project_id
+        )
+    ).first()
     if not slot:
         raise HTTPException(status_code=404, detail="B-roll slot not found")
     if slot.locked:
@@ -3305,7 +4045,9 @@ def choose_broll_candidate(
             slot_id=slot_id,
             candidate_id=candidate.id,
             action="choose",
-            payload_json=_json_dumps({"candidate_id": candidate.id, "asset_id": candidate.asset_id}),
+            payload_json=_json_dumps(
+                {"candidate_id": candidate.id, "asset_id": candidate.asset_id}
+            ),
         )
     )
     session.commit()
@@ -3317,7 +4059,9 @@ def choose_broll_candidate(
         slot_ids=[slot_id],
     )
     if not updated:
-        raise HTTPException(status_code=500, detail="Failed to load updated B-roll slot")
+        raise HTTPException(
+            status_code=500, detail="Failed to load updated B-roll slot"
+        )
     return updated[0]
 
 
@@ -3327,10 +4071,15 @@ def reject_broll_slot(
     payload: BrollRejectRequest,
     project_id: str,
     session: Session = Depends(get_session),
+    current_user: dict[str, Any] = Depends(get_current_user),
 ) -> BrollSlotResponse:
     _require_project(session, project_id)
 
-    slot = session.exec(select(BrollSlot).where(BrollSlot.id == slot_id, BrollSlot.project_id == project_id)).first()
+    slot = session.exec(
+        select(BrollSlot).where(
+            BrollSlot.id == slot_id, BrollSlot.project_id == project_id
+        )
+    ).first()
     if not slot:
         raise HTTPException(status_code=404, detail="B-roll slot not found")
     if slot.locked:
@@ -3358,5 +4107,7 @@ def reject_broll_slot(
         slot_ids=[slot_id],
     )
     if not updated:
-        raise HTTPException(status_code=500, detail="Failed to load updated B-roll slot")
+        raise HTTPException(
+            status_code=500, detail="Failed to load updated B-roll slot"
+        )
     return updated[0]
