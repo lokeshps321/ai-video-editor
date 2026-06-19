@@ -41,7 +41,7 @@ def _env_bool(name: str, default: bool) -> bool:
 USE_LLM_TRANSLITERATION = _env_bool("TRANSLITERATE_USE_LLM", True)
 
 # Gemini model for transliteration
-GEMINI_TRANSLITERATION_MODEL = os.getenv("TRANSLITERATION_GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_TRANSLITERATION_MODEL = os.getenv("TRANSLITERATION_GEMINI_MODEL", "gemini-3.5-flash")
 
 # Cache directory for LLM results
 TRANSLITERATION_CACHE_DIR = Path(
