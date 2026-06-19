@@ -40,6 +40,9 @@ def _env_bool(name: str, default: bool) -> bool:
 # Use LLM for transliteration (best quality)
 USE_LLM_TRANSLITERATION = _env_bool("TRANSLITERATE_USE_LLM", True)
 
+# Gemini model for transliteration
+GEMINI_TRANSLITERATION_MODEL = os.getenv("TRANSLITERATION_GEMINI_MODEL", "gemini-2.5-flash")
+
 # Cache directory for LLM results
 TRANSLITERATION_CACHE_DIR = Path(
     os.getenv("TRANSLITERATION_CACHE_DIR", "./tmp/transliteration_cache")
@@ -251,7 +254,7 @@ Return ONLY the transliterated text, nothing else."""
 
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        model = genai.GenerativeModel(GEMINI_TRANSLITERATION_MODEL)
         response = model.generate_content(
             prompt,
             generation_config=genai.types.GenerationConfig(
@@ -321,7 +324,7 @@ def _transliterate_words_with_llm(words: list[dict], script: str) -> list[dict] 
 
     # Configure API and create model once, outside the chunk loop
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-2.5-flash")
+    model = genai.GenerativeModel(GEMINI_TRANSLITERATION_MODEL)
 
     for chunk_start in range(0, len(words), chunk_size):
         chunk = words[chunk_start : chunk_start + chunk_size]
