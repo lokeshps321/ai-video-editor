@@ -14,15 +14,15 @@
 
   /* Primary accent: cyan (same as landing --cyan) */
   --accent: #5eead4;
-  --accent-secondary: #f6c453;          /* amber — landing --amber */
+  --accent-secondary: #f6c453; /* amber — landing --amber */
   --accent-tertiary: #d1fff8;
   --accent-glow: rgba(94, 234, 212, 0.26);
-  --accent-ink: #071010;                /* dark on cyan / amber */
+  --accent-ink: #071010; /* dark on cyan / amber */
 
   /* Status */
-  --danger: #ff6b81;                    /* rose — landing --rose */
+  --danger: #ff6b81; /* rose — landing --rose */
   --danger-soft: rgba(255, 107, 129, 0.14);
-  --success: #b8f36c;                   /* lime — landing --lime */
+  --success: #b8f36c; /* lime — landing --lime */
   --success-glow: rgba(184, 243, 108, 0.18);
 
   /* Selection / active / filler */
@@ -42,7 +42,8 @@
   /* Shape & fonts */
   --radius: 12px;
   --radius-sm: 8px;
-  --font-sans: "Plus Jakarta Sans", "Outfit", -apple-system, "Segoe UI", sans-serif;
+  --font-sans:
+    "Plus Jakarta Sans", "Outfit", -apple-system, "Segoe UI", sans-serif;
   --font-heading: "Outfit", -apple-system, "Segoe UI", sans-serif;
 
   /* Violet (b-roll / extra accent) */
@@ -71,8 +72,8 @@ body::after {
   pointer-events: none;
   opacity: 0.18;
   background-image:
-    linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255,255,255,0.032) 1px, transparent 1px);
+    linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.032) 1px, transparent 1px);
   background-size: 72px 72px;
   mask-image: linear-gradient(to bottom, black 0%, transparent 80%);
   z-index: 0;
@@ -91,8 +92,16 @@ body::before {
   pointer-events: none;
   z-index: -1;
   background:
-    radial-gradient(ellipse 60% 40% at 15% 10%, rgba(94, 234, 212, 0.07) 0%, transparent 70%),
-    radial-gradient(ellipse 50% 38% at 85% 88%, rgba(246, 196, 83, 0.06) 0%, transparent 65%);
+    radial-gradient(
+      ellipse 60% 40% at 15% 10%,
+      rgba(94, 234, 212, 0.07) 0%,
+      transparent 70%
+    ),
+    radial-gradient(
+      ellipse 50% 38% at 85% 88%,
+      rgba(246, 196, 83, 0.06) 0%,
+      transparent 65%
+    );
   will-change: auto;
 }
 
@@ -158,7 +167,13 @@ body::before {
   font-weight: 800;
   line-height: 1.1;
   margin: 0 0 24px;
-  background: linear-gradient(to right, #ffffff, var(--accent), var(--accent-secondary), var(--accent-tertiary));
+  background: linear-gradient(
+    to right,
+    #ffffff,
+    var(--accent),
+    var(--accent-secondary),
+    var(--accent-tertiary)
+  );
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -191,7 +206,9 @@ body::before {
   padding: 8px;
   border-radius: 16px;
   border: 1px solid var(--border);
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8), 0 0 0 1px var(--border);
+  box-shadow:
+    0 20px 50px rgba(0, 0, 0, 0.8),
+    0 0 0 1px var(--border);
 }
 
 .heroInput {
@@ -218,7 +235,10 @@ body::before {
   font-size: 1.05rem;
   font-weight: 600;
   cursor: pointer;
-  transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease,
+    filter 0.2s ease;
   box-shadow: 0 4px 15px var(--accent-glow);
   display: flex;
   align-items: center;
@@ -253,7 +273,9 @@ body::before {
   padding: 24px;
   text-align: left;
   backdrop-filter: blur(10px);
-  transition: transform 0.2s ease, background 0.2s ease;
+  transition:
+    transform 0.2s ease,
+    background 0.2s ease;
 }
 
 .featureCard:hover {
@@ -287,7 +309,6 @@ body::before {
   color: var(--muted);
   line-height: 1.5;
 }
-
 
 /* ── Brand logo (landing + editor) ─────────────────────────────── */
 .brand-logo {
@@ -422,13 +443,22 @@ h1 {
 .card {
   background: var(--panel);
   border: 1px solid var(--border);
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 20px 50px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  box-shadow:
+    0 4px 6px -1px rgba(0, 0, 0, 0.4),
+    0 20px 50px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
   border-radius: var(--radius);
-  transition: transform 0.3s ease, box-shadow 0.3s ease;
+  transition:
+    transform 0.3s ease,
+    box-shadow 0.3s ease;
 }
 
 .card:hover {
-  box-shadow: 0 8px 18px -3px rgba(0, 0, 0, 0.45), 0 24px 48px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 0 0 1px rgba(94, 234, 212, 0.08);
+  box-shadow:
+    0 8px 18px -3px rgba(0, 0, 0, 0.45),
+    0 24px 48px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 0 0 1px rgba(94, 234, 212, 0.08);
 }
 
 /* ── Controls bar ────────────────────────────────── */
@@ -519,7 +549,10 @@ h1 {
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+  transition:
+    border-color 0.2s ease,
+    background 0.2s ease,
+    box-shadow 0.2s ease;
 }
 
 .projectReopenItem:hover:not(.danger) {
@@ -741,8 +774,12 @@ h1 {
 
 /* Spinning animation for refresh icon */
 @keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .spin {
@@ -751,18 +788,22 @@ h1 {
 
 /* Quick Edit button */
 .quickEditBtn {
-  background: linear-gradient(135deg, #FFD700, #FF8C00) !important;
+  background: linear-gradient(135deg, #ffd700, #ff8c00) !important;
   color: #1a1a1a !important;
   border-color: transparent !important;
   font-weight: 700 !important;
   letter-spacing: 0.03em;
   position: relative;
   overflow: hidden;
-  transition: box-shadow 0.3s ease, transform 0.2s ease !important;
+  transition:
+    box-shadow 0.3s ease,
+    transform 0.2s ease !important;
 }
 
 .quickEditBtn:hover:not(:disabled) {
-  box-shadow: 0 0 20px rgba(255, 215, 0, 0.35), 0 4px 12px rgba(0, 0, 0, 0.3);
+  box-shadow:
+    0 0 20px rgba(255, 215, 0, 0.35),
+    0 4px 12px rgba(0, 0, 0, 0.3);
   transform: translateY(-1px);
 }
 
@@ -783,7 +824,9 @@ h1 {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: border-color 0.2s, color 0.2s;
+  transition:
+    border-color 0.2s,
+    color 0.2s;
 }
 
 .shortcutsHelpBtn:hover {
@@ -887,8 +930,12 @@ h1 {
 }
 
 @keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .creatorTopMeta span {
@@ -902,7 +949,10 @@ h1 {
 select,
 button,
 .uploadBtn {
-  font-family: "Outfit", -apple-system, sans-serif;
+  font-family:
+    "Outfit",
+    -apple-system,
+    sans-serif;
   font-size: 0.9rem;
 }
 
@@ -913,7 +963,11 @@ button,
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-light);
   min-height: 42px;
-  transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease, color 0.2s ease;
+  transition:
+    border-color 0.2s ease,
+    background-color 0.2s ease,
+    box-shadow 0.2s ease,
+    color 0.2s ease;
 }
 
 select {
@@ -1045,10 +1099,16 @@ button:not(:disabled):hover,
   padding: 14px 16px;
   border-radius: var(--radius);
   background:
-    linear-gradient(135deg, rgba(94, 234, 212, 0.12), rgba(255, 255, 255, 0.03)),
+    linear-gradient(
+      135deg,
+      rgba(94, 234, 212, 0.12),
+      rgba(255, 255, 255, 0.03)
+    ),
     rgba(16, 18, 28, 0.88);
   border: 1px solid rgba(94, 234, 212, 0.26);
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  box-shadow:
+    0 18px 44px rgba(0, 0, 0, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
 }
 
 .completionCardHeader {
@@ -1179,7 +1239,7 @@ button:not(:disabled):hover,
   align-items: start;
 }
 
-.twoPanel>* {
+.twoPanel > * {
   min-width: 0;
 }
 
@@ -1553,7 +1613,9 @@ button:not(:disabled):hover,
   transform: translateX(calc(100% + 18px));
   opacity: 0;
   pointer-events: none;
-  transition: transform 0.24s ease, opacity 0.24s ease;
+  transition:
+    transform 0.24s ease,
+    opacity 0.24s ease;
 }
 
 .featureDrawer.open {
@@ -1779,7 +1841,10 @@ button:not(:disabled):hover,
   min-height: auto;
   padding: 2px 3px;
   cursor: pointer;
-  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
   line-height: 1.5;
   box-shadow: none;
   letter-spacing: 0.01em;
@@ -1814,7 +1879,6 @@ button:not(:disabled):hover,
 }
 
 @keyframes pulse {
-
   0%,
   100% {
     box-shadow: 0 0 0 0 var(--active-glow);
@@ -2247,7 +2311,10 @@ button:not(:disabled):hover,
 }
 
 .livePreviewCaptionWord {
-  transition: color 120ms ease, opacity 120ms ease, filter 120ms ease;
+  transition:
+    color 120ms ease,
+    opacity 120ms ease,
+    filter 120ms ease;
 }
 
 .livePreviewCaptionWord.active {
@@ -2313,7 +2380,11 @@ button:not(:disabled):hover,
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-secondary) 100%);
+  background: linear-gradient(
+    90deg,
+    var(--accent) 0%,
+    var(--accent-secondary) 100%
+  );
   box-shadow: 0 0 12px var(--accent-glow);
   transition: width 0.35s ease;
 }
@@ -2323,7 +2394,6 @@ button:not(:disabled):hover,
 }
 
 @keyframes previewPulse {
-
   0%,
   100% {
     opacity: 0.35;
@@ -2365,7 +2435,10 @@ button:not(:disabled):hover,
   font-size: 0.8rem;
   font-weight: 600;
   cursor: pointer;
-  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease;
 }
 
 .previewAspectBtn:hover {
@@ -2521,7 +2594,9 @@ button:not(:disabled):hover,
   background: rgba(15, 23, 42, 0.35);
   border-radius: 14px;
   border: 1px solid rgba(255, 255, 255, 0.06);
-  box-shadow: inset 0 0 12px rgba(255, 255, 255, 0.02), 0 6px 20px rgba(0, 0, 0, 0.18);
+  box-shadow:
+    inset 0 0 12px rgba(255, 255, 255, 0.02),
+    0 6px 20px rgba(0, 0, 0, 0.18);
 }
 
 .featureTabs::-webkit-scrollbar {
@@ -2549,7 +2624,12 @@ button:not(:disabled):hover,
   padding: 10px 18px;
   border-radius: 8px;
   white-space: nowrap;
-  transition: background-color 0.24s ease, border-color 0.24s ease, color 0.24s ease, box-shadow 0.24s ease, transform 0.24s ease;
+  transition:
+    background-color 0.24s ease,
+    border-color 0.24s ease,
+    color 0.24s ease,
+    box-shadow 0.24s ease,
+    transform 0.24s ease;
   cursor: pointer;
   position: relative;
   overflow: hidden;
@@ -2570,7 +2650,11 @@ button:not(:disabled):hover,
   content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.15), rgba(255, 255, 255, 0.1));
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.15),
+    rgba(255, 255, 255, 0.1)
+  );
   opacity: 0;
   transition: opacity 0.3s ease;
   z-index: -1;
@@ -2590,7 +2674,9 @@ button:not(:disabled):hover,
   background: color-mix(in srgb, var(--accent) 18%, rgba(255, 255, 255, 0.06));
   color: var(--accent-tertiary);
   border-color: color-mix(in srgb, var(--accent) 78%, white);
-  box-shadow: 0 4px 15px var(--accent-glow), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  box-shadow:
+    0 4px 15px var(--accent-glow),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08);
   text-shadow: 0 0 12px rgba(111, 214, 255, 0.32);
 }
 
@@ -2605,10 +2691,16 @@ button:not(:disabled):hover,
 }
 
 .featureTabContent {
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.6) 0%, rgba(10, 15, 30, 0.8) 100%);
+  background: linear-gradient(
+    180deg,
+    rgba(15, 23, 42, 0.6) 0%,
+    rgba(10, 15, 30, 0.8) 100%
+  );
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 16px;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  box-shadow:
+    0 16px 40px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
   animation: tabSlideIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
   width: 100%;
   max-width: 100%;
@@ -2670,16 +2762,26 @@ button:not(:disabled):hover,
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 12px;
   cursor: pointer;
-  transition: background-color 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease, transform 0.22s ease;
+  transition:
+    background-color 0.22s ease,
+    border-color 0.22s ease,
+    box-shadow 0.22s ease,
+    transform 0.22s ease;
   text-align: left;
   min-height: auto;
 }
 
 .actionCard:not(:disabled):hover {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.15), rgba(255, 255, 255, 0.1));
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.15),
+    rgba(255, 255, 255, 0.1)
+  );
   border-color: var(--accent);
   transform: translateY(-4px) scale(1.02);
-  box-shadow: 0 10px 25px var(--accent-glow), inset 0 0 10px rgba(255, 255, 255, 0.1);
+  box-shadow:
+    0 10px 25px var(--accent-glow),
+    inset 0 0 10px rgba(255, 255, 255, 0.1);
 }
 
 .actionCard:disabled {
@@ -2688,12 +2790,20 @@ button:not(:disabled):hover,
 }
 
 .actionCardPrimary {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.15), rgba(255, 255, 255, 0.1));
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.15),
+    rgba(255, 255, 255, 0.1)
+  );
   border-color: rgba(255, 255, 255, 0.3);
 }
 
 .actionCardPrimary:not(:disabled):hover {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.24), color-mix(in srgb, var(--accent) 26%, transparent));
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.24),
+    color-mix(in srgb, var(--accent) 26%, transparent)
+  );
   border-color: var(--accent);
   box-shadow: 0 12px 30px var(--accent-glow);
   transform: translateY(-4px) scale(1.02);
@@ -2756,11 +2866,19 @@ button:not(:disabled):hover,
   align-items: center;
   gap: 6px;
   padding: 10px 8px 12px;
-  background: linear-gradient(145deg, rgba(15, 23, 42, 0.7), rgba(10, 15, 30, 0.9));
+  background: linear-gradient(
+    145deg,
+    rgba(15, 23, 42, 0.7),
+    rgba(10, 15, 30, 0.9)
+  );
   border: 1.5px solid rgba(255, 255, 255, 0.06);
   border-radius: 14px;
   cursor: pointer;
-  transition: background-color 0.24s ease, border-color 0.24s ease, box-shadow 0.24s ease, transform 0.24s ease;
+  transition:
+    background-color 0.24s ease,
+    border-color 0.24s ease,
+    box-shadow 0.24s ease,
+    transform 0.24s ease;
   text-align: center;
   min-height: auto;
   overflow: hidden;
@@ -2771,7 +2889,11 @@ button:not(:disabled):hover,
   position: absolute;
   inset: 0;
   border-radius: 14px;
-  background: radial-gradient(circle at 50% 0%, var(--caption-accent, rgba(255, 255, 255, 0.1)) 0%, transparent 70%);
+  background: radial-gradient(
+    circle at 50% 0%,
+    var(--caption-accent, rgba(255, 255, 255, 0.1)) 0%,
+    transparent 70%
+  );
   opacity: 0;
   transition: opacity 0.35s ease;
   pointer-events: none;
@@ -2780,8 +2902,14 @@ button:not(:disabled):hover,
 .captionStyleCard:not(:disabled):hover {
   border-color: var(--caption-accent, rgba(255, 255, 255, 0.25));
   transform: translateY(-4px) scale(1.02);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4),
-    0 0 20px color-mix(in srgb, var(--caption-accent, var(--accent-secondary)) 15%, transparent);
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.4),
+    0 0 20px
+      color-mix(
+        in srgb,
+        var(--caption-accent, var(--accent-secondary)) 15%,
+        transparent
+      );
 }
 
 .captionStyleCard:not(:disabled):hover::before {
@@ -2789,10 +2917,25 @@ button:not(:disabled):hover,
 }
 
 .captionStyleCard.active {
-  background: linear-gradient(145deg, rgba(20, 30, 50, 0.85), rgba(15, 23, 42, 0.95));
+  background: linear-gradient(
+    145deg,
+    rgba(20, 30, 50, 0.85),
+    rgba(15, 23, 42, 0.95)
+  );
   border-color: var(--caption-accent, var(--accent-secondary));
-  box-shadow: 0 0 24px color-mix(in srgb, var(--caption-accent, var(--accent-secondary)) 30%, transparent),
-    inset 0 0 12px color-mix(in srgb, var(--caption-accent, var(--accent-secondary)) 8%, transparent);
+  box-shadow:
+    0 0 24px
+      color-mix(
+        in srgb,
+        var(--caption-accent, var(--accent-secondary)) 30%,
+        transparent
+      ),
+    inset 0 0 12px
+      color-mix(
+        in srgb,
+        var(--caption-accent, var(--accent-secondary)) 8%,
+        transparent
+      );
 }
 
 .captionStyleCard.active::before {
@@ -2800,14 +2943,37 @@ button:not(:disabled):hover,
 }
 
 @keyframes captionGlowPulse {
-
   0%,
   100% {
-    box-shadow: 0 0 20px color-mix(in srgb, var(--caption-accent, var(--accent-secondary)) 25%, transparent), inset 0 0 10px color-mix(in srgb, var(--caption-accent, var(--accent-secondary)) 6%, transparent);
+    box-shadow:
+      0 0 20px
+        color-mix(
+          in srgb,
+          var(--caption-accent, var(--accent-secondary)) 25%,
+          transparent
+        ),
+      inset 0 0 10px
+        color-mix(
+          in srgb,
+          var(--caption-accent, var(--accent-secondary)) 6%,
+          transparent
+        );
   }
 
   50% {
-    box-shadow: 0 0 30px color-mix(in srgb, var(--caption-accent, var(--accent-secondary)) 40%, transparent), inset 0 0 16px color-mix(in srgb, var(--caption-accent, var(--accent-secondary)) 12%, transparent);
+    box-shadow:
+      0 0 30px
+        color-mix(
+          in srgb,
+          var(--caption-accent, var(--accent-secondary)) 40%,
+          transparent
+        ),
+      inset 0 0 16px
+        color-mix(
+          in srgb,
+          var(--caption-accent, var(--accent-secondary)) 12%,
+          transparent
+        );
   }
 }
 
@@ -2815,7 +2981,11 @@ button:not(:disabled):hover,
   width: 100%;
   height: 80px;
   border-radius: 8px;
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0.6) 0%, rgba(0, 0, 0, 0.85) 100%);
+  background: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.6) 0%,
+    rgba(0, 0, 0, 0.85) 100%
+  );
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2857,7 +3027,8 @@ button:not(:disabled):hover,
   border-radius: 999px;
   background: var(--caption-accent, rgba(255, 255, 255, 0.16));
   color: #081018;
-  box-shadow: 0 0 12px color-mix(in srgb, var(--caption-accent, #fff) 38%, transparent);
+  box-shadow: 0 0 12px
+    color-mix(in srgb, var(--caption-accent, #fff) 38%, transparent);
 }
 
 .captionPreviewPulse {
@@ -2866,7 +3037,11 @@ button:not(:disabled):hover,
   width: 58%;
   height: 24px;
   border-radius: 999px;
-  background: radial-gradient(circle, color-mix(in srgb, var(--caption-accent, #fff) 24%, transparent) 0%, transparent 70%);
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--caption-accent, #fff) 24%, transparent) 0%,
+    transparent 70%
+  );
   transform: translateX(-50%);
   opacity: 0.75;
 }
@@ -2890,7 +3065,9 @@ button:not(:disabled):hover,
   transform: scale(1.08);
 }
 
-.captionStyleCard:is(:hover, .active) .captionPreviewScene.hormozi .captionPreviewHighlight {
+.captionStyleCard:is(:hover, .active)
+  .captionPreviewScene.hormozi
+  .captionPreviewHighlight {
   animation: captionPreviewHop 1.15s ease-in-out infinite;
 }
 
@@ -2906,13 +3083,19 @@ button:not(:disabled):hover,
   box-shadow: 0 0 18px rgba(255, 230, 0, 0.45);
 }
 
-.captionStyleCard:is(:hover, .active) .captionPreviewScene.viral .captionPreviewHighlight {
+.captionStyleCard:is(:hover, .active)
+  .captionPreviewScene.viral
+  .captionPreviewHighlight {
   animation: captionPreviewFlash 0.95s ease-in-out infinite;
 }
 
 .captionPreviewScene.neon {
   background:
-    radial-gradient(circle at 50% 100%, rgba(255, 0, 60, 0.18), transparent 58%),
+    radial-gradient(
+      circle at 50% 100%,
+      rgba(255, 0, 60, 0.18),
+      transparent 58%
+    ),
     linear-gradient(180deg, rgba(2, 8, 18, 0.3), rgba(0, 0, 0, 0));
 }
 
@@ -2938,7 +3121,11 @@ button:not(:disabled):hover,
 }
 
 .captionPreviewScene.minimal {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0));
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.04),
+    rgba(255, 255, 255, 0)
+  );
 }
 
 .captionPreviewScene.minimal .captionPreviewText {
@@ -2954,7 +3141,11 @@ button:not(:disabled):hover,
 
 /* Indian creator caption presets */
 .captionPreviewScene.desi {
-  background: linear-gradient(180deg, rgba(255, 215, 0, 0.08), rgba(0, 0, 0, 0.5));
+  background: linear-gradient(
+    180deg,
+    rgba(255, 215, 0, 0.08),
+    rgba(0, 0, 0, 0.5)
+  );
 }
 
 .captionPreviewScene.desi .captionPreviewText {
@@ -2963,17 +3154,23 @@ button:not(:disabled):hover,
 }
 
 .captionPreviewScene.desi .captionPreviewHighlight {
-  background: linear-gradient(135deg, #FFD700, #FFA500);
+  background: linear-gradient(135deg, #ffd700, #ffa500);
   color: #1a0a00;
   box-shadow: 0 0 16px rgba(255, 215, 0, 0.45);
 }
 
-.captionStyleCard:is(:hover, .active) .captionPreviewScene.desi .captionPreviewHighlight {
+.captionStyleCard:is(:hover, .active)
+  .captionPreviewScene.desi
+  .captionPreviewHighlight {
   animation: captionPreviewFlash 1.8s ease infinite;
 }
 
 .captionPreviewScene.indic {
-  background: linear-gradient(180deg, rgba(128, 222, 234, 0.08), rgba(0, 0, 0, 0.45));
+  background: linear-gradient(
+    180deg,
+    rgba(128, 222, 234, 0.08),
+    rgba(0, 0, 0, 0.45)
+  );
 }
 
 .captionPreviewScene.indic .captionPreviewText {
@@ -3117,7 +3314,11 @@ button:not(:disabled):hover,
   color: rgba(255, 150, 150, 0.9);
   border-radius: 10px;
   cursor: pointer;
-  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease,
+    box-shadow 0.2s ease;
 }
 
 .captionRemoveBtn:not(:disabled):hover {
@@ -3168,7 +3369,11 @@ button:not(:disabled):hover,
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 12px;
   cursor: pointer;
-  transition: background-color 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease, transform 0.22s ease;
+  transition:
+    background-color 0.22s ease,
+    border-color 0.22s ease,
+    box-shadow 0.22s ease,
+    transform 0.22s ease;
   text-align: center;
   min-height: auto;
 }
@@ -3266,7 +3471,10 @@ button:not(:disabled):hover,
   font-size: 0.82rem;
   font-weight: 500;
   cursor: pointer;
-  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease;
   min-height: auto;
 }
 
@@ -3359,7 +3567,10 @@ button:not(:disabled):hover,
   font-size: 0.82rem;
   font-weight: 600;
   cursor: pointer;
-  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease;
 }
 
 .exportGuideBtn:hover {
@@ -3368,7 +3579,11 @@ button:not(:disabled):hover,
 
 .exportGuideBtn.active {
   background: color-mix(in srgb, var(--accent) 16%, rgba(255, 255, 255, 0.04));
-  border-color: color-mix(in srgb, var(--accent) 48%, rgba(255, 255, 255, 0.08));
+  border-color: color-mix(
+    in srgb,
+    var(--accent) 48%,
+    rgba(255, 255, 255, 0.08)
+  );
   color: var(--accent-tertiary);
 }
 
@@ -3381,7 +3596,11 @@ button:not(:disabled):hover,
   font-size: 0.95rem;
   padding: 14px 20px;
   min-height: 48px;
-  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-secondary) 100%) !important;
+  background: linear-gradient(
+    135deg,
+    var(--accent) 0%,
+    var(--accent-secondary) 100%
+  ) !important;
   border-color: transparent !important;
   box-shadow: 0 10px 28px var(--accent-glow);
 }
@@ -3470,7 +3689,10 @@ button:not(:disabled):hover,
   padding: 14px 16px;
   background: rgba(15, 23, 42, 0.6);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
-  transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
 }
 
 .brollSlotCard:hover {
@@ -3489,7 +3711,9 @@ button:not(:disabled):hover,
 
 .brollSlotCard.focused {
   border-color: rgba(94, 234, 212, 0.58);
-  box-shadow: 0 0 0 1px rgba(94, 234, 212, 0.18), 0 10px 26px rgba(0, 0, 0, 0.22);
+  box-shadow:
+    0 0 0 1px rgba(94, 234, 212, 0.18),
+    0 10px 26px rgba(0, 0, 0, 0.22);
 }
 
 .brollSlotCard.pending {
@@ -3720,7 +3944,11 @@ button:not(:disabled):hover,
   flex: 0 0 auto;
   border-radius: 8px;
   overflow: hidden;
-  background: radial-gradient(circle at 0% 0%, rgba(255, 255, 255, 0.7), rgba(15, 23, 42, 0.9));
+  background: radial-gradient(
+    circle at 0% 0%,
+    rgba(255, 255, 255, 0.7),
+    rgba(15, 23, 42, 0.9)
+  );
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3741,7 +3969,11 @@ button:not(:disabled):hover,
   height: 100%;
   border-radius: 8px;
   border: 1px solid rgba(15, 23, 42, 0.7);
-  background: linear-gradient(135deg, rgba(15, 23, 42, 0.7), rgba(15, 23, 42, 0.3));
+  background: linear-gradient(
+    135deg,
+    rgba(15, 23, 42, 0.7),
+    rgba(15, 23, 42, 0.3)
+  );
   display: flex;
   align-items: flex-end;
   justify-content: flex-start;
@@ -3781,7 +4013,11 @@ button:not(:disabled):hover,
   background: rgba(255, 255, 255, 0.04);
   color: var(--ink);
   text-align: left;
-  transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s ease;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 
@@ -3852,7 +4088,11 @@ button:not(:disabled):hover,
 
 .brollCandidateBtn.chosen {
   border-color: rgba(255, 255, 255, 0.6);
-  background: linear-gradient(to right, rgba(255, 255, 255, 0.15), rgba(255, 255, 255, 0.05));
+  background: linear-gradient(
+    to right,
+    rgba(255, 255, 255, 0.15),
+    rgba(255, 255, 255, 0.05)
+  );
   box-shadow: 0 0 15px rgba(255, 255, 255, 0.2);
 }
 
@@ -4233,7 +4473,11 @@ VISUAL TIMELINE
 
 .timelineAssistToggle.active {
   color: var(--ink);
-  border-color: color-mix(in srgb, var(--accent) 44%, rgba(255, 255, 255, 0.08));
+  border-color: color-mix(
+    in srgb,
+    var(--accent) 44%,
+    rgba(255, 255, 255, 0.08)
+  );
   background: color-mix(in srgb, var(--accent) 16%, rgba(255, 255, 255, 0.04));
 }
 
@@ -4389,7 +4633,11 @@ VISUAL TIMELINE
 
 .trackRailBtn.active {
   color: var(--ink);
-  border-color: color-mix(in srgb, var(--accent) 40%, rgba(255, 255, 255, 0.08));
+  border-color: color-mix(
+    in srgb,
+    var(--accent) 40%,
+    rgba(255, 255, 255, 0.08)
+  );
   background: color-mix(in srgb, var(--accent) 18%, rgba(255, 255, 255, 0.05));
 }
 
@@ -4418,9 +4666,9 @@ VISUAL TIMELINE
 /* ── Video / Audio Lanes ───────────────── */
 .timelineLane {
   position: relative;
-  height: 52px;
+  height: 72px;
   margin-left: var(--timeline-rail-width, 52px);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .timelineLane.video {
@@ -4438,63 +4686,116 @@ VISUAL TIMELINE
 .laneEmpty {
   position: absolute;
   left: 8px;
-  top: 15px;
+  top: 50%;
+  transform: translateY(-50%);
   font-size: 0.68rem;
   color: rgba(255, 255, 255, 0.32);
 }
 
 .timelineLaneClip {
   position: absolute;
-  top: 7px;
-  height: 36px;
+  top: 6px;
+  height: 60px;
   border-radius: 8px;
   border: 1px solid transparent;
-  font-size: 0.64rem;
-  line-height: 36px;
-  text-align: center;
+  font-size: 0.72rem;
+  line-height: 1;
+  text-align: left;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  padding: 0 12px;
+  padding: 0;
   cursor: grab;
   user-select: none;
 }
 
 .timelineLaneClip.video {
   color: #eaf0ff;
-  background: rgba(20, 26, 47, 0.68);
-  border-color: rgba(120, 151, 255, 0.65);
-  padding: 0 16px;
+  background:
+    linear-gradient(180deg, rgba(27, 34, 60, 0.94), rgba(12, 17, 31, 0.94)),
+    rgba(20, 26, 47, 0.75);
+  border-color: rgba(120, 151, 255, 0.7);
+  padding: 0;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -20px 32px rgba(4, 6, 14, 0.34);
 }
 
 .timelineLaneFilmstrip {
   position: absolute;
   inset: 0;
   display: flex;
-  gap: 1px;
+  gap: 2px;
   pointer-events: none;
+  padding: 2px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 32%),
+    #090d18;
 }
 
 .timelineLaneThumb {
   position: relative;
   flex: 1 1 0;
-  width: auto;
+  min-width: 0;
   height: 100%;
-  object-fit: cover;
-  opacity: 0.95;
+  overflow: hidden;
+  border-radius: 5px;
   pointer-events: none;
+  background: linear-gradient(180deg, #101726, #080b13);
+}
+
+.timelineLaneThumbVideo {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  background: transparent;
+}
+
+.timelineLaneThumbVideo.ready {
+  opacity: 0.98;
+}
+
+.timelineLaneThumbFallback {
+  width: 100%;
+  height: 100%;
+  background:
+    linear-gradient(
+      135deg,
+      rgba(109, 129, 255, 0.22),
+      rgba(7, 11, 22, 0.24) 42%,
+      rgba(7, 11, 22, 0.88)
+    ),
+    repeating-linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.04) 0,
+      rgba(255, 255, 255, 0.04) 1px,
+      transparent 1px,
+      transparent 18px
+    );
 }
 
 .timelineLaneClip.video::after {
   content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(to top, rgba(6, 8, 16, 0.64), rgba(6, 8, 16, 0.22));
+  background: linear-gradient(
+    to top,
+    rgba(6, 8, 16, 0.72) 0%,
+    rgba(6, 8, 16, 0.1) 55%,
+    transparent 100%
+  );
   pointer-events: none;
+  border-radius: inherit;
 }
 
 .timelineLaneClip.selected {
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.45), 0 0 20px rgba(64, 193, 255, 0.22);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.45),
+    0 0 20px rgba(64, 193, 255, 0.22);
 }
 
 .timelineLaneClip.dragging {
@@ -4506,12 +4807,46 @@ VISUAL TIMELINE
 }
 
 .laneClipMeta {
-  position: relative;
-  z-index: 1;
-  display: inline-block;
+  display: none;
+}
+
+/* Clip label: shows filename + duration over the filmstrip */
+.laneClipLabel {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 4px 8px 5px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  pointer-events: none;
+  border-radius: 0 0 7px 7px;
+  background: linear-gradient(180deg, transparent, rgba(4, 7, 14, 0.88));
+}
+
+.laneClipName {
+  font-size: 0.73rem;
+  font-weight: 650;
+  color: #fff;
+  text-shadow:
+    0 1px 4px rgba(0, 0, 0, 0.95),
+    0 0 8px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   width: 100%;
-  text-align: center;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  line-height: 1.2;
+}
+
+.laneClipDuration {
+  font-size: 0.62rem;
+  font-weight: 500;
+  color: rgba(220, 230, 255, 0.8);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95);
+  line-height: 1.2;
 }
 
 .timelineLaneClip.audio {
@@ -4559,7 +4894,11 @@ VISUAL TIMELINE
   height: 30px;
   border-radius: 8px;
   border: 1px solid rgba(255, 221, 115, 0.38);
-  background: linear-gradient(180deg, rgba(255, 222, 102, 0.18), rgba(255, 180, 61, 0.16));
+  background: linear-gradient(
+    180deg,
+    rgba(255, 222, 102, 0.18),
+    rgba(255, 180, 61, 0.16)
+  );
   color: #fff6d6;
   font-size: 0.68rem;
   line-height: 30px;
@@ -4572,7 +4911,9 @@ VISUAL TIMELINE
 }
 
 .captionBlock.selected {
-  box-shadow: 0 0 0 1px rgba(255, 230, 146, 0.9), 0 0 20px rgba(255, 195, 77, 0.2);
+  box-shadow:
+    0 0 0 1px rgba(255, 230, 146, 0.9),
+    0 0 20px rgba(255, 195, 77, 0.2);
 }
 
 .captionBlock.dragging {
@@ -4633,7 +4974,11 @@ VISUAL TIMELINE
   top: 7px;
   height: 24px;
   border-radius: 7px;
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0.75), rgba(85, 230, 230, 0.95));
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.75),
+    rgba(85, 230, 230, 0.95)
+  );
   border: 1px solid rgba(255, 255, 255, 0.75);
   color: #001a1c;
   font-weight: 700;
@@ -4649,7 +4994,9 @@ VISUAL TIMELINE
 }
 
 .brollBlock.selected {
-  box-shadow: 0 0 0 1px rgba(160, 250, 250, 0.95), 0 0 12px rgba(255, 255, 255, 0.45);
+  box-shadow:
+    0 0 0 1px rgba(160, 250, 250, 0.95),
+    0 0 12px rgba(255, 255, 255, 0.45);
 }
 
 .brollBlock.dragging {
@@ -4751,7 +5098,10 @@ VISUAL TIMELINE
   white-space: nowrap;
   padding: 0 3px;
   line-height: 24px;
-  transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  transition:
+    background-color 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
   user-select: none;
 }
 
@@ -4898,11 +5248,13 @@ VISUAL TIMELINE
   position: absolute;
   top: 0;
   height: 100%;
-  background: repeating-linear-gradient(-45deg,
-      rgba(239, 68, 68, 0.08),
-      rgba(239, 68, 68, 0.08) 3px,
-      transparent 3px,
-      transparent 7px);
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(239, 68, 68, 0.08),
+    rgba(239, 68, 68, 0.08) 3px,
+    transparent 3px,
+    transparent 7px
+  );
   border-left: 1px dashed rgba(239, 68, 68, 0.25);
   border-right: 1px dashed rgba(239, 68, 68, 0.25);
   pointer-events: none;
@@ -5002,7 +5354,6 @@ VISUAL TIMELINE
   color: var(--ink);
 }
 
-
 button {
   transition:
     background-color 0.18s ease,
@@ -5015,7 +5366,6 @@ button {
 button:active {
   transform: scale(0.985);
 }
-
 
 .panel {
   animation: slideUpFade 0.6s cubic-bezier(0.16, 1, 0.3, 1) backwards;
@@ -5095,19 +5445,32 @@ h3 {
   border: 1px dashed rgba(94, 234, 212, 0.22);
   border-radius: var(--radius);
   background:
-    radial-gradient(ellipse 70% 50% at 50% 0%, rgba(94, 234, 212, 0.05), transparent 70%),
+    radial-gradient(
+      ellipse 70% 50% at 50% 0%,
+      rgba(94, 234, 212, 0.05),
+      transparent 70%
+    ),
     rgba(12, 14, 22, 0.65);
   text-align: center;
   cursor: default;
-  transition: border-color 0.25s, background 0.25s, box-shadow 0.25s;
+  transition:
+    border-color 0.25s,
+    background 0.25s,
+    box-shadow 0.25s;
 }
 
 .onboardingDropZone.dragover {
   border-color: var(--accent);
   background:
-    radial-gradient(ellipse 70% 50% at 50% 0%, rgba(94, 234, 212, 0.1), transparent 70%),
+    radial-gradient(
+      ellipse 70% 50% at 50% 0%,
+      rgba(94, 234, 212, 0.1),
+      transparent 70%
+    ),
     rgba(12, 14, 22, 0.8);
-  box-shadow: inset 0 0 40px rgba(94, 234, 212, 0.04), 0 0 30px rgba(94, 234, 212, 0.06);
+  box-shadow:
+    inset 0 0 40px rgba(94, 234, 212, 0.04),
+    0 0 30px rgba(94, 234, 212, 0.06);
 }
 
 .onboardingIcon {
@@ -5123,8 +5486,13 @@ h3 {
 }
 
 @keyframes pulse-soft {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.08); }
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.08);
+  }
 }
 
 .onboardingTitle {

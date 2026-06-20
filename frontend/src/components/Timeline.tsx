@@ -1,5 +1,29 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type RefObject } from "react";
-import { Captions, Lock, LockOpen, MapPin, Minus, Pencil, Plus, RefreshCw, RotateCcw, Scissors, Trash2, Volume2, VolumeX } from "lucide-react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
+  type RefObject,
+} from "react";
+import {
+  Captions,
+  Lock,
+  LockOpen,
+  MapPin,
+  Minus,
+  Pencil,
+  Plus,
+  RefreshCw,
+  RotateCcw,
+  Scissors,
+  Trash2,
+  Volume2,
+  VolumeX,
+} from "lucide-react";
 import type { Clip, TranscriptWord } from "../types";
 
 export type TimelineLane = {
@@ -46,6 +70,7 @@ export type TimelineProps = {
   words: TranscriptWord[];
   timelineLanes: TimelineLane[];
   assetUrlById: Map<string, string>;
+  assetNameById?: Map<string, string>;
   assetDurationById: Map<string, number | null>;
   overlayClips: Clip[];
   captionBlocks: TimelineCaptionBlock[];
@@ -64,8 +89,14 @@ export type TimelineProps = {
   onSelectWordsInRange: (startSec: number, endSec: number) => void;
   onDeleteSelected: () => void;
   onRestoreSelected: () => void;
-  onMoveLaneClip: (selection: TimelineLaneClipSelection, timelineStartSec: number) => void;
-  onTrimLaneClip: (selection: TimelineLaneClipSelection, nextRange: { startSec: number; endSec: number }) => void;
+  onMoveLaneClip: (
+    selection: TimelineLaneClipSelection,
+    timelineStartSec: number,
+  ) => void;
+  onTrimLaneClip: (
+    selection: TimelineLaneClipSelection,
+    nextRange: { startSec: number; endSec: number },
+  ) => void;
   onToggleLaneMute?: (lane: TimelineLane) => void;
   onToggleLaneSolo?: (lane: TimelineLane) => void;
   onToggleLaneLock?: (laneId: string) => void;
@@ -77,8 +108,15 @@ export type TimelineProps = {
   onSelectLaneClip?: (selection: TimelineLaneClipSelection | null) => void;
   onSelectBrollClip?: (clipId: string | null) => void;
   onSelectCaptionBlock?: (selection: TimelineCaptionSelection | null) => void;
-  onMoveCaptionBlock?: (selection: TimelineCaptionSelection, startSec: number) => void;
-  onTrimCaptionBlock?: (selection: TimelineCaptionSelection, startSec: number, durationSec: number) => void;
+  onMoveCaptionBlock?: (
+    selection: TimelineCaptionSelection,
+    startSec: number,
+  ) => void;
+  onTrimCaptionBlock?: (
+    selection: TimelineCaptionSelection,
+    startSec: number,
+    durationSec: number,
+  ) => void;
   onEditWord?: (wordId: string) => void;
   editingCaptionId?: string | null;
   editingCaptionText?: string;
@@ -149,29 +187,45 @@ type CaptionDragState = {
 
 function LaneClipThumb({ src, seekSec }: LaneClipThumbProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [isReady, setIsReady] = useState(false);
 
   const seekToFrame = useCallback(() => {
     const video = videoRef.current;
-    if (!video) return;
-    const duration = Number.isFinite(video.duration) ? Math.max(video.duration - 0.05, 0) : seekSec;
+    if (!video || video.readyState < HTMLMediaElement.HAVE_METADATA) return;
+    const duration = Number.isFinite(video.duration)
+      ? Math.max(video.duration - 0.05, 0)
+      : seekSec;
     const target = Math.max(0, Math.min(seekSec, duration));
     try {
+      if (Math.abs(video.currentTime - target) <= 0.033) {
+        setIsReady(true);
+        return;
+      }
+      setIsReady(false);
       video.currentTime = target;
     } catch {
-      // Ignore transient metadata / seek races.
+      setIsReady(false);
     }
   }, [seekSec]);
+
+  useEffect(() => {
+    setIsReady(false);
+  }, [src, seekSec]);
 
   return (
     <video
       ref={videoRef}
-      className="timelineLaneThumb"
+      className={`timelineLaneThumbVideo ${isReady ? "ready" : ""}`}
       src={src}
       muted
       playsInline
-      preload="metadata"
+      preload="auto"
       onLoadedMetadata={seekToFrame}
+      onLoadedData={seekToFrame}
       onCanPlay={seekToFrame}
+      onSeeked={() => setIsReady(true)}
+      onError={() => setIsReady(false)}
+      aria-hidden="true"
     />
   );
 }
@@ -188,7 +242,10 @@ function formatDuration(sec: number): string {
 }
 
 function clipTimelineDuration(clip: Clip): number {
-  return Math.max((clip.end_sec - clip.start_sec) / Math.max(clip.speed, 0.01), MIN_BROLL_DURATION_SEC);
+  return Math.max(
+    (clip.end_sec - clip.start_sec) / Math.max(clip.speed, 0.01),
+    MIN_BROLL_DURATION_SEC,
+  );
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -210,7 +267,10 @@ function buildSpeakerIdOrder(words: TranscriptWord[]): string[] {
   return seen;
 }
 
-function speakerSlotForWord(word: TranscriptWord, speakerIdOrder: string[]): number | null {
+function speakerSlotForWord(
+  word: TranscriptWord,
+  speakerIdOrder: string[],
+): number | null {
   if (!word.speaker_id) return null;
   const index = speakerIdOrder.indexOf(word.speaker_id);
   return index >= 0 ? index : null;
@@ -226,6 +286,7 @@ function Timeline({
   words,
   timelineLanes,
   assetUrlById,
+  assetNameById,
   assetDurationById,
   overlayClips,
   captionBlocks,
@@ -273,18 +334,30 @@ function Timeline({
 }: TimelineProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [pxPerSec, setPxPerSec] = useState(DEFAULT_PX_PER_SEC);
-  const [showTranscriptAssist, setShowTranscriptAssist] = useState(words.length > 0);
+  const [showTranscriptAssist, setShowTranscriptAssist] = useState(
+    words.length > 0,
+  );
 
   type DragMode = "none" | "seek" | "range";
   const [dragMode, setDragMode] = useState<DragMode>("none");
   const [rangeStart, setRangeStart] = useState<number | null>(null);
   const [rangeEnd, setRangeEnd] = useState<number | null>(null);
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
-  const [brollOpacityDraftById, setBrollOpacityDraftById] = useState<Record<string, number>>({});
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
+  const [brollOpacityDraftById, setBrollOpacityDraftById] = useState<
+    Record<string, number>
+  >({});
   const opacityCommitTimersRef = useRef<Record<string, number>>({});
-  const [brollDragState, setBrollDragState] = useState<BrollDragState | null>(null);
-  const [laneDragState, setLaneDragState] = useState<LaneDragState | null>(null);
-  const [captionDragState, setCaptionDragState] = useState<CaptionDragState | null>(null);
+  const [brollDragState, setBrollDragState] = useState<BrollDragState | null>(
+    null,
+  );
+  const [laneDragState, setLaneDragState] = useState<LaneDragState | null>(
+    null,
+  );
+  const [captionDragState, setCaptionDragState] =
+    useState<CaptionDragState | null>(null);
 
   const totalWidth = Math.max(durationSec * pxPerSec, 200);
 
@@ -304,7 +377,8 @@ function Timeline({
     else if (pxPerSec < 150) interval = 1;
     else interval = 0.5;
 
-    const result: { sec: number; x: number; label: string; major: boolean }[] = [];
+    const result: { sec: number; x: number; label: string; major: boolean }[] =
+      [];
     for (let sec = 0; sec <= durationSec; sec += interval) {
       result.push({
         sec,
@@ -336,7 +410,11 @@ function Timeline({
       if (deletedWordIds.has(word.id)) {
         if (regionStart === null) regionStart = word.start_sec;
       } else if (regionStart !== null) {
-        const previousDeleted = sorted.find((candidate) => candidate.end_sec <= word.start_sec && deletedWordIds.has(candidate.id));
+        const previousDeleted = sorted.find(
+          (candidate) =>
+            candidate.end_sec <= word.start_sec &&
+            deletedWordIds.has(candidate.id),
+        );
         regions.push({
           startSec: regionStart,
           endSec: previousDeleted ? previousDeleted.end_sec : word.start_sec,
@@ -373,7 +451,9 @@ function Timeline({
   const speakerLegend = useMemo(() => {
     const speakerIdOrder = buildSpeakerIdOrder(words);
     return speakerIdOrder.map((speakerId, slot) => {
-      const label = words.find((word) => word.speaker_id === speakerId)?.speaker_label || `Speaker ${slot + 1}`;
+      const label =
+        words.find((word) => word.speaker_id === speakerId)?.speaker_label ||
+        `Speaker ${slot + 1}`;
       return { speakerId, label, slot };
     });
   }, [words]);
@@ -400,8 +480,14 @@ function Timeline({
       guides.push({ ownerKey: `broll:${clip.id}:end`, timeSec: endSec });
     });
     captionBlocks.forEach((block) => {
-      guides.push({ ownerKey: `caption:${block.id}:start`, timeSec: block.startSec });
-      guides.push({ ownerKey: `caption:${block.id}:end`, timeSec: block.startSec + block.durationSec });
+      guides.push({
+        ownerKey: `caption:${block.id}:start`,
+        timeSec: block.startSec,
+      });
+      guides.push({
+        ownerKey: `caption:${block.id}:end`,
+        timeSec: block.startSec + block.durationSec,
+      });
     });
     return guides;
   }, [timelineLanes, overlayClips, captionBlocks, currentTimeSec, durationSec]);
@@ -422,7 +508,7 @@ function Timeline({
       }
       return best;
     },
-    [snapGuides, snapThresholdSec]
+    [snapGuides, snapThresholdSec],
   );
 
   const resolveBlockSnap = useCallback(
@@ -445,7 +531,7 @@ function Timeline({
       }
       return best;
     },
-    [snapGuides, snapThresholdSec]
+    [snapGuides, snapThresholdSec],
   );
 
   const brollBlocks = useMemo(() => {
@@ -453,12 +539,18 @@ function Timeline({
       .slice()
       .sort((a, b) => a.timeline_start_sec - b.timeline_start_sec)
       .map((clip) => {
-        const dragPreview = brollDragState?.clipId === clip.id ? brollDragState : null;
-        const timelineStartSec = dragPreview ? dragPreview.currentStartSec : clip.timeline_start_sec;
-        const duration = dragPreview ? dragPreview.currentDurationSec : clipTimelineDuration(clip);
+        const dragPreview =
+          brollDragState?.clipId === clip.id ? brollDragState : null;
+        const timelineStartSec = dragPreview
+          ? dragPreview.currentStartSec
+          : clip.timeline_start_sec;
+        const duration = dragPreview
+          ? dragPreview.currentDurationSec
+          : clipTimelineDuration(clip);
         const x = timelineStartSec * pxPerSec;
         const w = Math.max(duration * pxPerSec, 4);
-        const clipOpacity = typeof clip.broll_opacity === "number" ? clip.broll_opacity : 1;
+        const clipOpacity =
+          typeof clip.broll_opacity === "number" ? clip.broll_opacity : 1;
         const opacity = brollOpacityDraftById[clip.id] ?? clipOpacity;
         return {
           clip,
@@ -482,21 +574,42 @@ function Timeline({
           .slice()
           .sort((a, b) => a.timeline_start_sec - b.timeline_start_sec)
           .map((clip) => {
-            const dragPreview = laneDragState?.selection.clipId === clip.id ? laneDragState : null;
-            const sourceStartSec = dragPreview ? dragPreview.currentStartSec : clip.start_sec;
-            const sourceEndSec = dragPreview ? dragPreview.currentEndSec : clip.end_sec;
-            const timelineStartSec = dragPreview ? dragPreview.currentTimelineStartSec : clip.timeline_start_sec;
-            const duration = Math.max((sourceEndSec - sourceStartSec) / Math.max(clip.speed, 0.01), MIN_BROLL_DURATION_SEC);
+            const dragPreview =
+              laneDragState?.selection.clipId === clip.id
+                ? laneDragState
+                : null;
+            const sourceStartSec = dragPreview
+              ? dragPreview.currentStartSec
+              : clip.start_sec;
+            const sourceEndSec = dragPreview
+              ? dragPreview.currentEndSec
+              : clip.end_sec;
+            const timelineStartSec = dragPreview
+              ? dragPreview.currentTimelineStartSec
+              : clip.timeline_start_sec;
+            const duration = Math.max(
+              (sourceEndSec - sourceStartSec) / Math.max(clip.speed, 0.01),
+              MIN_BROLL_DURATION_SEC,
+            );
             const clipWidthPx = Math.max(duration * pxPerSec, 4);
-            const thumbCount = Math.max(1, Math.min(8, Math.floor(clipWidthPx / 54)));
-            const sourceDuration = Math.max(sourceEndSec - sourceStartSec, MIN_CLIP_SOURCE_DURATION_SEC);
-            const thumbTimes = Array.from({ length: thumbCount }, (_unused, idx) => {
-              if (thumbCount <= 1) {
-                return sourceStartSec + Math.min(0.35, sourceDuration * 0.25);
-              }
-              const t = idx / (thumbCount - 1);
-              return sourceStartSec + (sourceDuration * t);
-            });
+            const thumbCount = Math.max(
+              1,
+              Math.min(8, Math.floor(clipWidthPx / 54)),
+            );
+            const sourceDuration = Math.max(
+              sourceEndSec - sourceStartSec,
+              MIN_CLIP_SOURCE_DURATION_SEC,
+            );
+            const thumbTimes = Array.from(
+              { length: thumbCount },
+              (_unused, idx) => {
+                if (thumbCount <= 1) {
+                  return sourceStartSec + Math.min(0.35, sourceDuration * 0.25);
+                }
+                const t = idx / (thumbCount - 1);
+                return sourceStartSec + sourceDuration * t;
+              },
+            );
             return {
               clip,
               x: timelineStartSec * pxPerSec,
@@ -506,6 +619,10 @@ function Timeline({
               sourceEndSec,
               timelineStartSec,
               thumbSrc: assetUrlById.get(clip.asset_id) ?? null,
+              clipName: (() => {
+                const raw = assetNameById?.get(clip.asset_id);
+                return raw ? raw.replace(/\.[^.]+$/, "") : null;
+              })(),
               thumbTimes,
               isSelected: selectedLaneClipId === clip.id,
               isDragging: !!dragPreview,
@@ -513,19 +630,32 @@ function Timeline({
           }),
       };
     });
-  }, [timelineLanes, lockedLaneIds, laneDragState, pxPerSec, assetUrlById, selectedLaneClipId]);
+  }, [
+    timelineLanes,
+    lockedLaneIds,
+    laneDragState,
+    pxPerSec,
+    assetUrlById,
+    assetNameById,
+    selectedLaneClipId,
+  ]);
 
   const renderedCaptionBlocks = useMemo(() => {
     return captionBlocks
       .slice()
       .sort((a, b) => a.startSec - b.startSec)
       .map((block) => {
-        const dragPreview = captionDragState?.selection.overlayId === block.id ? captionDragState : null;
+        const dragPreview =
+          captionDragState?.selection.overlayId === block.id
+            ? captionDragState
+            : null;
         const startSec = dragPreview
-          ? dragPreview.clipTimelineStartSec + (dragPreview.currentStartSec / Math.max(dragPreview.clipSpeed, 0.01))
+          ? dragPreview.clipTimelineStartSec +
+            dragPreview.currentStartSec / Math.max(dragPreview.clipSpeed, 0.01)
           : block.startSec;
         const duration = dragPreview
-          ? dragPreview.currentDurationSec / Math.max(dragPreview.clipSpeed, 0.01)
+          ? dragPreview.currentDurationSec /
+            Math.max(dragPreview.clipSpeed, 0.01)
           : block.durationSec;
         return {
           ...block,
@@ -543,7 +673,11 @@ function Timeline({
     setBrollOpacityDraftById(() => {
       const next: Record<string, number> = {};
       overlayClips.forEach((clip) => {
-        next[clip.id] = clamp(typeof clip.broll_opacity === "number" ? clip.broll_opacity : 1, 0, 1);
+        next[clip.id] = clamp(
+          typeof clip.broll_opacity === "number" ? clip.broll_opacity : 1,
+          0,
+          1,
+        );
       });
       return next;
     });
@@ -551,19 +685,37 @@ function Timeline({
 
   useEffect(() => {
     return () => {
-      Object.values(opacityCommitTimersRef.current).forEach((timer) => window.clearTimeout(timer));
+      Object.values(opacityCommitTimersRef.current).forEach((timer) =>
+        window.clearTimeout(timer),
+      );
       opacityCommitTimersRef.current = {};
     };
   }, []);
 
   const playheadX = currentTimeSec * pxPerSec;
 
-  const rangeLeft = rangeStart !== null && rangeEnd !== null ? Math.min(rangeStart, rangeEnd) * pxPerSec : null;
-  const rangeWidth = rangeStart !== null && rangeEnd !== null ? Math.abs(rangeEnd - rangeStart) * pxPerSec : null;
-  const rangeDuration = rangeStart !== null && rangeEnd !== null ? Math.abs(rangeEnd - rangeStart) : null;
+  const rangeLeft =
+    rangeStart !== null && rangeEnd !== null
+      ? Math.min(rangeStart, rangeEnd) * pxPerSec
+      : null;
+  const rangeWidth =
+    rangeStart !== null && rangeEnd !== null
+      ? Math.abs(rangeEnd - rangeStart) * pxPerSec
+      : null;
+  const rangeDuration =
+    rangeStart !== null && rangeEnd !== null
+      ? Math.abs(rangeEnd - rangeStart)
+      : null;
 
   useEffect(() => {
-    if (!containerRef.current || dragMode !== "none" || brollDragState || laneDragState || captionDragState) return;
+    if (
+      !containerRef.current ||
+      dragMode !== "none" ||
+      brollDragState ||
+      laneDragState ||
+      captionDragState
+    )
+      return;
     const element = containerRef.current;
     const viewLeft = element.scrollLeft;
     const viewRight = viewLeft + element.clientWidth;
@@ -576,13 +728,20 @@ function Timeline({
     (clientX: number) => {
       if (!containerRef.current) return 0;
       const rect = containerRef.current.getBoundingClientRect();
-      const x = clientX - rect.left + containerRef.current.scrollLeft - TRACK_LEFT_MARGIN;
+      const x =
+        clientX -
+        rect.left +
+        containerRef.current.scrollLeft -
+        TRACK_LEFT_MARGIN;
       return Math.max(0, Math.min(x / pxPerSec, durationSec));
     },
-    [pxPerSec, durationSec]
+    [pxPerSec, durationSec],
   );
 
-  const secFromEvent = useCallback((event: ReactMouseEvent) => secFromClientX(event.clientX), [secFromClientX]);
+  const secFromEvent = useCallback(
+    (event: ReactMouseEvent) => secFromClientX(event.clientX),
+    [secFromClientX],
+  );
 
   function scheduleOpacityCommit(clipId: string, opacity: number) {
     const previous = opacityCommitTimersRef.current[clipId];
@@ -601,7 +760,11 @@ function Timeline({
     onSelectCaptionBlock?.(null);
   }
 
-  function startBrollDrag(event: ReactMouseEvent, clip: Clip, mode: "move" | "resize-end") {
+  function startBrollDrag(
+    event: ReactMouseEvent,
+    clip: Clip,
+    mode: "move" | "resize-end",
+  ) {
     if (event.button !== 0 || brollEditBusy) return;
     event.preventDefault();
     event.stopPropagation();
@@ -624,7 +787,7 @@ function Timeline({
     event: ReactMouseEvent,
     lane: TimelineLane,
     clip: Clip,
-    mode: LaneDragState["mode"]
+    mode: LaneDragState["mode"],
   ) {
     if (event.button !== 0 || isInteractiveTarget(event.target)) return;
     event.preventDefault();
@@ -643,7 +806,10 @@ function Timeline({
 
     const duration = clipTimelineDuration(clip);
     const assetDurationSec = assetDurationById.get(clip.asset_id) ?? null;
-    const sourceMaxEndSec = assetDurationSec && assetDurationSec > 0 ? assetDurationSec : clip.end_sec + 30;
+    const sourceMaxEndSec =
+      assetDurationSec && assetDurationSec > 0
+        ? assetDurationSec
+        : clip.end_sec + 30;
     setLaneDragState({
       selection,
       mode,
@@ -663,7 +829,7 @@ function Timeline({
   function startCaptionDrag(
     event: ReactMouseEvent,
     block: TimelineCaptionBlock,
-    mode: CaptionDragState["mode"]
+    mode: CaptionDragState["mode"],
   ) {
     if (event.button !== 0 || isInteractiveTarget(event.target)) return;
     event.preventDefault();
@@ -687,8 +853,12 @@ function Timeline({
       clipTimelineStartSec: block.clipTimelineStartSec,
       clipSourceDurationSec: block.clipSourceDurationSec,
       clipSpeed: Math.max(block.clipSpeed, 0.01),
-      initialStartSec: (block.startSec - block.clipTimelineStartSec) * Math.max(block.clipSpeed, 0.01),
-      currentStartSec: (block.startSec - block.clipTimelineStartSec) * Math.max(block.clipSpeed, 0.01),
+      initialStartSec:
+        (block.startSec - block.clipTimelineStartSec) *
+        Math.max(block.clipSpeed, 0.01),
+      currentStartSec:
+        (block.startSec - block.clipTimelineStartSec) *
+        Math.max(block.clipSpeed, 0.01),
       initialDurationSec: block.durationSec * Math.max(block.clipSpeed, 0.01),
       currentDurationSec: block.durationSec * Math.max(block.clipSpeed, 0.01),
     });
@@ -744,19 +914,45 @@ function Timeline({
         if (!prev) return prev;
         const deltaSec = (event.clientX - prev.startClientX) / pxPerSec;
         if (prev.mode === "move") {
-          const rawStart = clamp(prev.initialStartSec + deltaSec, 0, Math.max(durationSec, prev.initialStartSec + 30));
-          const snappedStart = clamp(
-            resolveBlockSnap(rawStart, prev.initialDurationSec, `broll:${prev.clipId}:`),
+          const rawStart = clamp(
+            prev.initialStartSec + deltaSec,
             0,
-            Math.max(durationSec, prev.initialStartSec + 30)
+            Math.max(durationSec, prev.initialStartSec + 30),
+          );
+          const snappedStart = clamp(
+            resolveBlockSnap(
+              rawStart,
+              prev.initialDurationSec,
+              `broll:${prev.clipId}:`,
+            ),
+            0,
+            Math.max(durationSec, prev.initialStartSec + 30),
           );
           return { ...prev, currentStartSec: snappedStart };
         }
-        const maxDuration = Math.max(durationSec - prev.initialStartSec, prev.initialDurationSec + 30, MIN_BROLL_DURATION_SEC);
-        const rawDuration = clamp(prev.initialDurationSec + deltaSec, MIN_BROLL_DURATION_SEC, maxDuration);
+        const maxDuration = Math.max(
+          durationSec - prev.initialStartSec,
+          prev.initialDurationSec + 30,
+          MIN_BROLL_DURATION_SEC,
+        );
+        const rawDuration = clamp(
+          prev.initialDurationSec + deltaSec,
+          MIN_BROLL_DURATION_SEC,
+          maxDuration,
+        );
         const rawEnd = prev.initialStartSec + rawDuration;
-        const snappedEnd = clamp(resolveEdgeSnap(rawEnd, `broll:${prev.clipId}:`), prev.initialStartSec + MIN_BROLL_DURATION_SEC, prev.initialStartSec + maxDuration);
-        return { ...prev, currentDurationSec: Math.max(snappedEnd - prev.initialStartSec, MIN_BROLL_DURATION_SEC) };
+        const snappedEnd = clamp(
+          resolveEdgeSnap(rawEnd, `broll:${prev.clipId}:`),
+          prev.initialStartSec + MIN_BROLL_DURATION_SEC,
+          prev.initialStartSec + maxDuration,
+        );
+        return {
+          ...prev,
+          currentDurationSec: Math.max(
+            snappedEnd - prev.initialStartSec,
+            MIN_BROLL_DURATION_SEC,
+          ),
+        };
       });
     }
 
@@ -765,10 +961,18 @@ function Timeline({
         if (!prev) return prev;
         if (prev.mode === "move") {
           if (Math.abs(prev.currentStartSec - prev.initialStartSec) >= 0.01) {
-            onMoveBrollClip(prev.clipId, Number(prev.currentStartSec.toFixed(3)));
+            onMoveBrollClip(
+              prev.clipId,
+              Number(prev.currentStartSec.toFixed(3)),
+            );
           }
-        } else if (Math.abs(prev.currentDurationSec - prev.initialDurationSec) >= 0.01) {
-          onTrimBrollClip(prev.clipId, Number(prev.currentDurationSec.toFixed(3)));
+        } else if (
+          Math.abs(prev.currentDurationSec - prev.initialDurationSec) >= 0.01
+        ) {
+          onTrimBrollClip(
+            prev.clipId,
+            Number(prev.currentDurationSec.toFixed(3)),
+          );
         }
         return null;
       });
@@ -780,7 +984,15 @@ function Timeline({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [brollDragState, durationSec, onMoveBrollClip, onTrimBrollClip, pxPerSec, resolveBlockSnap, resolveEdgeSnap]);
+  }, [
+    brollDragState,
+    durationSec,
+    onMoveBrollClip,
+    onTrimBrollClip,
+    pxPerSec,
+    resolveBlockSnap,
+    resolveEdgeSnap,
+  ]);
 
   useEffect(() => {
     if (!laneDragState) return;
@@ -792,22 +1004,45 @@ function Timeline({
         const ownerPrefix = `lane:${prev.selection.clipId}:`;
 
         if (prev.mode === "move") {
-          const duration = (prev.initialEndSec - prev.initialStartSec) / prev.speed;
-          const rawStart = clamp(prev.initialTimelineStartSec + deltaTimelineSec, 0, Math.max(durationSec, prev.initialTimelineStartSec + 30));
-          const snappedStart = clamp(resolveBlockSnap(rawStart, duration, ownerPrefix), 0, Math.max(durationSec, prev.initialTimelineStartSec + 30));
+          const duration =
+            (prev.initialEndSec - prev.initialStartSec) / prev.speed;
+          const rawStart = clamp(
+            prev.initialTimelineStartSec + deltaTimelineSec,
+            0,
+            Math.max(durationSec, prev.initialTimelineStartSec + 30),
+          );
+          const snappedStart = clamp(
+            resolveBlockSnap(rawStart, duration, ownerPrefix),
+            0,
+            Math.max(durationSec, prev.initialTimelineStartSec + 30),
+          );
           return { ...prev, currentTimelineStartSec: snappedStart };
         }
 
         if (prev.mode === "trim-start") {
-          const minTimelineStart = prev.initialTimelineEndSec - (MIN_CLIP_SOURCE_DURATION_SEC / prev.speed);
-          const rawTimelineStart = clamp(prev.initialTimelineStartSec + deltaTimelineSec, 0, minTimelineStart);
-          const snappedTimelineStart = clamp(resolveEdgeSnap(rawTimelineStart, ownerPrefix), 0, minTimelineStart);
-          const nextStartSec = clamp(
-            prev.initialStartSec + ((snappedTimelineStart - prev.initialTimelineStartSec) * prev.speed),
+          const minTimelineStart =
+            prev.initialTimelineEndSec -
+            MIN_CLIP_SOURCE_DURATION_SEC / prev.speed;
+          const rawTimelineStart = clamp(
+            prev.initialTimelineStartSec + deltaTimelineSec,
             0,
-            prev.initialEndSec - MIN_CLIP_SOURCE_DURATION_SEC
+            minTimelineStart,
           );
-          const nextTimelineStartSec = prev.initialTimelineStartSec + ((nextStartSec - prev.initialStartSec) / prev.speed);
+          const snappedTimelineStart = clamp(
+            resolveEdgeSnap(rawTimelineStart, ownerPrefix),
+            0,
+            minTimelineStart,
+          );
+          const nextStartSec = clamp(
+            prev.initialStartSec +
+              (snappedTimelineStart - prev.initialTimelineStartSec) *
+                prev.speed,
+            0,
+            prev.initialEndSec - MIN_CLIP_SOURCE_DURATION_SEC,
+          );
+          const nextTimelineStartSec =
+            prev.initialTimelineStartSec +
+            (nextStartSec - prev.initialStartSec) / prev.speed;
           return {
             ...prev,
             currentStartSec: nextStartSec,
@@ -815,21 +1050,26 @@ function Timeline({
           };
         }
 
-        const maxTimelineEnd = prev.initialTimelineStartSec + ((prev.sourceMaxEndSec - prev.initialStartSec) / prev.speed);
+        const maxTimelineEnd =
+          prev.initialTimelineStartSec +
+          (prev.sourceMaxEndSec - prev.initialStartSec) / prev.speed;
         const rawTimelineEnd = clamp(
           prev.initialTimelineEndSec + deltaTimelineSec,
-          prev.initialTimelineStartSec + (MIN_CLIP_SOURCE_DURATION_SEC / prev.speed),
-          maxTimelineEnd
+          prev.initialTimelineStartSec +
+            MIN_CLIP_SOURCE_DURATION_SEC / prev.speed,
+          maxTimelineEnd,
         );
         const snappedTimelineEnd = clamp(
           resolveEdgeSnap(rawTimelineEnd, ownerPrefix),
-          prev.initialTimelineStartSec + (MIN_CLIP_SOURCE_DURATION_SEC / prev.speed),
-          maxTimelineEnd
+          prev.initialTimelineStartSec +
+            MIN_CLIP_SOURCE_DURATION_SEC / prev.speed,
+          maxTimelineEnd,
         );
         const nextEndSec = clamp(
-          prev.initialEndSec + ((snappedTimelineEnd - prev.initialTimelineEndSec) * prev.speed),
+          prev.initialEndSec +
+            (snappedTimelineEnd - prev.initialTimelineEndSec) * prev.speed,
           prev.initialStartSec + MIN_CLIP_SOURCE_DURATION_SEC,
-          prev.sourceMaxEndSec
+          prev.sourceMaxEndSec,
         );
         return { ...prev, currentEndSec: nextEndSec };
       });
@@ -839,8 +1079,15 @@ function Timeline({
       setLaneDragState((prev) => {
         if (!prev) return prev;
         if (prev.mode === "move") {
-          if (Math.abs(prev.currentTimelineStartSec - prev.initialTimelineStartSec) >= 0.01) {
-            onMoveLaneClip(prev.selection, Number(prev.currentTimelineStartSec.toFixed(3)));
+          if (
+            Math.abs(
+              prev.currentTimelineStartSec - prev.initialTimelineStartSec,
+            ) >= 0.01
+          ) {
+            onMoveLaneClip(
+              prev.selection,
+              Number(prev.currentTimelineStartSec.toFixed(3)),
+            );
           }
         } else if (
           Math.abs(prev.currentStartSec - prev.initialStartSec) >= 0.01 ||
@@ -861,7 +1108,15 @@ function Timeline({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [durationSec, laneDragState, onMoveLaneClip, onTrimLaneClip, pxPerSec, resolveBlockSnap, resolveEdgeSnap]);
+  }, [
+    durationSec,
+    laneDragState,
+    onMoveLaneClip,
+    onTrimLaneClip,
+    pxPerSec,
+    resolveBlockSnap,
+    resolveEdgeSnap,
+  ]);
 
   useEffect(() => {
     if (!captionDragState) return;
@@ -873,31 +1128,61 @@ function Timeline({
         const ownerPrefix = `caption:${prev.selection.overlayId}:`;
 
         if (prev.mode === "move") {
-          const rawStart = prev.clipTimelineStartSec + prev.initialStartSec / prev.clipSpeed + deltaTimelineSec;
-          const maxStart = prev.clipTimelineStartSec + Math.max(0, (prev.clipSourceDurationSec - prev.initialDurationSec) / prev.clipSpeed);
+          const rawStart =
+            prev.clipTimelineStartSec +
+            prev.initialStartSec / prev.clipSpeed +
+            deltaTimelineSec;
+          const maxStart =
+            prev.clipTimelineStartSec +
+            Math.max(
+              0,
+              (prev.clipSourceDurationSec - prev.initialDurationSec) /
+                prev.clipSpeed,
+            );
           const snappedStart = clamp(
-            resolveBlockSnap(rawStart, prev.initialDurationSec / prev.clipSpeed, ownerPrefix),
+            resolveBlockSnap(
+              rawStart,
+              prev.initialDurationSec / prev.clipSpeed,
+              ownerPrefix,
+            ),
             prev.clipTimelineStartSec,
-            maxStart
+            maxStart,
           );
           const nextStartSec = clamp(
             (snappedStart - prev.clipTimelineStartSec) * prev.clipSpeed,
             0,
-            Math.max(0, prev.clipSourceDurationSec - prev.initialDurationSec)
+            Math.max(0, prev.clipSourceDurationSec - prev.initialDurationSec),
           );
           return { ...prev, currentStartSec: nextStartSec };
         }
 
         if (prev.mode === "trim-start") {
-          const rawStart = prev.clipTimelineStartSec + prev.initialStartSec / prev.clipSpeed + deltaTimelineSec;
-          const maxStart = prev.clipTimelineStartSec + ((prev.initialStartSec + prev.initialDurationSec - MIN_CLIP_SOURCE_DURATION_SEC) / prev.clipSpeed);
-          const snappedStart = clamp(resolveEdgeSnap(rawStart, ownerPrefix), prev.clipTimelineStartSec, maxStart);
+          const rawStart =
+            prev.clipTimelineStartSec +
+            prev.initialStartSec / prev.clipSpeed +
+            deltaTimelineSec;
+          const maxStart =
+            prev.clipTimelineStartSec +
+            (prev.initialStartSec +
+              prev.initialDurationSec -
+              MIN_CLIP_SOURCE_DURATION_SEC) /
+              prev.clipSpeed;
+          const snappedStart = clamp(
+            resolveEdgeSnap(rawStart, ownerPrefix),
+            prev.clipTimelineStartSec,
+            maxStart,
+          );
           const nextStartSec = clamp(
             (snappedStart - prev.clipTimelineStartSec) * prev.clipSpeed,
             0,
-            prev.initialStartSec + prev.initialDurationSec - MIN_CLIP_SOURCE_DURATION_SEC
+            prev.initialStartSec +
+              prev.initialDurationSec -
+              MIN_CLIP_SOURCE_DURATION_SEC,
           );
-          const nextDurationSec = Math.max(prev.initialStartSec + prev.initialDurationSec - nextStartSec, MIN_CLIP_SOURCE_DURATION_SEC);
+          const nextDurationSec = Math.max(
+            prev.initialStartSec + prev.initialDurationSec - nextStartSec,
+            MIN_CLIP_SOURCE_DURATION_SEC,
+          );
           return {
             ...prev,
             currentStartSec: nextStartSec,
@@ -905,18 +1190,33 @@ function Timeline({
           };
         }
 
-        const rawEnd = prev.clipTimelineStartSec + ((prev.initialStartSec + prev.initialDurationSec) / prev.clipSpeed) + deltaTimelineSec;
-        const minEnd = prev.clipTimelineStartSec + ((prev.initialStartSec + MIN_CLIP_SOURCE_DURATION_SEC) / prev.clipSpeed);
-        const maxEnd = prev.clipTimelineStartSec + (prev.clipSourceDurationSec / prev.clipSpeed);
-        const snappedEnd = clamp(resolveEdgeSnap(rawEnd, ownerPrefix), minEnd, maxEnd);
+        const rawEnd =
+          prev.clipTimelineStartSec +
+          (prev.initialStartSec + prev.initialDurationSec) / prev.clipSpeed +
+          deltaTimelineSec;
+        const minEnd =
+          prev.clipTimelineStartSec +
+          (prev.initialStartSec + MIN_CLIP_SOURCE_DURATION_SEC) /
+            prev.clipSpeed;
+        const maxEnd =
+          prev.clipTimelineStartSec +
+          prev.clipSourceDurationSec / prev.clipSpeed;
+        const snappedEnd = clamp(
+          resolveEdgeSnap(rawEnd, ownerPrefix),
+          minEnd,
+          maxEnd,
+        );
         const nextEndSourceSec = clamp(
           (snappedEnd - prev.clipTimelineStartSec) * prev.clipSpeed,
           prev.initialStartSec + MIN_CLIP_SOURCE_DURATION_SEC,
-          prev.clipSourceDurationSec
+          prev.clipSourceDurationSec,
         );
         return {
           ...prev,
-          currentDurationSec: Math.max(nextEndSourceSec - prev.initialStartSec, MIN_CLIP_SOURCE_DURATION_SEC),
+          currentDurationSec: Math.max(
+            nextEndSourceSec - prev.initialStartSec,
+            MIN_CLIP_SOURCE_DURATION_SEC,
+          ),
         };
       });
     }
@@ -926,7 +1226,10 @@ function Timeline({
         if (!prev) return prev;
         if (prev.mode === "move") {
           if (Math.abs(prev.currentStartSec - prev.initialStartSec) >= 0.01) {
-            onMoveCaptionBlock?.(prev.selection, Number(prev.currentStartSec.toFixed(3)));
+            onMoveCaptionBlock?.(
+              prev.selection,
+              Number(prev.currentStartSec.toFixed(3)),
+            );
           }
         } else if (
           Math.abs(prev.currentStartSec - prev.initialStartSec) >= 0.01 ||
@@ -935,7 +1238,7 @@ function Timeline({
           onTrimCaptionBlock?.(
             prev.selection,
             Number(prev.currentStartSec.toFixed(3)),
-            Number(prev.currentDurationSec.toFixed(3))
+            Number(prev.currentDurationSec.toFixed(3)),
           );
         }
         return null;
@@ -948,7 +1251,14 @@ function Timeline({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [captionDragState, onMoveCaptionBlock, onTrimCaptionBlock, pxPerSec, resolveBlockSnap, resolveEdgeSnap]);
+  }, [
+    captionDragState,
+    onMoveCaptionBlock,
+    onTrimCaptionBlock,
+    pxPerSec,
+    resolveBlockSnap,
+    resolveEdgeSnap,
+  ]);
 
   function handleContextMenu(event: ReactMouseEvent) {
     event.preventDefault();
@@ -971,7 +1281,10 @@ function Timeline({
         event.preventDefault();
         setPxPerSec((prev) => {
           const delta = event.deltaY > 0 ? 0.85 : 1.18;
-          return Math.max(MIN_PX_PER_SEC, Math.min(MAX_PX_PER_SEC, prev * delta));
+          return Math.max(
+            MIN_PX_PER_SEC,
+            Math.min(MAX_PX_PER_SEC, prev * delta),
+          );
         });
       }
     }
@@ -988,8 +1301,9 @@ function Timeline({
   }, [selectedWordIds, deletedWordIds]);
 
   const sectionStyle = useMemo(
-    () => ({ "--timeline-rail-width": `${TRACK_LEFT_MARGIN}px` } as CSSProperties),
-    []
+    () =>
+      ({ "--timeline-rail-width": `${TRACK_LEFT_MARGIN}px` }) as CSSProperties,
+    [],
   );
 
   return (
@@ -998,7 +1312,8 @@ function Timeline({
         <div className="timelineHeaderCopy">
           <h3>Timeline</h3>
           <span className="tlHint">
-            Drag clips to move, drag edges to trim, press <kbd>S</kbd> to split, use <kbd>Delete</kbd> to remove.
+            Drag clips to move, drag edges to trim, press <kbd>S</kbd> to split,
+            use <kbd>Delete</kbd> to remove.
           </span>
           {speakerLegend.length > 1 && (
             <div className="timelineSpeakerLegend" aria-label="Speaker legend">
@@ -1006,7 +1321,11 @@ function Timeline({
                 <span
                   key={entry.speakerId}
                   className={`timelineSpeakerLegendItem ${
-                    entry.slot === 0 ? "speakerA" : entry.slot === 1 ? "speakerB" : "speakerExtra"
+                    entry.slot === 0
+                      ? "speakerA"
+                      : entry.slot === 1
+                        ? "speakerB"
+                        : "speakerExtra"
                   }`}
                 >
                   {entry.label}
@@ -1026,7 +1345,14 @@ function Timeline({
             Transcript Assist
           </button>
           <div className="zoomControls">
-            <button className="zoomBtn" onClick={() => setPxPerSec((prev) => Math.max(MIN_PX_PER_SEC, prev * 0.7))} title="Zoom out" aria-label="Zoom out">
+            <button
+              className="zoomBtn"
+              onClick={() =>
+                setPxPerSec((prev) => Math.max(MIN_PX_PER_SEC, prev * 0.7))
+              }
+              title="Zoom out"
+              aria-label="Zoom out"
+            >
               <Minus size={14} aria-hidden="true" />
             </button>
             <input
@@ -1038,7 +1364,14 @@ function Timeline({
               onChange={(event) => setPxPerSec(Number(event.target.value))}
               className="zoomSlider"
             />
-            <button className="zoomBtn" onClick={() => setPxPerSec((prev) => Math.min(MAX_PX_PER_SEC, prev * 1.4))} title="Zoom in" aria-label="Zoom in">
+            <button
+              className="zoomBtn"
+              onClick={() =>
+                setPxPerSec((prev) => Math.min(MAX_PX_PER_SEC, prev * 1.4))
+              }
+              title="Zoom in"
+              aria-label="Zoom in"
+            >
               <Plus size={14} aria-hidden="true" />
             </button>
             <span className="zoomLabel">{Math.round(pxPerSec)}px/s</span>
@@ -1056,14 +1389,21 @@ function Timeline({
         <div className="timelineCanvas" style={{ width: totalWidth }}>
           <div className="timeRuler">
             {ticks.map((tick) => (
-              <div key={`${tick.sec}-${tick.major ? "major" : "minor"}`} className={`tick ${tick.major ? "major" : ""}`} style={{ left: tick.x }}>
+              <div
+                key={`${tick.sec}-${tick.major ? "major" : "minor"}`}
+                className={`tick ${tick.major ? "major" : ""}`}
+                style={{ left: tick.x }}
+              >
                 {tick.major && <span className="tickLabel">{tick.label}</span>}
               </div>
             ))}
           </div>
 
           {laneBlocks.map((lane) => (
-            <div key={lane.id} className={`timelineLane ${lane.kind} ${lane.isLocked ? "locked" : ""}`}>
+            <div
+              key={lane.id}
+              className={`timelineLane ${lane.kind} ${lane.isLocked ? "locked" : ""}`}
+            >
               <div className="trackRail">
                 <span className="trackRailLabel">{lane.label}</span>
                 <div className="trackRailActions">
@@ -1076,7 +1416,11 @@ function Timeline({
                     }}
                     title={lane.mute ? "Unmute track" : "Mute track"}
                   >
-                    {lane.mute ? <VolumeX size={12} strokeWidth={2} aria-hidden="true" /> : <Volume2 size={12} strokeWidth={2} aria-hidden="true" />}
+                    {lane.mute ? (
+                      <VolumeX size={12} strokeWidth={2} aria-hidden="true" />
+                    ) : (
+                      <Volume2 size={12} strokeWidth={2} aria-hidden="true" />
+                    )}
                   </button>
                   <button
                     type="button"
@@ -1098,52 +1442,100 @@ function Timeline({
                     }}
                     title={lane.isLocked ? "Unlock lane" : "Lock lane"}
                   >
-                    {lane.isLocked ? <Lock size={12} strokeWidth={2} aria-hidden="true" /> : <LockOpen size={12} strokeWidth={2} aria-hidden="true" />}
+                    {lane.isLocked ? (
+                      <Lock size={12} strokeWidth={2} aria-hidden="true" />
+                    ) : (
+                      <LockOpen size={12} strokeWidth={2} aria-hidden="true" />
+                    )}
                   </button>
                 </div>
               </div>
 
-              {lane.blocks.length === 0 && <div className="laneEmpty">No clips</div>}
+              {lane.blocks.length === 0 && (
+                <div className="laneEmpty">No clips</div>
+              )}
 
-              {lane.blocks.map(({ clip, x, w, duration, timelineStartSec, thumbSrc, thumbTimes, isSelected, isDragging }) => (
-                <div
-                  key={clip.id}
-                  className={[
-                    "timelineLaneClip",
-                    lane.kind,
-                    isSelected ? "selected" : "",
-                    isDragging ? "dragging" : "",
-                    lane.isLocked ? "locked" : "",
-                  ].filter(Boolean).join(" ")}
-                  style={{ left: x, width: w }}
-                  onMouseDown={(event) => startLaneDrag(event, lane, clip, "move")}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    const selection: TimelineLaneClipSelection = {
-                      clipId: clip.id,
-                      laneId: lane.id,
-                      laneLabel: lane.label,
-                      laneKind: lane.kind,
-                    };
-                    onSeek(timelineStartSec);
-                    onSelectLaneClip?.(selection);
-                    onSelectBrollClip?.(null);
-                    onSelectCaptionBlock?.(null);
-                  }}
-                  title={`${lane.label} · ${formatTimecode(timelineStartSec)} · ${formatDuration(duration)}`}
-                >
-                  <div className="laneClipHandle start" onMouseDown={(event) => startLaneDrag(event, lane, clip, "trim-start")} title="Trim clip in" />
-                  <div className="laneClipHandle end" onMouseDown={(event) => startLaneDrag(event, lane, clip, "trim-end")} title="Trim clip out" />
-                  {lane.kind === "video" && thumbSrc && w > 36 && (
-                    <div className="timelineLaneFilmstrip">
-                      {thumbTimes.map((seekSec, index) => (
-                        <LaneClipThumb key={`${clip.id}-thumb-${index}`} src={thumbSrc} seekSec={seekSec} />
-                      ))}
-                    </div>
-                  )}
-                  <span className="laneClipMeta">{w > 72 ? formatDuration(duration) : ""}</span>
-                </div>
-              ))}
+              {lane.blocks.map(
+                ({
+                  clip,
+                  x,
+                  w,
+                  duration,
+                  timelineStartSec,
+                  thumbSrc,
+                  thumbTimes,
+                  clipName,
+                  isSelected,
+                  isDragging,
+                }) => (
+                  <div
+                    key={clip.id}
+                    className={[
+                      "timelineLaneClip",
+                      lane.kind,
+                      isSelected ? "selected" : "",
+                      isDragging ? "dragging" : "",
+                      lane.isLocked ? "locked" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                    style={{ left: x, width: w }}
+                    onMouseDown={(event) =>
+                      startLaneDrag(event, lane, clip, "move")
+                    }
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      const selection: TimelineLaneClipSelection = {
+                        clipId: clip.id,
+                        laneId: lane.id,
+                        laneLabel: lane.label,
+                        laneKind: lane.kind,
+                      };
+                      onSeek(timelineStartSec);
+                      onSelectLaneClip?.(selection);
+                      onSelectBrollClip?.(null);
+                      onSelectCaptionBlock?.(null);
+                    }}
+                    title={`${lane.label} · ${formatTimecode(timelineStartSec)} · ${formatDuration(duration)}`}
+                  >
+                    <div
+                      className="laneClipHandle start"
+                      onMouseDown={(event) =>
+                        startLaneDrag(event, lane, clip, "trim-start")
+                      }
+                      title="Trim clip in"
+                    />
+                    <div
+                      className="laneClipHandle end"
+                      onMouseDown={(event) =>
+                        startLaneDrag(event, lane, clip, "trim-end")
+                      }
+                      title="Trim clip out"
+                    />
+                    {lane.kind === "video" && thumbSrc && w > 36 && (
+                      <div className="timelineLaneFilmstrip">
+                        {thumbTimes.map((seekSec, index) => (
+                          <LaneClipThumb
+                            key={`${clip.id}-thumb-${index}`}
+                            src={thumbSrc}
+                            seekSec={seekSec}
+                          />
+                        ))}
+                      </div>
+                    )}
+                    {w > 44 && (
+                      <div className="laneClipLabel">
+                        {clipName && w > 80 && (
+                          <span className="laneClipName">{clipName}</span>
+                        )}
+                        <span className="laneClipDuration">
+                          {formatDuration(duration)}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                ),
+              )}
             </div>
           ))}
 
@@ -1155,7 +1547,9 @@ function Timeline({
               </span>
             </div>
 
-            {renderedCaptionBlocks.length === 0 && <div className="laneEmpty">No caption blocks</div>}
+            {renderedCaptionBlocks.length === 0 && (
+              <div className="laneEmpty">No caption blocks</div>
+            )}
 
             {renderedCaptionBlocks.map((block) => (
               <div
@@ -1164,7 +1558,9 @@ function Timeline({
                   "captionBlock",
                   block.isSelected ? "selected" : "",
                   block.isDragging ? "dragging" : "",
-                ].filter(Boolean).join(" ")}
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
                 style={{ left: block.x, width: block.w }}
                 onMouseDown={(event) => startCaptionDrag(event, block, "move")}
                 onClick={(event) => {
@@ -1195,7 +1591,13 @@ function Timeline({
                 }}
                 title={`Caption · ${formatTimecode(block.renderedStartSec)} · ${formatDuration(block.renderedDurationSec)} · double-click to edit`}
               >
-                <div className="captionBlockHandle start" onMouseDown={(event) => startCaptionDrag(event, block, "trim-start")} title="Trim caption in" />
+                <div
+                  className="captionBlockHandle start"
+                  onMouseDown={(event) =>
+                    startCaptionDrag(event, block, "trim-start")
+                  }
+                  title="Trim caption in"
+                />
                 {editingCaptionId === block.id ? (
                   <input
                     ref={captionEditInputRef}
@@ -1203,7 +1605,9 @@ function Timeline({
                     value={editingCaptionText}
                     onClick={(event) => event.stopPropagation()}
                     onMouseDown={(event) => event.stopPropagation()}
-                    onChange={(event) => onCaptionTextChange?.(event.target.value)}
+                    onChange={(event) =>
+                      onCaptionTextChange?.(event.target.value)
+                    }
                     onBlur={() => onCommitCaptionEdit?.()}
                     onKeyDown={(event) => {
                       if (event.key === "Enter") {
@@ -1217,9 +1621,17 @@ function Timeline({
                     }}
                   />
                 ) : (
-                  <span className="captionBlockText">{block.w > 40 ? trimInlineText(block.text, 44) : ""}</span>
+                  <span className="captionBlockText">
+                    {block.w > 40 ? trimInlineText(block.text, 44) : ""}
+                  </span>
                 )}
-                <div className="captionBlockHandle end" onMouseDown={(event) => startCaptionDrag(event, block, "trim-end")} title="Trim caption out" />
+                <div
+                  className="captionBlockHandle end"
+                  onMouseDown={(event) =>
+                    startCaptionDrag(event, block, "trim-end")
+                  }
+                  title="Trim caption out"
+                />
               </div>
             ))}
           </div>
@@ -1228,16 +1640,31 @@ function Timeline({
             <div className="trackRail">
               <span className="trackRailLabel">WFM</span>
             </div>
-            <svg className="waveformSvg" width={totalWidth} height={50} preserveAspectRatio="none">
+            <svg
+              className="waveformSvg"
+              width={totalWidth}
+              height={50}
+              preserveAspectRatio="none"
+            >
               {waveformBars.map((bar, index) => (
-                <rect key={index} x={bar.x} y={50 - bar.height * 46} width={bar.width} height={bar.height * 46} rx={1} />
+                <rect
+                  key={index}
+                  x={bar.x}
+                  y={50 - bar.height * 46}
+                  width={bar.width}
+                  height={bar.height * 46}
+                  rx={1}
+                />
               ))}
             </svg>
             {deletedRegions.map((region, index) => (
               <div
                 key={`del-wave-${index}`}
                 className="deletedOverlay"
-                style={{ left: region.startSec * pxPerSec, width: (region.endSec - region.startSec) * pxPerSec }}
+                style={{
+                  left: region.startSec * pxPerSec,
+                  width: (region.endSec - region.startSec) * pxPerSec,
+                }}
               />
             ))}
           </div>
@@ -1246,79 +1673,121 @@ function Timeline({
             <div className="trackRail">
               <span className="trackRailLabel">B</span>
             </div>
-            {brollBlocks.length === 0 && <div className="brollEmpty">No overlay clips</div>}
-            {brollBlocks.map(({ clip, x, w, opacity, timelineStartSec, duration, isDragging }) => {
-              const isSelected = selectedBrollClipId === clip.id;
-              return (
-                <div
-                  key={clip.id}
-                  className={[
-                    "brollBlock",
-                    isSelected ? "selected" : "",
-                    isDragging ? "dragging" : "",
-                    brollEditBusy ? "disabled" : "",
-                  ].filter(Boolean).join(" ")}
-                  style={{ left: x, width: w, opacity: Math.max(0.28, Math.min(opacity, 1)) }}
-                  onMouseDown={(event) => startBrollDrag(event, clip, "move")}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    clearAllSelections();
-                    onSelectBrollClip?.(clip.id);
-                    onSeek(timelineStartSec);
-                  }}
-                  onWheel={(event) => {
-                    if (!event.altKey || brollEditBusy) return;
-                    event.preventDefault();
-                    event.stopPropagation();
-                    clearAllSelections();
-                    onSelectBrollClip?.(clip.id);
-                    const currentOpacity = brollOpacityDraftById[clip.id] ?? clamp(typeof clip.broll_opacity === "number" ? clip.broll_opacity : 1, 0, 1);
-                    const step = event.deltaY < 0 ? 0.04 : -0.04;
-                    const nextOpacity = clamp(currentOpacity + step, 0, 1);
-                    setBrollOpacityDraftById((prev) => ({ ...prev, [clip.id]: nextOpacity }));
-                    scheduleOpacityCommit(clip.id, Number(nextOpacity.toFixed(3)));
-                  }}
-                  title={`B-roll ${formatTimecode(timelineStartSec)} · ${formatDuration(duration)} · opacity ${(opacity * 100).toFixed(0)}%`}
-                >
-                  {w > 74 ? `${(opacity * 100).toFixed(0)}%` : ""}
-                  <button
-                    type="button"
-                    className="brollRerollBtn"
-                    disabled={brollEditBusy}
-                    onMouseDown={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
+            {brollBlocks.length === 0 && (
+              <div className="brollEmpty">No overlay clips</div>
+            )}
+            {brollBlocks.map(
+              ({
+                clip,
+                x,
+                w,
+                opacity,
+                timelineStartSec,
+                duration,
+                isDragging,
+              }) => {
+                const isSelected = selectedBrollClipId === clip.id;
+                return (
+                  <div
+                    key={clip.id}
+                    className={[
+                      "brollBlock",
+                      isSelected ? "selected" : "",
+                      isDragging ? "dragging" : "",
+                      brollEditBusy ? "disabled" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                    style={{
+                      left: x,
+                      width: w,
+                      opacity: Math.max(0.28, Math.min(opacity, 1)),
                     }}
+                    onMouseDown={(event) => startBrollDrag(event, clip, "move")}
                     onClick={(event) => {
+                      event.stopPropagation();
+                      clearAllSelections();
+                      onSelectBrollClip?.(clip.id);
+                      onSeek(timelineStartSec);
+                    }}
+                    onWheel={(event) => {
+                      if (!event.altKey || brollEditBusy) return;
                       event.preventDefault();
                       event.stopPropagation();
-                      onRerollBrollClip?.(clip.id);
+                      clearAllSelections();
+                      onSelectBrollClip?.(clip.id);
+                      const currentOpacity =
+                        brollOpacityDraftById[clip.id] ??
+                        clamp(
+                          typeof clip.broll_opacity === "number"
+                            ? clip.broll_opacity
+                            : 1,
+                          0,
+                          1,
+                        );
+                      const step = event.deltaY < 0 ? 0.04 : -0.04;
+                      const nextOpacity = clamp(currentOpacity + step, 0, 1);
+                      setBrollOpacityDraftById((prev) => ({
+                        ...prev,
+                        [clip.id]: nextOpacity,
+                      }));
+                      scheduleOpacityCommit(
+                        clip.id,
+                        Number(nextOpacity.toFixed(3)),
+                      );
                     }}
-                    title="Re-roll B-roll clip"
+                    title={`B-roll ${formatTimecode(timelineStartSec)} · ${formatDuration(duration)} · opacity ${(opacity * 100).toFixed(0)}%`}
                   >
-                    <RefreshCw size={10} strokeWidth={2.1} aria-hidden="true" />
-                  </button>
-                  <button
-                    type="button"
-                    className="brollDeleteBtn"
-                    disabled={brollEditBusy}
-                    onMouseDown={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                    }}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      onDeleteBrollClip(clip.id);
-                    }}
-                    title="Remove B-roll clip"
-                  >
-                    <Trash2 size={10} strokeWidth={2.1} aria-hidden="true" />
-                  </button>
-                  <div className="brollResizeHandle" onMouseDown={(event) => startBrollDrag(event, clip, "resize-end")} title="Trim B-roll duration" />
-                </div>
-              );
-            })}
+                    {w > 74 ? `${(opacity * 100).toFixed(0)}%` : ""}
+                    <button
+                      type="button"
+                      className="brollRerollBtn"
+                      disabled={brollEditBusy}
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                      }}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onRerollBrollClip?.(clip.id);
+                      }}
+                      title="Re-roll B-roll clip"
+                    >
+                      <RefreshCw
+                        size={10}
+                        strokeWidth={2.1}
+                        aria-hidden="true"
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      className="brollDeleteBtn"
+                      disabled={brollEditBusy}
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                      }}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onDeleteBrollClip(clip.id);
+                      }}
+                      title="Remove B-roll clip"
+                    >
+                      <Trash2 size={10} strokeWidth={2.1} aria-hidden="true" />
+                    </button>
+                    <div
+                      className="brollResizeHandle"
+                      onMouseDown={(event) =>
+                        startBrollDrag(event, clip, "resize-end")
+                      }
+                      title="Trim B-roll duration"
+                    />
+                  </div>
+                );
+              },
+            )}
           </div>
 
           {showTranscriptAssist && (
@@ -1330,57 +1799,85 @@ function Timeline({
                 <div
                   key={`del-word-${index}`}
                   className="deletedOverlay wordDeletedOverlay"
-                  style={{ left: region.startSec * pxPerSec, width: (region.endSec - region.startSec) * pxPerSec }}
+                  style={{
+                    left: region.startSec * pxPerSec,
+                    width: (region.endSec - region.startSec) * pxPerSec,
+                  }}
                 />
               ))}
-              {wordBlocks.map(({ word, x, w, speakerSlot, isDeleted, isSelected, isActive }) => (
-                <div
-                  key={word.id}
-                  className={[
-                    "tlWord",
-                    isDeleted ? "deleted" : "",
-                    isSelected ? "selected" : "",
-                    isActive ? "active" : "",
-                    speakerSlot === 0 ? "speakerA" : "",
-                    speakerSlot === 1 ? "speakerB" : "",
-                    speakerSlot !== null && speakerSlot >= 2 ? "speakerExtra" : "",
-                  ].filter(Boolean).join(" ")}
-                  style={{ left: x, width: w }}
-                  onMouseDown={(event) => {
-                    event.stopPropagation();
-                  }}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onSelectLaneClip?.(null);
-                    onSelectBrollClip?.(null);
-                    onSelectCaptionBlock?.(null);
-                    onSelectWord(word.id, event.shiftKey);
-                  }}
-                  onDoubleClick={(event) => {
-                    event.stopPropagation();
-                    if (!isDeleted && onEditWord) {
-                      onSeek(word.start_sec);
-                      onEditWord(word.id);
+              {wordBlocks.map(
+                ({
+                  word,
+                  x,
+                  w,
+                  speakerSlot,
+                  isDeleted,
+                  isSelected,
+                  isActive,
+                }) => (
+                  <div
+                    key={word.id}
+                    className={[
+                      "tlWord",
+                      isDeleted ? "deleted" : "",
+                      isSelected ? "selected" : "",
+                      isActive ? "active" : "",
+                      speakerSlot === 0 ? "speakerA" : "",
+                      speakerSlot === 1 ? "speakerB" : "",
+                      speakerSlot !== null && speakerSlot >= 2
+                        ? "speakerExtra"
+                        : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                    style={{ left: x, width: w }}
+                    onMouseDown={(event) => {
+                      event.stopPropagation();
+                    }}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onSelectLaneClip?.(null);
+                      onSelectBrollClip?.(null);
+                      onSelectCaptionBlock?.(null);
+                      onSelectWord(word.id, event.shiftKey);
+                    }}
+                    onDoubleClick={(event) => {
+                      event.stopPropagation();
+                      if (!isDeleted && onEditWord) {
+                        onSeek(word.start_sec);
+                        onEditWord(word.id);
+                      }
+                    }}
+                    title={
+                      isDeleted
+                        ? `${word.text} (deleted — select and use Restore, or right-click Restore Selected Words)`
+                        : `${word.speaker_label ? `${word.speaker_label}: ` : ""}${word.text} · double-click to edit`
                     }
-                  }}
-                  title={
-                    isDeleted
-                      ? `${word.text} (deleted — select and use Restore, or right-click Restore Selected Words)`
-                      : `${word.speaker_label ? `${word.speaker_label}: ` : ""}${word.text} · double-click to edit`
-                  }
-                >
-                  {w > 24 ? word.text : ""}
-                  {!isDeleted && w > 24 && (
-                    <Pencil size={8} className="tlWordEditHint" aria-hidden="true" />
-                  )}
-                </div>
-              ))}
+                  >
+                    {w > 24 ? word.text : ""}
+                    {!isDeleted && w > 24 && (
+                      <Pencil
+                        size={8}
+                        className="tlWordEditHint"
+                        aria-hidden="true"
+                      />
+                    )}
+                  </div>
+                ),
+              )}
             </div>
           )}
 
           {rangeLeft !== null && rangeWidth !== null && rangeWidth > 2 && (
-            <div className="rangeSelection" style={{ left: rangeLeft + TRACK_LEFT_MARGIN, width: rangeWidth }}>
-              {rangeDuration !== null && rangeDuration > 0.1 && <span className="rangeLabel">{formatDuration(rangeDuration)}</span>}
+            <div
+              className="rangeSelection"
+              style={{ left: rangeLeft + TRACK_LEFT_MARGIN, width: rangeWidth }}
+            >
+              {rangeDuration !== null && rangeDuration > 0.1 && (
+                <span className="rangeLabel">
+                  {formatDuration(rangeDuration)}
+                </span>
+              )}
             </div>
           )}
 
@@ -1392,57 +1889,104 @@ function Timeline({
       </div>
 
       {contextMenu && (
-        <div className="tlContextMenu" style={{ left: contextMenu.x, top: contextMenu.y }}>
+        <div
+          className="tlContextMenu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+        >
           {/* ── Word actions ── */}
-          <button disabled={!selectedCount} onClick={() => { onDeleteSelected(); setContextMenu(null); }}>
+          <button
+            disabled={!selectedCount}
+            onClick={() => {
+              onDeleteSelected();
+              setContextMenu(null);
+            }}
+          >
             <Trash2 size={14} strokeWidth={1.9} aria-hidden="true" />
             <span>Delete Selected Words ({selectedCount})</span>
           </button>
-          <button disabled={!selectedHasDeleted} onClick={() => { onRestoreSelected(); setContextMenu(null); }}>
+          <button
+            disabled={!selectedHasDeleted}
+            onClick={() => {
+              onRestoreSelected();
+              setContextMenu(null);
+            }}
+          >
             <RotateCcw size={14} strokeWidth={1.9} aria-hidden="true" />
             <span>Restore Selected Words</span>
           </button>
           <hr />
           {/* ── Clip actions ── */}
-          {selectedLaneClipId && (() => {
-            const selectedBlock = laneBlocks.flatMap((lane) => lane.blocks).find((b) => b.clip.id === selectedLaneClipId);
-            const selectedLane = laneBlocks.find((lane) => lane.blocks.some((b) => b.clip.id === selectedLaneClipId));
-            const sel = selectedBlock && selectedLane ? {
-              clipId: selectedBlock.clip.id,
-              laneId: selectedLane.id,
-              laneLabel: selectedLane.label,
-              laneKind: selectedLane.kind,
-            } as TimelineLaneClipSelection : null;
-            if (!sel) return null;
-            const clipStart = selectedBlock!.timelineStartSec;
-            const clipEnd = clipStart + selectedBlock!.duration;
-            const canSplit = currentTimeSec > clipStart + 0.01 && currentTimeSec < clipEnd - 0.01;
-            return (
-              <>
-                <button onClick={() => { if (selectedBlock) onSeek(selectedBlock.timelineStartSec); setContextMenu(null); }}>
-                  <MapPin size={14} strokeWidth={1.9} aria-hidden="true" />
-                  <span>Jump to Clip Start</span>
-                </button>
-                <button
-                  disabled={!canSplit || !onSplitLaneClip}
-                  onClick={() => { if (sel && canSplit) { onSplitLaneClip?.(sel); } setContextMenu(null); }}
-                  title={canSplit ? "Split clip at current playhead position" : "Move playhead inside the clip to split"}
-                >
-                  <Scissors size={14} strokeWidth={1.9} aria-hidden="true" />
-                  <span>Split Clip at Playhead</span>
-                </button>
-                <button
-                  className="danger"
-                  onClick={() => { onDeleteLaneClip?.(sel); setContextMenu(null); }}
-                >
-                  <Trash2 size={14} strokeWidth={1.9} aria-hidden="true" />
-                  <span>Delete Clip</span>
-                </button>
-              </>
-            );
-          })()}
+          {selectedLaneClipId &&
+            (() => {
+              const selectedBlock = laneBlocks
+                .flatMap((lane) => lane.blocks)
+                .find((b) => b.clip.id === selectedLaneClipId);
+              const selectedLane = laneBlocks.find((lane) =>
+                lane.blocks.some((b) => b.clip.id === selectedLaneClipId),
+              );
+              const sel =
+                selectedBlock && selectedLane
+                  ? ({
+                      clipId: selectedBlock.clip.id,
+                      laneId: selectedLane.id,
+                      laneLabel: selectedLane.label,
+                      laneKind: selectedLane.kind,
+                    } as TimelineLaneClipSelection)
+                  : null;
+              if (!sel) return null;
+              const clipStart = selectedBlock!.timelineStartSec;
+              const clipEnd = clipStart + selectedBlock!.duration;
+              const canSplit =
+                currentTimeSec > clipStart + 0.01 &&
+                currentTimeSec < clipEnd - 0.01;
+              return (
+                <>
+                  <button
+                    onClick={() => {
+                      if (selectedBlock) onSeek(selectedBlock.timelineStartSec);
+                      setContextMenu(null);
+                    }}
+                  >
+                    <MapPin size={14} strokeWidth={1.9} aria-hidden="true" />
+                    <span>Jump to Clip Start</span>
+                  </button>
+                  <button
+                    disabled={!canSplit || !onSplitLaneClip}
+                    onClick={() => {
+                      if (sel && canSplit) {
+                        onSplitLaneClip?.(sel);
+                      }
+                      setContextMenu(null);
+                    }}
+                    title={
+                      canSplit
+                        ? "Split clip at current playhead position"
+                        : "Move playhead inside the clip to split"
+                    }
+                  >
+                    <Scissors size={14} strokeWidth={1.9} aria-hidden="true" />
+                    <span>Split Clip at Playhead</span>
+                  </button>
+                  <button
+                    className="danger"
+                    onClick={() => {
+                      onDeleteLaneClip?.(sel);
+                      setContextMenu(null);
+                    }}
+                  >
+                    <Trash2 size={14} strokeWidth={1.9} aria-hidden="true" />
+                    <span>Delete Clip</span>
+                  </button>
+                </>
+              );
+            })()}
           {!selectedLaneClipId && (
-            <button onClick={() => { onSeek(currentTimeSec); setContextMenu(null); }}>
+            <button
+              onClick={() => {
+                onSeek(currentTimeSec);
+                setContextMenu(null);
+              }}
+            >
               <MapPin size={14} strokeWidth={1.9} aria-hidden="true" />
               <span>Seek to Playhead ({formatTimecode(currentTimeSec)})</span>
             </button>
