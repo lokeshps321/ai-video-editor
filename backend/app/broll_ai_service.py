@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
 from dataclasses import dataclass
 from functools import lru_cache
@@ -8,6 +10,8 @@ from urllib.parse import urlparse
 
 from .config import get_settings
 from .models import MediaAsset
+
+_logger = logging.getLogger(__name__)
 
 _WORD_RE = re.compile(r"[A-Za-z0-9']+")
 _CAP_PHRASE_RE = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})\b")
@@ -492,6 +496,62 @@ def extract_entities(text: str) -> list[str]:
     return _fallback_entities(text)
 
 
+def _gemini_expand_queries(chunk_text: str, concept_text: str) -> list[str]:
+    """Call Gemini Flash to produce 3 semantically rich stock-video search queries.
+
+    This is Option B (Semantic Query Expansion) — instead of literal keyword
+    matching the AI understands the *context and mood* of the transcript segment
+    and suggests visually descriptive queries suitable for Pexels / Pixabay.
+    Falls back silently to an empty list on any error so the caller always gets
+    at least the classic keyword-based queries.
+    """
+    api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
+    if not api_key:
+        return []
+    try:
+        import google.generativeai as genai  # type: ignore
+    except ImportError:
+        return []
+
+    prompt = (
+        "You are a stock-video search expert. Given a transcript segment and its "
+        "visual concept, output EXACTLY 3 short stock-video search queries (2-5 words "
+        "each) that would retrieve visually compelling B-roll matching the MOOD and "
+        "CONTEXT — not just the literal words.\n\n"
+        f"Transcript segment: \"{chunk_text.strip()}\"\n"
+        f"Visual concept: \"{concept_text.strip()}\"\n\n"
+        "Rules:\n"
+        "- Each query must be a concrete, visualisable scene (e.g. 'team celebrating milestone').\n"
+        "- No abstract nouns alone (e.g. NOT just 'success').\n"
+        "- No speaker, microphone, or talking-head imagery.\n"
+        "- Return ONLY a JSON array of 3 strings, nothing else.\n"
+        "Example output: [\"engineers reviewing code on screens\", \"rocket launch countdown\", \"data analytics dashboard close-up\"]"
+    )
+
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-2.0-flash")
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.4,
+                max_output_tokens=128,
+            ),
+        )
+        raw = (response.text or "").strip()
+        # Strip markdown fences if present
+        if raw.startswith("```"):
+            raw = raw.split("```")[1].lstrip("json").strip()
+            if "```" in raw:
+                raw = raw[: raw.index("```")]
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return [str(q).strip() for q in parsed if str(q).strip()][:3]
+    except Exception as exc:  # noqa: BLE001
+        _logger.debug("[broll] Gemini query expansion failed: %s", exc)
+    return []
+
+
 def expand_broll_queries(
     *,
     chunk_text: str,
@@ -500,7 +560,11 @@ def expand_broll_queries(
     max_queries: int = 6,
 ) -> list[str]:
     entities = extract_entities(chunk_text)
-    queries: list[str] = []
+
+    # --- Gemini semantic expansion (prepended so they rank first) ---
+    gemini_queries = _gemini_expand_queries(chunk_text, concept_text)
+
+    queries: list[str] = list(gemini_queries)
 
     if concept_text.strip():
         queries.append(concept_text.strip())
@@ -537,7 +601,7 @@ def expand_broll_queries(
             continue
         seen.add(key)
         deduped.append(trimmed)
-        if len(deduped) >= max(1, max_queries):
+        if len(deduped) >= max(1, max_queries + 3):  # allow extra slots for Gemini queries
             break
     return deduped
 

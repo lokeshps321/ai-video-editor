@@ -213,20 +213,22 @@ function LaneClipThumb({ src, seekSec }: LaneClipThumbProps) {
   }, [src, seekSec]);
 
   return (
-    <video
-      ref={videoRef}
-      className={`timelineLaneThumbVideo ${isReady ? "ready" : ""}`}
-      src={src}
-      muted
-      playsInline
-      preload="auto"
-      onLoadedMetadata={seekToFrame}
-      onLoadedData={seekToFrame}
-      onCanPlay={seekToFrame}
-      onSeeked={() => setIsReady(true)}
-      onError={() => setIsReady(false)}
-      aria-hidden="true"
-    />
+    <div className="timelineLaneThumb">
+      <video
+        ref={videoRef}
+        className={`timelineLaneThumbVideo ${isReady ? "ready" : ""}`}
+        src={src}
+        muted
+        playsInline
+        preload="auto"
+        onLoadedMetadata={seekToFrame}
+        onLoadedData={seekToFrame}
+        onCanPlay={seekToFrame}
+        onSeeked={() => setIsReady(true)}
+        onError={() => setIsReady(false)}
+        aria-hidden="true"
+      />
+    </div>
   );
 }
 

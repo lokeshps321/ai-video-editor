@@ -4569,11 +4569,12 @@ function App() {
   }, [selectedCaptionBlock, captionBlocks]);
 
   useEffect(() => {
+    if (!featureDrawerOpen) return;
     if (inspectorContext.kind === "project") return;
     if (activeFeatureTab !== inspectorContext.suggestedTab) {
       setActiveFeatureTab(inspectorContext.suggestedTab);
     }
-  }, [inspectorContext.kind, inspectorContext.suggestedTab, activeFeatureTab]);
+  }, [featureDrawerOpen, inspectorContext.kind, inspectorContext.suggestedTab, activeFeatureTab]);
 
   useEffect(() => {
     if (!featureDrawerOpen) return;
