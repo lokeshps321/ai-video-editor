@@ -1,0 +1,47 @@
+/* Header (Editor mode) */
+.topBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 16px;
+  padding: 16px 24px;
+  background: rgba(8, 9, 13, 0.82);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(12px);
+}
+
+.headerLogos {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.headerProjectTitle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.headerProjectDivider {
+  color: var(--muted);
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.headerProjectTitle h1 {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .topBar {
+    flex-direction: column;
+  }
+}

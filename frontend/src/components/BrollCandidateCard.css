@@ -1,0 +1,189 @@
+.brollCandidateCard {
+  min-height: 72px;
+  align-items: stretch;
+  padding: 8px 12px;
+}
+
+.brollCandidateThumb {
+  width: 120px;
+  aspect-ratio: 16 / 9;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  overflow: hidden;
+  background: radial-gradient(
+    circle at 0% 0%,
+    rgba(255, 255, 255, 0.7),
+    rgba(15, 23, 42, 0.9)
+  );
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 14px;
+}
+
+.brollCandidatePreview {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background-color: #000;
+  border-radius: 8px;
+  display: block;
+}
+
+.brollCandidateThumbInner {
+  width: 100%;
+  height: 100%;
+  border-radius: 8px;
+  border: 1px solid rgba(15, 23, 42, 0.7);
+  background: linear-gradient(
+    135deg,
+    rgba(15, 23, 42, 0.7),
+    rgba(15, 23, 42, 0.3)
+  );
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-start;
+  padding: 6px;
+}
+
+.brollCandidateThumbBadge {
+  font-size: 0.65rem;
+  font-family: "JetBrains Mono", monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(226, 232, 240, 0.9);
+  background: rgba(0, 0, 0, 0.6);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.brollCandidateBody {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.brollCandidateBtn {
+  min-height: 72px;
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  font-size: 0.85rem;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ink);
+  text-align: left;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s ease;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.brollCandidateMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.brollCandidateLabel {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.brollCandidateMeta {
+  font-size: 0.68rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.brollCandidateSide {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.75rem;
+}
+
+.brollConfidence {
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.brollConfidence.high {
+  border-color: rgba(57, 255, 136, 0.55);
+  color: #6cf0b0;
+}
+
+.brollConfidence.medium {
+  border-color: rgba(255, 215, 64, 0.5);
+  color: #f8d56d;
+}
+
+.brollConfidence.low {
+  border-color: rgba(255, 107, 107, 0.5);
+  color: #ff8f8f;
+}
+
+.brollReasonChips {
+  width: 100%;
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+.brollCandidateBtn.chosen {
+  border-color: rgba(255, 255, 255, 0.6);
+  background: linear-gradient(
+    to right,
+    rgba(255, 255, 255, 0.15),
+    rgba(255, 255, 255, 0.05)
+  );
+  box-shadow: 0 0 15px rgba(255, 255, 255, 0.2);
+}
+
+.brollCandidateBtn:not(:disabled):hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+@media (max-width: 1100px) {
+  .brollCandidateThumb {
+    width: 92px;
+    margin-right: 8px;
+  }
+}
+
+@media (max-width: 640px) {
+  .brollCandidateBtn {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .brollCandidateThumb {
+    width: 100%;
+    margin-right: 0;
+  }
+}

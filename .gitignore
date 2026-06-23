@@ -33,3 +33,6 @@ frontend/src/*.bak
 /test_ass.ass
 /preview-9x16-check.png
 /frame.jpg
+gemini-cli/
+claude_code_zai_env.sh
+

@@ -1,0 +1,175 @@
+/* ── Export Panel ─────────────────────────────────── */
+.exportSettings {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.exportField {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.exportLabel {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: rgba(191, 200, 219, 0.8);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.exportOptions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.exportOption {
+  padding: 8px 16px;
+  background: rgba(15, 23, 42, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease;
+  min-height: auto;
+}
+
+.exportOption:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--ink);
+  transform: none;
+  box-shadow: none;
+}
+
+.exportOption.active {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.4);
+  color: #fff;
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.1);
+}
+
+.exportJobStatus {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  background: rgba(15, 23, 42, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+}
+
+.exportJobTop {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.exportJobLabel {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.exportJobBadge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.15);
+  color: var(--accent-secondary);
+}
+
+.exportJobBadge.failed {
+  background: rgba(255, 107, 107, 0.15);
+  color: #ff6b6b;
+}
+
+.exportJobBadge.done,
+.exportJobBadge.completed {
+  background: rgba(29, 209, 161, 0.15);
+  color: #1dd1a1;
+}
+
+.exportJobProgress {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.78rem;
+  color: var(--ink);
+}
+
+.exportJobMessage {
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
+.exportApplyRow {
+  display: flex;
+  gap: 8px;
+}
+
+.exportGuideRow {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.exportGuideBtn {
+  width: fit-content;
+  padding: 9px 14px;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 9px;
+  color: var(--ink);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.exportGuideBtn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.exportGuideBtn.active {
+  background: color-mix(in srgb, var(--accent) 16%, rgba(255, 255, 255, 0.04));
+  border-color: color-mix(
+    in srgb,
+    var(--accent) 48%,
+    rgba(255, 255, 255, 0.08)
+  );
+  color: var(--accent-tertiary);
+}
+
+.exportGuideHint {
+  margin: 0;
+}
+
+.exportApplyBtn {
+  flex: 1;
+  font-size: 0.95rem;
+  padding: 14px 20px;
+  min-height: 48px;
+  background: linear-gradient(
+    135deg,
+    var(--accent) 0%,
+    var(--accent-secondary) 100%
+  ) !important;
+  border-color: transparent !important;
+  box-shadow: 0 10px 28px var(--accent-glow);
+}
+
+.exportApplyBtn:not(:disabled):hover {
+  box-shadow: 0 12px 32px var(--accent-glow) !important;
+  filter: brightness(1.1);
+}

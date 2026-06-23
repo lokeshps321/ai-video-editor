@@ -1,0 +1,115 @@
+.completionCard {
+  display: grid;
+  gap: 12px;
+  margin: 10px 0 14px;
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  background:
+    linear-gradient(
+      135deg,
+      rgba(94, 234, 212, 0.12),
+      rgba(255, 255, 255, 0.03)
+    ),
+    rgba(16, 18, 28, 0.88);
+  border: 1px solid rgba(94, 234, 212, 0.26);
+  box-shadow:
+    0 18px 44px rgba(0, 0, 0, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+.completionCardHeader {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.completionCardIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  color: var(--accent-ink);
+  background: var(--success);
+  box-shadow: 0 0 18px var(--success-glow);
+  flex: 0 0 auto;
+}
+
+.completionCard h2 {
+  margin: 0 0 3px;
+  font-size: 0.98rem;
+  color: var(--ink);
+}
+
+.completionCard p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.completionStats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 8px;
+}
+
+.completionStats span {
+  display: grid;
+  gap: 2px;
+  padding: 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.completionStats strong {
+  color: var(--ink);
+  font-size: 0.98rem;
+  font-family: "JetBrains Mono", monospace;
+}
+
+.completionStats small {
+  color: var(--muted);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.completionDetails {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.completionDetails span,
+.exportCompletionFilename {
+  padding: 6px 9px;
+  border-radius: 999px;
+  color: var(--accent-tertiary);
+  background: rgba(94, 234, 212, 0.08);
+  border: 1px solid rgba(94, 234, 212, 0.18);
+  font-size: 0.76rem;
+}
+
+.completionNextStep strong {
+  color: var(--ink);
+}
+
+.exportCompletionFooter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.exportDownloadBtn {
+  min-height: 34px;
+  padding: 0 12px !important;
+  font-size: 0.74rem !important;
+}
+
+.completionWarning {
+  color: #ffd9a3 !important;
+}

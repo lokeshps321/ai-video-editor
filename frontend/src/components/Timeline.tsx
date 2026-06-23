@@ -25,6 +25,7 @@ import {
   VolumeX,
 } from "lucide-react";
 import type { Clip, TranscriptWord } from "../types";
+import "./Timeline.css";
 
 export type TimelineLane = {
   id: string;

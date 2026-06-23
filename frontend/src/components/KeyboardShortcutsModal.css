@@ -1,0 +1,104 @@
+.shortcutsOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 0.2s ease;
+}
+
+.shortcutsModal {
+  background: rgba(16, 16, 20, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 20px;
+  padding: 32px;
+  max-width: 560px;
+  width: 90vw;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.7);
+}
+
+.shortcutsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.shortcutsHeader h3 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.shortcutsClose {
+  background: transparent !important;
+  border: none !important;
+  font-size: 1.5rem;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px 8px !important;
+  min-height: auto !important;
+  line-height: 1;
+}
+
+.shortcutsClose:hover {
+  color: var(--ink);
+}
+
+.shortcutsGrid {
+  display: grid;
+  gap: 20px;
+}
+
+.shortcutGroup h4 {
+  margin: 0 0 10px 0;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent-secondary);
+  font-weight: 600;
+}
+
+.shortcutRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.shortcutRow kbd {
+  display: inline-block;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.78rem;
+  color: var(--ink);
+  min-width: 28px;
+  text-align: center;
+}
+
+@media (max-width: 768px) {
+  .shortcutsModal {
+    width: 92vw;
+    max-height: 80vh;
+  }
+
+  .shortcutsGrid {
+    grid-template-columns: 1fr;
+  }
+}

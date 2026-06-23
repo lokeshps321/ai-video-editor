@@ -1,4 +1,5 @@
 import { memo, useEffect, useState } from "react";
+import "./BrollCandidateCard.css";
 
 type BrollCandidateCardProps = {
   label: string;

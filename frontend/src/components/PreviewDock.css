@@ -1,0 +1,397 @@
+.workspacePreviewBlock {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  min-width: 0;
+  align-content: start;
+}
+
+.editorPreviewDock {
+  margin-top: 0;
+  position: sticky;
+  top: 86px;
+  align-self: start;
+  max-height: calc(100vh - 100px);
+  overflow: auto;
+}
+
+.previewStage {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-light);
+  overflow: hidden;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.previewStageLandscape {
+  aspect-ratio: 16 / 9;
+}
+
+.previewStagePortrait {
+  aspect-ratio: 9 / 16;
+  width: min(100%, 400px, calc((100vh - 360px) * 0.5625));
+  max-height: calc(100vh - 360px);
+  margin-inline: auto;
+}
+
+.previewVideo {
+  width: 100%;
+  height: 100%;
+  max-height: 75vh;
+  background: #000;
+  display: block;
+  object-fit: cover;
+  object-position: center;
+}
+
+.previewStagePortrait .previewVideo {
+  object-fit: contain;
+}
+
+.previewFrameGuide {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    rgba(0, 0, 0, 0.42) 0%,
+    rgba(0, 0, 0, 0.42) 21.875%,
+    rgba(255, 255, 255, 0.02) 21.875%,
+    rgba(255, 255, 255, 0.02) 78.125%,
+    rgba(0, 0, 0, 0.42) 78.125%,
+    rgba(0, 0, 0, 0.42) 100%
+  );
+}
+
+.previewFrameGuideWindow {
+  width: 56.25%;
+  height: 100%;
+  border-left: 2px solid rgba(255, 255, 255, 0.72);
+  border-right: 2px solid rgba(255, 255, 255, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+.livePreviewCaption {
+  position: absolute;
+  left: 50%;
+  bottom: var(--caption-safe-bottom, 56px);
+  transform: translateX(-50%);
+  width: calc(100% - 24px);
+  max-width: min(var(--caption-max-width, 86%), 760px);
+  padding-inline: 12px;
+  box-sizing: border-box;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.livePreviewCaptionText {
+  display: inline-block;
+  max-width: 100%;
+  padding: 0.28rem 0.6rem;
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0.06));
+  font-size: clamp(1rem, 2vw, 1.55rem);
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  line-height: 1.15;
+  text-align: center;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
+
+.livePreviewCaptionWord {
+  transition:
+    color 120ms ease,
+    opacity 120ms ease,
+    filter 120ms ease;
+}
+
+.livePreviewCaptionWord.active {
+  color: #ffe066;
+  filter: saturate(1.1);
+}
+
+.livePreviewCaptionWord.past {
+  opacity: 0.96;
+}
+
+.previewStageLandscape .livePreviewCaption {
+  --caption-max-width: 72%;
+}
+
+.previewStagePortrait .livePreviewCaption {
+  --caption-max-width: 84%;
+}
+
+.previewBusyBadge {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  display: grid;
+  gap: 8px;
+  min-width: min(280px, calc(100% - 20px));
+  max-width: min(360px, calc(100% - 20px));
+  padding: 8px 10px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent-secondary) 45%, white 12%);
+  background: rgba(7, 12, 21, 0.84);
+  color: var(--accent-tertiary);
+  font-size: 0.72rem;
+  font-family: "JetBrains Mono", monospace;
+  pointer-events: none;
+}
+
+.previewBusyRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.previewSpinner {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--accent-secondary);
+  animation: previewPulse 1s ease-in-out infinite;
+}
+
+.previewJobProgressBar {
+  min-width: 180px;
+}
+
+@keyframes previewPulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.previewMeta {
+  margin: 10px 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-family: "JetBrains Mono", monospace;
+}
+
+.previewAspectToggle {
+  display: inline-flex;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.previewAspectBtn {
+  min-height: auto;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.previewAspectBtn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink);
+  transform: none;
+  box-shadow: none;
+}
+
+.previewAspectBtn.active {
+  background: rgba(126, 220, 255, 0.12);
+  border-color: rgba(126, 220, 255, 0.4);
+  color: #e6f7ff;
+}
+
+.onboardingDropZone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  padding: 52px 32px 40px;
+  border: 1px dashed rgba(94, 234, 212, 0.22);
+  border-radius: var(--radius);
+  background:
+    radial-gradient(
+      ellipse 70% 50% at 50% 0%,
+      rgba(94, 234, 212, 0.05),
+      transparent 70%
+    ),
+    rgba(12, 14, 22, 0.65);
+  text-align: center;
+  cursor: default;
+  transition:
+    border-color 0.25s,
+    background 0.25s,
+    box-shadow 0.25s;
+}
+
+.onboardingDropZone.dragover {
+  border-color: var(--accent);
+  background:
+    radial-gradient(
+      ellipse 70% 50% at 50% 0%,
+      rgba(94, 234, 212, 0.1),
+      transparent 70%
+    ),
+    rgba(12, 14, 22, 0.8);
+  box-shadow:
+    inset 0 0 40px rgba(94, 234, 212, 0.04),
+    0 0 30px rgba(94, 234, 212, 0.06);
+}
+
+.onboardingIcon {
+  color: var(--accent);
+  opacity: 0.75;
+  filter: drop-shadow(0 0 12px rgba(94, 234, 212, 0.2));
+}
+
+.onboardingDropZone.dragover .onboardingIcon {
+  opacity: 1;
+  filter: drop-shadow(0 0 14px rgba(94, 234, 212, 0.5));
+  animation: pulse-soft 1.2s ease infinite;
+}
+
+@keyframes pulse-soft {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.08);
+  }
+}
+
+.onboardingTitle {
+  margin: 0;
+  font-size: 1.18rem;
+  font-weight: 800;
+  font-family: var(--font-heading);
+  background: linear-gradient(135deg, var(--ink), #c8cdd6);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.onboardingSteps {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 340px;
+}
+
+.onboardingStep {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  text-align: left;
+  font-size: 0.88rem;
+  color: var(--muted);
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--border-light);
+}
+
+.stepNum {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(94, 234, 212, 0.12);
+  border: 1px solid rgba(94, 234, 212, 0.28);
+  color: var(--accent);
+  font-weight: 800;
+  font-size: 0.78rem;
+}
+
+.onboardingUploadBtn {
+  margin-top: 4px;
+  font-size: 0.9rem;
+  padding: 12px 32px;
+}
+
+.onboardingHint {
+  font-size: 0.76rem !important;
+  margin: 0 !important;
+  opacity: 0.65;
+}
+
+@media (max-width: 1500px) {
+  .editorPreviewDock {
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .workspacePreviewBlock {
+    position: static;
+  }
+
+  .previewMeta {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .previewStagePortrait {
+    max-height: 50vh;
+  }
+
+  .workspacePreviewBlock h2 {
+    font-size: 0.9rem;
+  }
+
+  .previewMeta {
+    font-size: 0.72rem;
+  }
+
+  .onboardingDropZone {
+    padding: 32px 16px 24px;
+  }
+
+  .onboardingSteps {
+    max-width: 100%;
+  }
+
+  .editorPreviewDock {
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .previewStagePortrait {
+    max-height: 55vh;
+  }
+}

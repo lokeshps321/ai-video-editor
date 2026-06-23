@@ -1,0 +1,904 @@
+.panelTranscript {
+  min-height: calc(100vh - 220px);
+}
+
+.transcriptPanelHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.transcriptPanelMeta {
+  margin-bottom: 0;
+}
+
+.transcriptViewToggle {
+  display: inline-flex;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.transcriptViewToggle button {
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.transcriptViewToggle button.active {
+  background: rgba(126, 220, 255, 0.12);
+  border-color: rgba(126, 220, 255, 0.4);
+  color: #e6f7ff;
+}
+
+.transcriptViewToggle button .scriptHint {
+  font-weight: 700;
+  font-size: 0.92rem;
+  margin-right: 4px;
+  opacity: 0.7;
+}
+
+.transcriptViewToggle button.active .scriptHint {
+  opacity: 1;
+}
+
+.transcriptControlBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.transcriptControlField {
+  display: grid;
+  gap: 6px;
+  min-width: min(240px, 100%);
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.transcriptControlField select {
+  min-height: 38px;
+  border-radius: 12px;
+  border: 1px solid var(--border-light);
+  background: rgba(8, 10, 18, 0.72);
+  color: var(--ink);
+  padding: 0 12px;
+  font: inherit;
+}
+
+.transcriptToggleField {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 0 2px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.transcriptToggleField input {
+  margin: 0;
+}
+
+.transcriptEstimateHint {
+  margin: -4px 0 12px;
+}
+
+.transcriptEstimateHint strong {
+  color: var(--ink);
+}
+
+.transcriptGenerateBtn {
+  min-width: 190px;
+  justify-content: center;
+}
+
+.transcriptRegenerateBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.transcriptRegenerateBtn:hover:not(:disabled) {
+  border-color: rgba(94, 234, 212, 0.35);
+  background: rgba(94, 234, 212, 0.08);
+}
+
+.transcriptRegenerateBtn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.transcriptJobCard {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent-secondary) 35%, white 10%);
+  background: rgba(10, 17, 31, 0.78);
+}
+
+.transcriptJobTop {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.74rem;
+}
+
+.transcriptJobBadge {
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  text-transform: capitalize;
+  color: var(--ink);
+}
+
+.transcriptJobBadge.running,
+.transcriptJobBadge.queued {
+  border-color: rgba(126, 220, 255, 0.35);
+  background: rgba(126, 220, 255, 0.12);
+}
+
+.transcriptJobBadge.failed {
+  border-color: rgba(255, 107, 107, 0.35);
+  background: rgba(255, 107, 107, 0.12);
+}
+
+.transcriptJobBadge.completed {
+  border-color: rgba(107, 230, 160, 0.35);
+  background: rgba(107, 230, 160, 0.12);
+}
+
+.transcriptJobProgress,
+.transcriptJobElapsed {
+  color: var(--muted);
+}
+
+.transcriptJobMessage {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.82rem;
+}
+
+.jobRetryRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.jobRetryBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 107, 107, 0.35);
+  background: rgba(255, 107, 107, 0.1);
+  color: #ffe1e1;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.jobRetryBtn:not(:disabled):hover {
+  background: rgba(255, 107, 107, 0.17);
+  transform: none;
+  box-shadow: none;
+}
+
+.inlineIconLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+/* ── Detected language badge ─────────────────────── */
+.detectedLanguageBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: rgba(107, 230, 160, 0.1);
+  border: 1px solid rgba(107, 230, 160, 0.25);
+  font-size: 0.78rem;
+  animation: fadeIn 0.3s ease;
+}
+
+.transcriptScriptBadge {
+  background: rgba(126, 220, 255, 0.08);
+  border-color: rgba(126, 220, 255, 0.2);
+}
+
+.detectedLanguageLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+}
+
+.detectedLanguageValue {
+  color: #6be6a0;
+  font-weight: 600;
+}
+
+.detectedLanguageHint {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.lockLanguageBtn {
+  min-height: auto !important;
+  padding: 1px 8px !important;
+  border-radius: 999px !important;
+  font-size: 0.7rem !important;
+  background: rgba(107, 230, 160, 0.15) !important;
+  border: 1px solid rgba(107, 230, 160, 0.35) !important;
+  color: #6be6a0 !important;
+  cursor: pointer;
+  transition: background 0.15s ease !important;
+}
+
+.lockLanguageBtn:hover {
+  background: rgba(107, 230, 160, 0.28) !important;
+  transform: none !important;
+  box-shadow: none !important;
+}
+
+.transcriptSelectionMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 8px 0 12px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-family: "JetBrains Mono", monospace;
+}
+
+.featureLauncher {
+  margin: 0 0 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.featureLauncher button {
+  min-height: 36px;
+  padding: 0 14px;
+  font-size: 0.78rem;
+  border-radius: 10px;
+  flex: 1 1 0;
+  justify-content: center;
+  gap: 6px;
+  font-weight: 500;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.04);
+  transition: all 0.2s ease;
+}
+
+.featureLauncher button svg {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.featureLauncher button.active {
+  border-color: color-mix(in srgb, var(--accent) 72%, white);
+  background: color-mix(in srgb, var(--accent) 18%, rgba(255, 255, 255, 0.06));
+  color: var(--accent-tertiary);
+}
+
+.featureLauncher button.active svg {
+  color: var(--accent-tertiary);
+}
+
+/* ── Search bar ──────────────────────────────────── */
+.searchBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  transition: border-color 0.2s;
+}
+
+.searchBar:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.searchIcon {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.searchBar input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 0.84rem;
+  padding: 4px 0;
+}
+
+.searchBar input::placeholder {
+  color: var(--muted);
+}
+
+.searchCount {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+  color: var(--muted);
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.searchNav {
+  min-height: 22px;
+  min-width: 22px;
+  padding: 0;
+  font-size: 0.62rem;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.searchNav:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--ink);
+  box-shadow: none;
+  transform: none;
+}
+
+/* ── Toolbar ─────────────────────────────────────── */
+.wordActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.toolbar button {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink);
+  border: 1px solid var(--border-light);
+  font-size: 0.8rem;
+  font-weight: 500;
+  padding: 0 10px;
+  min-height: 34px;
+  gap: 4px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.toolbar button svg {
+  color: var(--accent-secondary);
+  flex-shrink: 0;
+}
+
+.toolbar button:not(:disabled):hover {
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: none;
+  transform: none;
+}
+
+.toolbarSep {
+  width: 1px;
+  align-self: stretch;
+  background: var(--border-light);
+  margin: 4px 2px;
+}
+
+.badge {
+  font-family: "JetBrains Mono", monospace;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 0.66rem;
+  padding: 1px 6px;
+  border-radius: 99px;
+  font-weight: 700;
+  margin-left: 4px;
+}
+
+/* ── Transcript word grid ────────────────────────── */
+.transcriptBox {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.02);
+  min-height: 340px;
+  max-height: clamp(380px, 62vh, 740px);
+  overflow: auto;
+  padding: 16px 18px;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 3px 2px;
+  scroll-behavior: smooth;
+  user-select: none;
+  line-height: 1.7;
+}
+
+.transcriptBox::-webkit-scrollbar {
+  width: 6px;
+}
+
+.transcriptBox::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.transcriptBox::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+}
+
+.word {
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 0.92rem;
+  margin: 0;
+  min-height: auto;
+  padding: 2px 3px;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+  line-height: 1.5;
+  box-shadow: none;
+  letter-spacing: 0.01em;
+}
+
+.word:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.word.selected {
+  background: var(--select);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-glow);
+}
+
+.word.deleted {
+  color: #4a4a5a;
+  text-decoration: line-through;
+  background: transparent;
+  opacity: 0.4;
+  font-size: 0.84rem;
+}
+
+.word.active {
+  background: var(--active-glow);
+  color: var(--active);
+  border-color: var(--active);
+  font-weight: 600;
+  border-radius: 4px;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--active-glow);
+  }
+
+  50% {
+    box-shadow: 0 0 0 4px transparent;
+  }
+}
+
+.word.filler {
+  border-color: var(--filler-border);
+  background: var(--filler);
+  border-style: dashed;
+}
+
+.word.searchMatch {
+  background: var(--search);
+  border-color: var(--success);
+}
+
+.word.currentMatch {
+  background: var(--search-active);
+  border-color: var(--success);
+  font-weight: 600;
+  box-shadow: 0 0 8px var(--search);
+}
+
+.word.lowConfidence {
+  border-color: rgba(254, 202, 87, 0.4);
+  background: rgba(254, 202, 87, 0.06);
+}
+
+.word.weakRegion {
+  border-color: rgba(255, 138, 101, 0.42);
+  background: rgba(255, 138, 101, 0.1);
+}
+
+.word.speakerA:not(.deleted):not(.active) {
+  background: rgba(96, 165, 250, 0.14);
+  border-color: rgba(96, 165, 250, 0.35);
+}
+
+.word.speakerB:not(.deleted):not(.active) {
+  background: rgba(244, 114, 182, 0.14);
+  border-color: rgba(244, 114, 182, 0.35);
+}
+
+.word.speakerExtra:not(.deleted):not(.active) {
+  background: rgba(167, 139, 250, 0.14);
+  border-color: rgba(167, 139, 250, 0.35);
+}
+
+.speakerLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.speakerLegendItem {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  border: 1px solid transparent;
+}
+
+.speakerLegendItem.speakerA {
+  background: rgba(96, 165, 250, 0.14);
+  border-color: rgba(96, 165, 250, 0.35);
+}
+
+.speakerLegendItem.speakerB {
+  background: rgba(244, 114, 182, 0.14);
+  border-color: rgba(244, 114, 182, 0.35);
+}
+
+.speakerLegendItem.speakerExtra {
+  background: rgba(167, 139, 250, 0.14);
+  border-color: rgba(167, 139, 250, 0.35);
+}
+
+.duetHint {
+  margin-top: 6px;
+  font-size: 0.82rem;
+}
+
+/* ── Sentence breaks in word grid ────────────────── */
+.sentenceBreak {
+  flex-basis: 100%;
+  height: 0;
+  margin: 2px 0;
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+/* ── Inline word edit ────────────────────────────── */
+.wordEditInput {
+  font-family: inherit;
+  font-size: 0.92rem;
+  background: var(--accent-glow);
+  border: 1.5px solid var(--accent);
+  border-radius: 4px;
+  color: var(--ink);
+  padding: 2px 4px;
+  outline: none;
+  min-width: 40px;
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+
+.transcriptReviewCard {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(254, 202, 87, 0.24);
+  border-radius: 12px;
+  background: rgba(254, 202, 87, 0.07);
+  color: var(--ink);
+}
+
+.transcriptReviewCard.warningTone {
+  border-color: rgba(254, 202, 87, 0.42);
+  background: rgba(254, 202, 87, 0.1);
+}
+
+.transcriptReviewCard strong {
+  display: block;
+  margin-bottom: 3px;
+  font-size: 0.86rem;
+}
+
+.transcriptReviewCard p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
+.transcriptReviewActions {
+  display: inline-flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.transcriptReviewActions button {
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(254, 202, 87, 0.34);
+  background: rgba(254, 202, 87, 0.1);
+  color: #ffe4a3;
+  font-size: 0.74rem;
+}
+
+.transcriptRegionSummary {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.transcriptRegionSummaryHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.transcriptRegionBar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.transcriptRegionChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-light);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ink);
+  font-size: 0.76rem;
+  padding: 6px 10px;
+}
+
+.transcriptRegionChip.weak {
+  border-color: rgba(255, 138, 101, 0.38);
+  background: rgba(255, 138, 101, 0.12);
+}
+
+.transcriptRegionChip.blanked {
+  border-color: rgba(129, 199, 132, 0.34);
+  background: rgba(129, 199, 132, 0.1);
+}
+
+.transcriptRegionOverflow {
+  align-self: center;
+  font-size: 0.8rem;
+}
+
+.rangeEditor {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.rangeEditorHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.rangeEditor textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 60px;
+  border-radius: 12px;
+  border: 1px solid var(--border-light);
+  background: rgba(8, 10, 18, 0.7);
+  color: var(--ink);
+  padding: 10px 12px;
+  font: inherit;
+}
+
+.rangeEditor textarea:focus {
+  outline: 1px solid var(--accent);
+  border-color: var(--accent);
+}
+
+.rangeEditorActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* ── Shortcut sections ───────────────────────────── */
+.shortcutSection {
+  margin: 10px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.shortcutSection summary {
+  cursor: pointer;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.02);
+  list-style: none;
+}
+
+.shortcutSection summary::-webkit-details-marker {
+  display: none;
+}
+
+.shortcutSection summary::before {
+  content: "▸ ";
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.shortcutSection[open] summary::before {
+  content: "▾ ";
+}
+
+.shortcutSection summary h3 {
+  display: inline;
+  margin: 0;
+  font-size: 0.84rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.shortcutList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 200px;
+  overflow: auto;
+  padding: 8px;
+}
+
+.segmentBtn {
+  justify-content: flex-start;
+  text-align: left;
+  min-height: 30px;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--ink);
+  border: 1px solid var(--border-light);
+  font-size: 0.8rem;
+  font-weight: 400;
+  white-space: normal;
+  line-height: 1.4;
+  word-break: break-word;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.segmentBtn .segTime {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+  color: var(--muted);
+  flex-shrink: 0;
+  padding-top: 1px;
+}
+
+.segmentBtn.deleted {
+  background: rgba(255, 255, 255, 0.01);
+  color: #555;
+  text-decoration: line-through;
+  opacity: 0.5;
+}
+
+.segmentBtn:not(:disabled):hover {
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: none;
+  transform: none;
+}
+
+@media (max-width: 1100px) {
+  .panelTranscript {
+      min-height: auto;
+    }
+
+  .featureLauncher {
+      overflow-x: auto;
+      padding-bottom: 2px;
+      flex-wrap: nowrap;
+    }
+
+  .toolbar {
+      flex-direction: row;
+      overflow-x: auto;
+    }
+}
+
+@media (max-width: 768px) {
+  .transcriptControlFields {
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+  
+    .transcriptControlField select {
+      font-size: 0.78rem;
+      min-width: 100px;
+    }
+  
+    .panelTranscript {
+      max-height: 45vh;
+    }
+
+  .featureLauncher {
+      overflow-x: auto;
+      flex-wrap: nowrap;
+      -webkit-overflow-scrolling: touch;
+    }
+  
+    .featureLauncher button {
+      flex: 0 0 auto;
+      min-width: 90px;
+    }
+}
+

@@ -1,0 +1,518 @@
+/* ── Caption Styles Grid (rebuilt) ───────────────── */
+.captionStyleGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+@media (max-width: 900px) {
+  .captionStyleGrid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .captionStyleGrid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.captionStyleCard {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 8px 12px;
+  background: linear-gradient(
+    145deg,
+    rgba(15, 23, 42, 0.7),
+    rgba(10, 15, 30, 0.9)
+  );
+  border: 1.5px solid rgba(255, 255, 255, 0.06);
+  border-radius: 14px;
+  cursor: pointer;
+  transition:
+    background-color 0.24s ease,
+    border-color 0.24s ease,
+    box-shadow 0.24s ease,
+    transform 0.24s ease;
+  text-align: center;
+  min-height: auto;
+  overflow: hidden;
+}
+
+.captionStyleCard::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 14px;
+  background: radial-gradient(
+    circle at 50% 0%,
+    var(--caption-accent, rgba(255, 255, 255, 0.1)) 0%,
+    transparent 70%
+  );
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  pointer-events: none;
+}
+
+.captionStyleCard:not(:disabled):hover {
+  border-color: var(--caption-accent, rgba(255, 255, 255, 0.25));
+  transform: translateY(-4px) scale(1.02);
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.4),
+    0 0 20px
+      color-mix(
+        in srgb,
+        var(--caption-accent, var(--accent-secondary)) 15%,
+        transparent
+      );
+}
+
+.captionStyleCard:not(:disabled):hover::before {
+  opacity: 0.15;
+}
+
+.captionStyleCard.active {
+  background: linear-gradient(
+    145deg,
+    rgba(20, 30, 50, 0.85),
+    rgba(15, 23, 42, 0.95)
+  );
+  border-color: var(--caption-accent, var(--accent-secondary));
+  box-shadow:
+    0 0 24px
+      color-mix(
+        in srgb,
+        var(--caption-accent, var(--accent-secondary)) 30%,
+        transparent
+      ),
+    inset 0 0 12px
+      color-mix(
+        in srgb,
+        var(--caption-accent, var(--accent-secondary)) 8%,
+        transparent
+      );
+}
+
+.captionStyleCard.active::before {
+  opacity: 0.2;
+}
+
+@keyframes captionGlowPulse {
+  0%,
+  100% {
+    box-shadow:
+      0 0 20px
+        color-mix(
+          in srgb,
+          var(--caption-accent, var(--accent-secondary)) 25%,
+          transparent
+        ),
+      inset 0 0 10px
+        color-mix(
+          in srgb,
+          var(--caption-accent, var(--accent-secondary)) 6%,
+          transparent
+        );
+  }
+
+  50% {
+    box-shadow:
+      0 0 30px
+        color-mix(
+          in srgb,
+          var(--caption-accent, var(--accent-secondary)) 40%,
+          transparent
+        ),
+      inset 0 0 16px
+        color-mix(
+          in srgb,
+          var(--caption-accent, var(--accent-secondary)) 12%,
+          transparent
+        );
+  }
+}
+
+.captionPreviewBox {
+  width: 100%;
+  height: 80px;
+  border-radius: 8px;
+  background: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.6) 0%,
+    rgba(0, 0, 0, 0.85) 100%
+  );
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.captionPreviewScene {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 8px 8px 7px;
+  overflow: hidden;
+}
+
+.captionPreviewText {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.24rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  user-select: none;
+  line-height: 1.05;
+}
+
+.captionPreviewHighlight {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.06rem 0.34rem;
+  border-radius: 999px;
+  background: var(--caption-accent, rgba(255, 255, 255, 0.16));
+  color: #081018;
+  box-shadow: 0 0 12px
+    color-mix(in srgb, var(--caption-accent, #fff) 38%, transparent);
+}
+
+.captionPreviewPulse {
+  position: absolute;
+  inset: auto auto 8px 50%;
+  width: 58%;
+  height: 24px;
+  border-radius: 999px;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--caption-accent, #fff) 24%, transparent) 0%,
+    transparent 70%
+  );
+  transform: translateX(-50%);
+  opacity: 0.75;
+}
+
+.captionPreviewScene.basic .captionPreviewText {
+  gap: 0.18rem;
+}
+
+.captionPreviewScene.basic .captionPreviewHighlight {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+.captionPreviewScene.hormozi .captionPreviewText {
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.captionPreviewScene.hormozi .captionPreviewHighlight {
+  transform: scale(1.08);
+}
+
+.captionStyleCard:is(:hover, .active)
+  .captionPreviewScene.hormozi
+  .captionPreviewHighlight {
+  animation: captionPreviewHop 1.15s ease-in-out infinite;
+}
+
+.captionPreviewScene.viral .captionPreviewText {
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.captionPreviewScene.viral .captionPreviewHighlight {
+  background: #ffe600;
+  color: #111;
+  box-shadow: 0 0 18px rgba(255, 230, 0, 0.45);
+}
+
+.captionStyleCard:is(:hover, .active)
+  .captionPreviewScene.viral
+  .captionPreviewHighlight {
+  animation: captionPreviewFlash 0.95s ease-in-out infinite;
+}
+
+.captionPreviewScene.neon {
+  background:
+    radial-gradient(
+      circle at 50% 100%,
+      rgba(255, 0, 60, 0.18),
+      transparent 58%
+    ),
+    linear-gradient(180deg, rgba(2, 8, 18, 0.3), rgba(0, 0, 0, 0));
+}
+
+.captionPreviewScene.neon .captionPreviewText {
+  text-transform: uppercase;
+}
+
+.captionPreviewScene.neon .captionPreviewHighlight {
+  background: rgba(255, 0, 60, 0.22);
+  color: #fff;
+  border: 1px solid rgba(255, 0, 60, 0.55);
+  box-shadow: 0 0 16px rgba(255, 0, 60, 0.45);
+}
+
+.captionPreviewScene.cyan .captionPreviewHighlight {
+  background: rgba(0, 255, 255, 0.24);
+  color: #04131a;
+  transform: skew(-10deg);
+}
+
+.captionPreviewScene.cyan .captionPreviewText {
+  letter-spacing: 0.04em;
+}
+
+.captionPreviewScene.minimal {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.04),
+    rgba(255, 255, 255, 0)
+  );
+}
+
+.captionPreviewScene.minimal .captionPreviewText {
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.captionPreviewScene.minimal .captionPreviewHighlight {
+  background: rgba(244, 143, 177, 0.18);
+  color: #fff;
+  box-shadow: none;
+}
+
+/* Indian creator caption presets */
+.captionPreviewScene.desi {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 215, 0, 0.08),
+    rgba(0, 0, 0, 0.5)
+  );
+}
+
+.captionPreviewScene.desi .captionPreviewText {
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.captionPreviewScene.desi .captionPreviewHighlight {
+  background: linear-gradient(135deg, #ffd700, #ffa500);
+  color: #1a0a00;
+  box-shadow: 0 0 16px rgba(255, 215, 0, 0.45);
+}
+
+.captionStyleCard:is(:hover, .active)
+  .captionPreviewScene.desi
+  .captionPreviewHighlight {
+  animation: captionPreviewFlash 1.8s ease infinite;
+}
+
+.captionPreviewScene.indic {
+  background: linear-gradient(
+    180deg,
+    rgba(128, 222, 234, 0.08),
+    rgba(0, 0, 0, 0.45)
+  );
+}
+
+.captionPreviewScene.indic .captionPreviewText {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.captionPreviewScene.indic .captionPreviewHighlight {
+  background: rgba(128, 222, 234, 0.22);
+  color: #e0f7fa;
+  box-shadow: 0 0 10px rgba(128, 222, 234, 0.3);
+}
+
+@keyframes captionPreviewHop {
+  0%,
+  100% {
+    transform: translateY(0) scale(1.08);
+  }
+  50% {
+    transform: translateY(-2px) scale(1.16);
+  }
+}
+
+@keyframes captionPreviewFlash {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 12px rgba(255, 230, 0, 0.28);
+  }
+  50% {
+    transform: scale(1.12);
+    box-shadow: 0 0 20px rgba(255, 230, 0, 0.55);
+  }
+}
+
+.captionActiveCheck {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--caption-accent, var(--accent-secondary));
+  color: var(--accent-ink);
+  font-size: 0.65rem;
+  font-weight: 900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  animation: checkPop 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.captionActiveCheck svg {
+  width: 12px;
+  height: 12px;
+}
+
+@keyframes checkPop {
+  0% {
+    transform: scale(0);
+    opacity: 0;
+  }
+
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.captionStyleName {
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: #fff;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
+}
+
+.captionStyleDesc {
+  font-size: 0.62rem;
+  color: rgba(191, 200, 219, 0.55);
+  line-height: 1.3;
+}
+
+.captionResultBadge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  border-radius: 10px;
+  background: rgba(29, 209, 161, 0.08);
+  border: 1px solid rgba(29, 209, 161, 0.25);
+  font-size: 0.78rem;
+  color: #1dd1a1;
+  animation: badgeSlideIn 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.captionResultIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+@keyframes badgeSlideIn {
+  0% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.captionApplyRow {
+  display: flex;
+  gap: 10px;
+}
+
+.captionApplyBtn {
+  flex: 1;
+  font-size: 0.9rem;
+  padding: 12px 20px;
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.captionRemoveBtn {
+  flex: 0 0 auto;
+  font-size: 0.82rem;
+  padding: 12px 16px;
+  min-height: 46px;
+  background: rgba(255, 107, 107, 0.08);
+  border: 1px solid rgba(255, 107, 107, 0.2);
+  color: rgba(255, 150, 150, 0.9);
+  border-radius: 10px;
+  cursor: pointer;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.captionRemoveBtn:not(:disabled):hover {
+  background: rgba(255, 107, 107, 0.15);
+  border-color: rgba(255, 107, 107, 0.4);
+  color: #ff6b6b;
+  transform: none;
+  box-shadow: 0 4px 12px rgba(255, 107, 107, 0.15);
+}
+
+.captionRemoveBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.captionSpinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-top-color: #fff;
+  animation: captionSpin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes captionSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 768px) {
+  .captionStyleGrid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+}

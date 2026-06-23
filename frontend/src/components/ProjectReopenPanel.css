@@ -1,0 +1,285 @@
+.projectReopenPanel {
+  padding: 16px;
+  margin: -4px 0 14px;
+  display: grid;
+  gap: 12px;
+}
+
+.projectReopenHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.projectReopenHeader h2 {
+  margin: 3px 0 0;
+  font-size: 1rem;
+}
+
+.projectHeaderActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.projectHeaderActions button {
+  min-height: 30px;
+  padding: 0 12px;
+  font-size: 0.74rem;
+}
+
+.newProjectBtn {
+  font-size: 0.74rem !important;
+  padding: 0 14px !important;
+}
+
+.projectReopenList {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.projectReopenItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 10px;
+  min-height: 72px;
+  padding: 12px;
+  text-align: left;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition:
+    border-color 0.2s ease,
+    background 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.projectReopenItem:hover:not(.danger) {
+  border-color: rgba(94, 234, 212, 0.34);
+  background: rgba(94, 234, 212, 0.07);
+}
+
+.projectReopenItem.active {
+  border-color: rgba(94, 234, 212, 0.36);
+  background: rgba(94, 234, 212, 0.1);
+}
+
+.projectReopenItem.danger {
+  border-color: rgba(255, 107, 107, 0.45);
+  background: rgba(255, 107, 107, 0.08);
+}
+
+.projectReopenClickArea {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.projectReopenName {
+  color: var(--ink);
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.projectReopenMeta {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.projectReopenAction {
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.projectReopenAction.current {
+  color: var(--muted);
+}
+
+.projectItemActions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  grid-row: 1 / 3;
+  grid-column: 2 / 3;
+}
+
+.projectActionBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px !important;
+  min-width: 28px !important;
+  padding: 0 !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  color: var(--muted) !important;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  opacity: 0;
+}
+
+.projectReopenItem:hover .projectActionBtn {
+  opacity: 1;
+}
+
+.projectActionBtn:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.2) !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: var(--ink) !important;
+}
+
+.projectActionBtn.danger:hover:not(:disabled) {
+  border-color: rgba(255, 107, 107, 0.4) !important;
+  background: rgba(255, 107, 107, 0.12) !important;
+  color: #ff8a8a !important;
+}
+
+.projectActionBtnConfirm {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px !important;
+  min-width: 28px !important;
+  padding: 0 6px !important;
+  border-radius: 8px !important;
+  background: rgba(94, 234, 212, 0.15) !important;
+  border: 1px solid rgba(94, 234, 212, 0.3) !important;
+  color: var(--accent) !important;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.projectActionBtnConfirm:hover:not(:disabled) {
+  background: rgba(94, 234, 212, 0.25) !important;
+  border-color: rgba(94, 234, 212, 0.5) !important;
+}
+
+.projectActionBtnClose {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px !important;
+  min-width: 28px !important;
+  padding: 0 6px !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  color: var(--muted) !important;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 0.72rem;
+}
+
+.projectActionBtnClose:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.2) !important;
+  color: var(--ink) !important;
+}
+
+.projectRenameRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  grid-column: 1 / -1;
+}
+
+.projectRenameInput {
+  flex: 1;
+  min-height: 32px !important;
+  font-size: 0.85rem !important;
+  padding: 0 10px !important;
+  border-radius: 8px !important;
+}
+
+.newProjectInputRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(94, 234, 212, 0.06);
+  border: 1px solid rgba(94, 234, 212, 0.18);
+  animation: fadeIn 0.2s ease;
+}
+
+.newProjectInput {
+  flex: 1;
+  min-height: 34px !important;
+  font-size: 0.88rem !important;
+  padding: 0 12px !important;
+  border-radius: 8px !important;
+}
+
+.newProjectInputRow .primaryBtn {
+  min-height: 34px;
+  padding: 0 16px !important;
+  font-size: 0.78rem !important;
+}
+
+.projectDeleteConfirm {
+  display: grid;
+  gap: 10px;
+  grid-column: 1 / -1;
+  animation: fadeIn 0.15s ease;
+}
+
+.projectDeleteWarning {
+  margin: 0;
+  font-size: 0.84rem;
+  color: #ff8a8a;
+  line-height: 1.45;
+}
+
+.projectDeleteWarning strong {
+  color: var(--ink);
+}
+
+.projectDeleteActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.projectDeleteConfirmBtn {
+  min-height: 30px !important;
+  padding: 0 14px !important;
+  font-size: 0.74rem !important;
+  font-weight: 700 !important;
+  background: rgba(255, 107, 107, 0.2) !important;
+  border: 1px solid rgba(255, 107, 107, 0.4) !important;
+  color: #ff8a8a !important;
+  border-radius: 8px !important;
+  transition: all 0.2s ease;
+}
+
+.projectDeleteConfirmBtn:hover:not(:disabled) {
+  background: rgba(255, 107, 107, 0.35) !important;
+  border-color: rgba(255, 107, 107, 0.55) !important;
+  box-shadow: 0 4px 12px rgba(255, 107, 107, 0.2);
+}
+
+.projectReopenEmpty {
+  margin: 0;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}

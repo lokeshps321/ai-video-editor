@@ -12,12 +12,7 @@ import {
   Check,
   Clapperboard,
   Download,
-  FileVideo,
-  FolderOpen,
   Globe,
-  Keyboard,
-  Pencil,
-  Plus,
   Redo2,
   RefreshCw,
   RotateCcw,
@@ -26,10 +21,7 @@ import {
   Sparkles,
   Trash2,
   Undo2,
-  UploadCloud,
   Wand2,
-  X,
-  Zap,
 } from "lucide-react";
 import { api } from "./lib/api";
 import { consumePendingUploadFile } from "./lib/pendingUpload";
@@ -57,12 +49,27 @@ import Timeline, {
   type TimelineLaneClipSelection,
 } from "./components/Timeline";
 import {
+  ExportCompletionCard,
+  QuickEditSummaryCard,
+} from "./components/CompletionCards";
+import { EditorHeader } from "./components/EditorHeader";
+import { EditorTopActions } from "./components/EditorTopActions";
+import { KeyboardShortcutsModal } from "./components/KeyboardShortcutsModal";
+import { PreviewDock } from "./components/PreviewDock";
+import { ProjectReopenPanel } from "./components/ProjectReopenPanel";
+import { TranscriptWordButton } from "./components/transcript/TranscriptWordButton";
+import "./components/features/AiActionsPanel.css";
+import "./components/features/BrollStudioPanel.css";
+import "./components/features/CaptionStylesPanel.css";
+import "./components/features/ExportPanel.css";
+import "./components/features/FeatureDrawer.css";
+import "./components/transcript/TranscriptPanel.css";
+import {
   readLockedLaneIds,
   selectTranscriptWordIdsInRange,
   writeLockedLaneIds,
 } from "./utils/timelineSelection";
 import { BrollCandidateCard } from "./components/BrollCandidateCard";
-import BrandLogo from "./components/BrandLogo";
 import { BRAND } from "./config/brand";
 import {
   AI_ACTION_ITEMS,
@@ -357,16 +364,6 @@ function clipTimelineDurationSec(clip: Clip): number {
     (clip.end_sec - clip.start_sec) / Math.max(clip.speed, 0.01),
     0.1,
   );
-}
-
-function assColorToCss(color: string | undefined, fallback: string): string {
-  if (!color) return fallback;
-  if (!color.startsWith("&H")) return color;
-  const raw = color.replace("&H", "").padStart(8, "0");
-  const bb = raw.slice(2, 4);
-  const gg = raw.slice(4, 6);
-  const rr = raw.slice(6, 8);
-  return `#${rr}${gg}${bb}`;
 }
 
 function transcriptDisplayText(
@@ -918,116 +915,6 @@ type UndoEntry =
   | { kind: "cut"; transcript: Transcript; timeline: ProjectTimeline };
 const MAX_UNDO = 80;
 
-interface WordProps {
-  word: TranscriptWord;
-  displayText: string;
-  showRomanized: boolean;
-  isDeleted: boolean;
-  isSelected: boolean;
-  isActive: boolean;
-  isFiller: boolean;
-  isSearchMatch: boolean;
-  isCurrentMatch: boolean;
-  hasLowConfidence: boolean;
-  isWeakRegionWord: boolean;
-  speakerSlot: number | null;
-  activeWordRef: React.RefObject<HTMLButtonElement | null>;
-  isDraggingRef: React.MutableRefObject<boolean>;
-  dragStartWordIdRef: React.MutableRefObject<string | null>;
-  selectWord: (id: string, shiftHeld: boolean) => void;
-  seekToWord: (word: TranscriptWord) => void;
-  selectWordRange: (fromId: string, toId: string) => void;
-  startEditing: (word: TranscriptWord) => void;
-}
-
-const Word = React.memo(
-  ({
-    word,
-    displayText,
-    showRomanized,
-    isDeleted,
-    isSelected,
-    isActive,
-    isFiller,
-    isSearchMatch,
-    isCurrentMatch,
-    hasLowConfidence,
-    isWeakRegionWord,
-    speakerSlot,
-    activeWordRef,
-    isDraggingRef,
-    dragStartWordIdRef,
-    selectWord,
-    seekToWord,
-    selectWordRange,
-    startEditing,
-  }: WordProps) => {
-    const className = [
-      "word",
-      isDeleted ? "deleted" : "",
-      isSelected ? "selected" : "",
-      isActive ? "active" : "",
-      isFiller ? "filler" : "",
-      isSearchMatch ? "searchMatch" : "",
-      isCurrentMatch ? "currentMatch" : "",
-      hasLowConfidence ? "lowConfidence" : "",
-      isWeakRegionWord ? "weakRegion" : "",
-      speakerSlot === 0 ? "speakerA" : "",
-      speakerSlot === 1 ? "speakerB" : "",
-      speakerSlot !== null && speakerSlot >= 2 ? "speakerExtra" : "",
-    ]
-      .filter(Boolean)
-      .join(" ");
-
-    const confidenceHint =
-      typeof word.confidence === "number"
-        ? ` · ${(word.confidence * 100).toFixed(0)}%`
-        : "";
-    const qualityHint =
-      typeof word.quality_score === "number"
-        ? ` · quality ${(word.quality_score * 100).toFixed(0)}%`
-        : "";
-    const passHint = word.source_pass ? ` · ${word.source_pass}` : "";
-    const labelHint = word.quality_label ? ` · ${word.quality_label}` : "";
-    const speakerHint = word.speaker_label ? ` · ${word.speaker_label}` : "";
-    const scriptHint = word.script_tag
-      ? ` · script ${SCRIPT_TAG_LABELS[word.script_tag] ?? word.script_tag}`
-      : "";
-    const languageHint = word.language_hint
-      ? ` · lang ${word.language_hint}`
-      : "";
-    const originalHint =
-      showRomanized && displayText !== word.text
-        ? ` · original ${word.text}`
-        : "";
-
-    return (
-      <button
-        id={`word-${word.id}`}
-        type="button"
-        className={className}
-        ref={isActive ? activeWordRef : undefined}
-        onMouseDown={(event) => {
-          if (event.detail >= 2) return; // let double-click handle
-          isDraggingRef.current = true;
-          dragStartWordIdRef.current = word.id;
-          selectWord(word.id, event.shiftKey);
-          seekToWord(word);
-        }}
-        onMouseEnter={() => {
-          if (isDraggingRef.current && dragStartWordIdRef.current) {
-            selectWordRange(dragStartWordIdRef.current, word.id);
-          }
-        }}
-        onDoubleClick={() => startEditing(word)}
-        title={`${formatPreciseSeconds(word.start_sec)} – ${formatPreciseSeconds(word.end_sec)}${speakerHint}${scriptHint}${languageHint}${originalHint}${confidenceHint}${qualityHint}${labelHint}${passHint}`}
-      >
-        {displayText}
-      </button>
-    );
-  },
-);
-
 function App() {
   const [project, setProject] = useState<Project | null>(null);
   const [media, setMedia] = useState<MediaAsset[]>([]);
@@ -1050,7 +937,6 @@ function App() {
         return false;
       }
     });
-  const [videoDragOver, setVideoDragOver] = useState(false);
   const [transcriptStageStartedAtMs, setTranscriptStageStartedAtMs] = useState<
     number | null
   >(null);
@@ -1100,21 +986,12 @@ function App() {
   const [projectsPanelOpen, setProjectsPanelOpen] = useState(false);
   const [loadingProjects, setLoadingProjects] = useState(false);
   const [openingProjectId, setOpeningProjectId] = useState<string | null>(null);
-  const [renamingProjectId, setRenamingProjectId] = useState<string | null>(
-    null,
-  );
   const [submittingRenameId, setSubmittingRenameId] = useState<string | null>(
     null,
   );
-  const [renameText, setRenameText] = useState("");
   const [deletingProjectId, setDeletingProjectId] = useState<string | null>(
     null,
   );
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-  const [newProjectName, setNewProjectName] = useState("");
-  const [showNewProjectInput, setShowNewProjectInput] = useState(false);
-  const renameInputRef = useRef<HTMLInputElement | null>(null);
-  const newProjectInputRef = useRef<HTMLInputElement | null>(null);
   const [uploading, setUploading] = useState(false);
   const [generatingTranscript, setGeneratingTranscript] = useState(false);
   const [transcriptStartedAtMs, setTranscriptStartedAtMs] = useState<
@@ -1211,7 +1088,7 @@ function App() {
     "low" | "medium" | "high" | "max"
   >("high");
   const [previewFrameAspectRatio, setPreviewFrameAspectRatio] =
-    useState<ExportAspectRatio>("9:16");
+    useState<ExportAspectRatio>("16:9");
   const [showExportFrameGuide, setShowExportFrameGuide] = useState(false);
   const [exportingVideo, setExportingVideo] = useState(false);
   const [exportJob, setExportJob] = useState<Job | null>(null);
@@ -2740,8 +2617,6 @@ function App() {
       setError((err as Error).message);
     } finally {
       setSubmittingRenameId(null);
-      setRenamingProjectId(null);
-      setRenameText("");
     }
   }
 
@@ -2760,7 +2635,6 @@ function App() {
         setSelectedAssetId(null);
         setPreviewUrl(null);
       }
-      setConfirmDeleteId(null);
       // Refresh the list from the backend to get the true count
       const updatedProjects = await api.listProjects();
       setRecentProjects(updatedProjects);
@@ -3823,7 +3697,7 @@ function App() {
       const speakerSlot = speakerSlotForWord(word, speakerIds);
 
       nodes.push(
-        <Word
+        <TranscriptWordButton
           key={word.id}
           word={word}
           displayText={displayText}
@@ -3844,6 +3718,7 @@ function App() {
           seekToWord={seekToWord}
           selectWordRange={selectWordRange}
           startEditing={startEditing}
+          formatPreciseSeconds={formatPreciseSeconds}
         />,
       );
     });
@@ -5613,17 +5488,7 @@ function App() {
     <div className="appShell">
       {!project ? (
         <>
-          <header className="topBar">
-            <div className="headerLogos">
-              <BrandLogo variant="header" linkTo="/" />
-              <div className="headerProjectTitle">
-                <span className="headerProjectDivider" aria-hidden="true">
-                  /
-                </span>
-                <h1>{BRAND.loadingTitle}</h1>
-              </div>
-            </div>
-          </header>
+          <EditorHeader title={BRAND.loadingTitle} />
 
           <section className="controls card">
             <p className="muted" style={{ margin: 0, marginRight: "auto" }}>
@@ -5655,395 +5520,47 @@ function App() {
         </>
       ) : (
         <>
-          <header className="topBar">
-            <div className="headerLogos">
-              <BrandLogo variant="header" linkTo="/" />
-              <div className="headerProjectTitle">
-                <span className="headerProjectDivider" aria-hidden="true">
-                  /
-                </span>
-                <h1>{project.name || BRAND.editorName}</h1>
-              </div>
-            </div>
-          </header>
+          <EditorHeader title={project.name || BRAND.editorName} />
 
-          <section className="controls card creatorTopActions">
-            <label className="uploadBtn primaryBtn">
-              <input
-                type="file"
-                accept="video/*"
-                disabled={uploading}
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (file) {
-                    void uploadVideo(file);
-                  }
-                  event.currentTarget.value = "";
-                }}
-              />
-              <UploadCloud size={16} />
-              {uploading ? "Uploading..." : "Upload Video"}
-            </label>
-
-            <button
-              type="button"
-              onClick={() => {
-                setProjectsPanelOpen((open) => !open);
-                void refreshProjectList();
-              }}
-              title="Open an existing local project"
-            >
-              <FolderOpen size={14} />
-              Projects
-            </button>
-
-            <button
-              className="primaryBtn quickEditBtn"
-              onClick={() => quickEdit()}
-              disabled={
-                !selectedVideoAsset ||
-                quickEditing ||
-                generatingTranscript ||
-                !!runningAction
-              }
-              title={`One-click: Transcribe, auto-cut pauses/fillers, add captions. Estimated time: ${quickEditRuntimeHint}. B-roll is separate in B-roll Studio.`}
-            >
-              <Zap size={16} />
-              {quickEditing
-                ? quickEditStage || "Quick Editing..."
-                : "Quick Edit"}
-            </button>
-
-            <button
-              className="primaryBtn"
-              onClick={() => void exportVideo()}
-              disabled={!project || exportingVideo}
-            >
-              <Download size={14} />
-              {exportingVideo ? "Exporting..." : "Export"}
-            </button>
-            <button
-              onClick={() => openFeatureDrawer("captions")}
-              title="Caption styles & settings"
-            >
-              <Captions size={14} />
-              Captions
-            </button>
-            <button
-              onClick={() => openFeatureDrawer("broll_studio")}
-              title="B-roll studio"
-            >
-              <Clapperboard size={14} />
-              B-roll
-            </button>
-            <button
-              onClick={() => openFeatureDrawer("ai_actions")}
-              title="AI editing tools"
-            >
-              <Sparkles size={14} />
-              AI Tools
-            </button>
-            <button
-              className="shortcutsHelpBtn"
-              onClick={() => setShowShortcutsHelp(true)}
-              title="Keyboard shortcuts (?)"
-            >
-              <Keyboard size={16} />
-            </button>
-            <p className="muted creatorTopMeta">
-              <span>
-                {selectedVideoAsset
-                  ? selectedVideoAsset.filename
-                  : "No video selected"}
-              </span>
-              <span>{formatSeconds(project.timeline.duration_sec)}</span>
-              {selectedVideoAsset && (
-                <span>Quick Edit estimate: {quickEditRuntimeHint}</span>
-              )}
-            </p>
-          </section>
+          <EditorTopActions
+            uploading={uploading}
+            selectedVideoFilename={selectedVideoAsset?.filename ?? null}
+            timelineDurationSec={project.timeline.duration_sec}
+            quickEditing={quickEditing}
+            quickEditStage={quickEditStage}
+            quickEditRuntimeHint={quickEditRuntimeHint}
+            generatingTranscript={generatingTranscript}
+            runningAction={runningAction}
+            exportingVideo={exportingVideo}
+            onUploadVideo={(file) => void uploadVideo(file)}
+            onToggleProjects={() => {
+              setProjectsPanelOpen((open) => !open);
+              void refreshProjectList();
+            }}
+            onQuickEdit={() => quickEdit()}
+            onExport={() => void exportVideo()}
+            onOpenFeatureDrawer={openFeatureDrawer}
+            onShowShortcuts={() => setShowShortcutsHelp(true)}
+            formatSeconds={formatSeconds}
+          />
 
           {projectsPanelOpen && (
-            <section
-              className="projectReopenPanel card"
-              aria-label="Recent projects"
-            >
-              <div className="projectReopenHeader">
-                <div>
-                  <p className="inspectorEyebrow">Local workspace</p>
-                  <h2>Recent projects</h2>
-                </div>
-                <div className="projectHeaderActions">
-                  <button
-                    type="button"
-                    onClick={() => void refreshProjectList()}
-                    disabled={loadingProjects}
-                    title="Refresh project list"
-                  >
-                    <RefreshCw
-                      size={13}
-                      className={loadingProjects ? "spin" : ""}
-                    />
-                    {loadingProjects ? "Refreshing..." : "Refresh"}
-                  </button>
-                  <button
-                    type="button"
-                    className="primaryBtn newProjectBtn"
-                    onClick={() => {
-                      setShowNewProjectInput(true);
-                      setNewProjectName("");
-                      setTimeout(() => newProjectInputRef.current?.focus(), 50);
-                    }}
-                    disabled={creatingProject}
-                    title="Create a new project"
-                  >
-                    <Plus size={14} />
-                    New
-                  </button>
-                </div>
-              </div>
-
-              {showNewProjectInput && (
-                <div className="newProjectInputRow">
-                  <input
-                    ref={newProjectInputRef}
-                    type="text"
-                    className="controlInput newProjectInput"
-                    placeholder="Project name..."
-                    value={newProjectName}
-                    onChange={(e) => setNewProjectName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        const name =
-                          newProjectName.trim() || BRAND.defaultProjectName;
-                        setShowNewProjectInput(false);
-                        void createProject(name);
-                      }
-                      if (e.key === "Escape") {
-                        setShowNewProjectInput(false);
-                        setNewProjectName("");
-                      }
-                    }}
-                    disabled={creatingProject}
-                  />
-                  <button
-                    type="button"
-                    className="primaryBtn"
-                    disabled={creatingProject}
-                    onClick={() => {
-                      const name =
-                        newProjectName.trim() || BRAND.defaultProjectName;
-                      setShowNewProjectInput(false);
-                      void createProject(name);
-                    }}
-                  >
-                    {creatingProject ? "Creating..." : "Create"}
-                  </button>
-                  <button
-                    type="button"
-                    className="projectActionBtnClose"
-                    onClick={() => {
-                      setShowNewProjectInput(false);
-                      setNewProjectName("");
-                    }}
-                    title="Cancel"
-                  >
-                    <X size={14} />
-                  </button>
-                </div>
-              )}
-
-              {recentProjectItems.length === 0 ? (
-                <p className="muted projectReopenEmpty">
-                  No saved projects found yet.
-                </p>
-              ) : (
-                <div className="projectReopenList">
-                  {recentProjectItems.map((item) => {
-                    const isCurrent = item.id === project.id;
-                    const isRenaming = renamingProjectId === item.id;
-                    const isSubmittingRename = submittingRenameId === item.id;
-                    const videoClipCount = item.timeline.tracks
-                      .filter((track) => track.kind === "video")
-                      .reduce(
-                        (count, track) => count + (track.clips?.length ?? 0),
-                        0,
-                      );
-                    const showConfirmDelete = confirmDeleteId === item.id;
-                    const isDeleting = deletingProjectId === item.id;
-
-                    return (
-                      <div
-                        key={item.id}
-                        className={`projectReopenItem ${isCurrent ? "active" : ""} ${showConfirmDelete ? "danger" : ""}`}
-                      >
-                        {/* Rename mode */}
-                        {isRenaming ? (
-                          <div className="projectRenameRow">
-                            <input
-                              ref={renameInputRef}
-                              type="text"
-                              className="controlInput projectRenameInput"
-                              value={renameText}
-                              onChange={(e) => setRenameText(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") {
-                                  void handleRenameProject(item.id, renameText);
-                                }
-                                if (e.key === "Escape") {
-                                  setRenamingProjectId(null);
-                                  setRenameText("");
-                                }
-                              }}
-                              disabled={isSubmittingRename}
-                            />
-                            <button
-                              type="button"
-                              className="projectActionBtnConfirm"
-                              onClick={() =>
-                                void handleRenameProject(item.id, renameText)
-                              }
-                              disabled={
-                                isSubmittingRename || !renameText.trim()
-                              }
-                              title="Save name"
-                            >
-                              <Check size={13} />
-                            </button>
-                            <button
-                              type="button"
-                              className="projectActionBtnClose"
-                              onClick={() => {
-                                setRenamingProjectId(null);
-                                setRenameText("");
-                              }}
-                              title="Cancel"
-                            >
-                              <X size={13} />
-                            </button>
-                          </div>
-                        ) : showConfirmDelete ? (
-                          /* Delete confirmation mode */
-                          <div className="projectDeleteConfirm">
-                            <p className="projectDeleteWarning">
-                              Delete "<strong>{item.name || "Untitled"}</strong>
-                              "? This cannot be undone.
-                            </p>
-                            <div className="projectDeleteActions">
-                              <button
-                                type="button"
-                                className="projectDeleteConfirmBtn"
-                                onClick={() =>
-                                  void handleDeleteProject(item.id)
-                                }
-                                disabled={isDeleting}
-                              >
-                                <Trash2 size={13} />
-                                {isDeleting ? "Deleting..." : "Yes, Delete"}
-                              </button>
-                              <button
-                                type="button"
-                                className="projectActionBtnClose"
-                                onClick={() => setConfirmDeleteId(null)}
-                                disabled={isDeleting}
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          /* Normal display mode */
-                          <>
-                            <div
-                              className="projectReopenClickArea"
-                              role="button"
-                              tabIndex={0}
-                              onClick={() => {
-                                if (!isCurrent && !openingProjectId) {
-                                  void openProject(item.id);
-                                }
-                              }}
-                              onKeyDown={(e) => {
-                                if (
-                                  e.key === "Enter" &&
-                                  !isCurrent &&
-                                  !openingProjectId
-                                ) {
-                                  void openProject(item.id);
-                                }
-                              }}
-                              title={
-                                isCurrent
-                                  ? "This project is already open"
-                                  : "Open this project"
-                              }
-                            >
-                              <span className="projectReopenName">
-                                {item.name || "Untitled Project"}
-                              </span>
-                              <span className="projectReopenMeta">
-                                {formatSeconds(item.timeline.duration_sec)} ·{" "}
-                                {videoClipCount} clip
-                                {videoClipCount === 1 ? "" : "s"}
-                                {isCurrent ? " · current" : ""}
-                              </span>
-                            </div>
-                            <div className="projectItemActions">
-                              {openingProjectId === item.id ? (
-                                <span className="projectReopenAction">
-                                  Opening...
-                                </span>
-                              ) : isCurrent ? (
-                                <span className="projectReopenAction current">
-                                  Current
-                                </span>
-                              ) : (
-                                <span className="projectReopenAction">
-                                  Open
-                                </span>
-                              )}
-                              <button
-                                type="button"
-                                className="projectActionBtn"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setRenamingProjectId(item.id);
-                                  setRenameText(item.name || "");
-                                  setTimeout(
-                                    () => renameInputRef.current?.focus(),
-                                    50,
-                                  );
-                                }}
-                                title="Rename project"
-                                disabled={
-                                  !!openingProjectId || !!deletingProjectId
-                                }
-                              >
-                                <Pencil size={13} />
-                              </button>
-                              <button
-                                type="button"
-                                className="projectActionBtn danger"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setConfirmDeleteId(item.id);
-                                }}
-                                title="Delete project"
-                                disabled={
-                                  !!openingProjectId || !!deletingProjectId
-                                }
-                              >
-                                <Trash2 size={13} />
-                              </button>
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </section>
+            <ProjectReopenPanel
+              project={project}
+              recentProjects={recentProjectItems}
+              loadingProjects={loadingProjects}
+              openingProjectId={openingProjectId}
+              submittingRenameId={submittingRenameId}
+              deletingProjectId={deletingProjectId}
+              creatingProject={creatingProject}
+              defaultProjectName={BRAND.defaultProjectName}
+              onRefresh={() => void refreshProjectList()}
+              onCreate={(name) => void createProject(name)}
+              onOpen={(projectId) => void openProject(projectId)}
+              onRename={(projectId, name) => void handleRenameProject(projectId, name)}
+              onDelete={(projectId) => void handleDeleteProject(projectId)}
+              formatSeconds={formatSeconds}
+            />
           )}
 
           {error && <div className="message error">{error}</div>}
@@ -6055,372 +5572,55 @@ function App() {
             </div>
           )}
           {quickEditSummary && (
-            <section
-              className="completionCard quickEditSummaryCard"
-              aria-live="polite"
-            >
-              <div className="completionCardHeader">
-                <span className="completionCardIcon">
-                  <Check size={16} strokeWidth={2.4} aria-hidden="true" />
-                </span>
-                <div>
-                  <h2>Quick Edit complete</h2>
-                  <p>
-                    Clean cut is ready for review
-                    {quickEditSummary.captionsAdded
-                      ? " with captions applied."
-                      : "."}
-                  </p>
-                </div>
-              </div>
-              <div className="completionStats">
-                {quickEditSummary.removedDurationSec !== null && (
-                  <span>
-                    <strong>
-                      {formatFixedSec(quickEditSummary.removedDurationSec)}s
-                    </strong>
-                    <small>removed</small>
-                  </span>
-                )}
-                {quickEditSummary.removedWordCount !== null && (
-                  <span>
-                    <strong>{quickEditSummary.removedWordCount}</strong>
-                    <small>
-                      filler word
-                      {quickEditSummary.removedWordCount === 1 ? "" : "s"}
-                    </small>
-                  </span>
-                )}
-                <span>
-                  <strong>
-                    {quickEditSummary.captionBlockCount !== null
-                      ? quickEditSummary.captionBlockCount
-                      : quickEditSummary.captionsAdded
-                        ? "Added"
-                        : "Skipped"}
-                  </strong>
-                  <small>captions</small>
-                </span>
-                <span>
-                  <strong>
-                    {formatSeconds(quickEditSummary.finalDurationSec)}
-                  </strong>
-                  <small>final length</small>
-                </span>
-              </div>
-              <div className="completionDetails">
-                {quickEditSummary.cutDetails && (
-                  <span>{quickEditSummary.cutDetails}</span>
-                )}
-                {quickEditSummary.captionDetails && (
-                  <span>{quickEditSummary.captionDetails}</span>
-                )}
-              </div>
-              <p className="completionNextStep">
-                <strong>Next:</strong> {quickEditSummary.nextStep}
-              </p>
-            </section>
+            <QuickEditSummaryCard
+              quickEditSummary={quickEditSummary}
+              formatSeconds={formatSeconds}
+              formatFixedSec={formatFixedSec}
+            />
           )}
           {exportCompletion && (
-            <section
-              className="completionCard exportCompletionCard"
-              aria-live="polite"
-            >
-              <div className="completionCardHeader">
-                <span className="completionCardIcon">
-                  <Check size={16} strokeWidth={2.4} aria-hidden="true" />
-                </span>
-                <div>
-                  <h2>Export complete</h2>
-                  <p>Your video rendered successfully and is ready to share.</p>
-                </div>
-              </div>
-              <div className="completionStats">
-                <span>
-                  <strong>{exportCompletion.format.toUpperCase()}</strong>
-                  <small>format</small>
-                </span>
-                <span>
-                  <strong>{exportCompletion.aspectRatio}</strong>
-                  <small>aspect</small>
-                </span>
-                <span>
-                  <strong>{exportCompletion.resolution}</strong>
-                  <small>resolution</small>
-                </span>
-                <span>
-                  <strong>{exportCompletion.fps}</strong>
-                  <small>fps</small>
-                </span>
-              </div>
-              <div className="exportCompletionFooter">
-                <span className="exportCompletionFilename">
-                  {exportCompletion.filename}
-                </span>
-                {exportCompletion.outputPath && (
-                  <button
-                    className="primaryBtn exportDownloadBtn"
-                    type="button"
-                    onClick={() => void downloadCompletedExport()}
-                    disabled={downloadingExport}
-                  >
-                    <Download size={14} aria-hidden="true" />
-                    {downloadingExport ? "Downloading..." : "Download again"}
-                  </button>
-                )}
-              </div>
-              {exportCompletion.downloadError && (
-                <p className="completionWarning">
-                  Download did not start automatically:{" "}
-                  {exportCompletion.downloadError}
-                </p>
-              )}
-            </section>
+            <ExportCompletionCard
+              exportCompletion={exportCompletion}
+              downloadingExport={downloadingExport}
+              onDownload={() => void downloadCompletedExport()}
+            />
           )}
           <section className="editorMainGrid">
-            <section className="panel card editorPreviewDock">
-              <div className="workspacePreviewBlock">
-                <h2>Video Preview</h2>
-                {!previewSource && (
-                  <div
-                    className={`onboardingDropZone ${videoDragOver ? "dragover" : ""}`}
-                    onDragOver={(e) => {
-                      e.preventDefault();
-                      setVideoDragOver(true);
-                    }}
-                    onDragLeave={() => setVideoDragOver(false)}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      setVideoDragOver(false);
-                      const file = e.dataTransfer.files[0];
-                      if (file?.type.startsWith("video/")) {
-                        void uploadVideo(file);
-                      }
-                    }}
-                  >
-                    <FileVideo size={40} className="onboardingIcon" />
-                    <h3 className="onboardingTitle">Get started in 3 steps</h3>
-                    <div className="onboardingSteps">
-                      <div className="onboardingStep">
-                        <span className="stepNum">1</span>
-                        <span>Upload or drag a video here</span>
-                      </div>
-                      <div className="onboardingStep">
-                        <span className="stepNum">2</span>
-                        <span>Generate transcript — edit by text</span>
-                      </div>
-                      <div className="onboardingStep">
-                        <span className="stepNum">3</span>
-                        <span>Quick Edit: Cut + Captions</span>
-                      </div>
-                    </div>
-                    <label className="uploadBtn primaryBtn onboardingUploadBtn">
-                      <input
-                        type="file"
-                        accept="video/*"
-                        disabled={uploading}
-                        onChange={(event) => {
-                          const file = event.target.files?.[0];
-                          if (file) void uploadVideo(file);
-                          event.currentTarget.value = "";
-                        }}
-                      />
-                      <UploadCloud size={16} />
-                      {uploading ? "Uploading..." : "Choose Video"}
-                    </label>
-                    <p className="muted onboardingHint">
-                      Or press{" "}
-                      <span className="inlineIconLabel">
-                        <Zap size={12} aria-hidden="true" />
-                        Quick Edit
-                      </span>{" "}
-                      for transcript cut + captions (B-roll is optional in
-                      B-roll Studio)
-                    </p>
-                  </div>
-                )}
-                {previewSource && (
-                  <div
-                    className={`previewStage previewStage${previewFrameAspectRatio === "9:16" ? "Portrait" : "Landscape"}`}
-                  >
-                    <video
-                      ref={videoRef}
-                      key={previewSource}
-                      src={previewSource}
-                      controls
-                      crossOrigin="anonymous"
-                      className="previewVideo"
-                      onLoadedMetadata={() => setCurrentTimeSec(0)}
-                      onPlay={startPlaybackSync}
-                      onPause={() => {
-                        stopPlaybackSync();
-                        syncVideoTimeOnce();
-                      }}
-                      onSeeked={syncVideoTimeOnce}
-                      onEnded={() => {
-                        stopPlaybackSync();
-                        syncVideoTimeOnce();
-                      }}
-                      onTimeUpdate={syncVideoTimeIfPlaying}
-                      onError={(e) => console.error("Video preview error:", e)}
-                    />
-                    {livePreviewCaption && (
-                      <div
-                        className="livePreviewCaption"
-                        aria-hidden="true"
-                        style={
-                          {
-                            "--caption-safe-bottom":
-                              previewFrameAspectRatio === "9:16"
-                                ? `clamp(72px, ${Math.max(8.8, Math.min(12.8, livePreviewCaption.marginV / 12))}%, 98px)`
-                                : `${Math.max(
-                                    shouldShowLiveCaptionOverlay ? 84 : 54,
-                                    Math.min(
-                                      livePreviewCaption.marginV *
-                                        (shouldShowLiveCaptionOverlay
-                                          ? 0.8
-                                          : 0.58),
-                                      shouldShowLiveCaptionOverlay ? 156 : 116,
-                                    ),
-                                  )}px`,
-                            "--caption-max-width": shouldShowLiveCaptionOverlay
-                              ? previewFrameAspectRatio === "9:16"
-                                ? "84%"
-                                : "54%"
-                              : previewFrameAspectRatio === "16:9"
-                                ? "72%"
-                                : "88%",
-                          } as React.CSSProperties
-                        }
-                      >
-                        <span
-                          className="livePreviewCaptionText"
-                          style={{
-                            color: assColorToCss(
-                              livePreviewCaption.color,
-                              "#ffffff",
-                            ),
-                            fontFamily: `${livePreviewCaption.fontName.replace("-", " ")}, sans-serif`,
-                            WebkitTextStroke: `${Math.min(Math.max(livePreviewCaption.outlineWidth, 1), 3)}px ${assColorToCss(livePreviewCaption.outlineColor, "#000000")}`,
-                            textShadow:
-                              livePreviewCaption.shadow > 0
-                                ? `0 2px ${Math.min(livePreviewCaption.shadow * 2, 8)}px rgba(0,0,0,0.7)`
-                                : "0 1px 2px rgba(0,0,0,0.55)",
-                            fontSize: `clamp(0.92rem, ${Math.max(
-                              1.2,
-                              Math.min(
-                                livePreviewCaption.fontSize / 18,
-                                previewFrameAspectRatio === "9:16"
-                                  ? 2.3
-                                  : shouldShowLiveCaptionOverlay
-                                    ? 2.1
-                                    : 1.85,
-                              ),
-                            )}vw, ${previewFrameAspectRatio === "9:16" ? "1.36rem" : shouldShowLiveCaptionOverlay ? "1.35rem" : "1.55rem"})`,
-                            background: "transparent",
-                          }}
-                        >
-                          {livePreviewCaption.words.length > 0
-                            ? livePreviewCaption.words.map((word, index) => (
-                                <React.Fragment key={word.key}>
-                                  {index > 0 ? " " : null}
-                                  <span
-                                    className={[
-                                      "livePreviewCaptionWord",
-                                      word.isActive ? "active" : "",
-                                      word.isPast ? "past" : "",
-                                    ]
-                                      .filter(Boolean)
-                                      .join(" ")}
-                                  >
-                                    {word.text}
-                                  </span>
-                                </React.Fragment>
-                              ))
-                            : livePreviewCaption.text}
-                        </span>
-                      </div>
-                    )}
-                    {showExportFrameGuide &&
-                      previewFrameAspectRatio === "16:9" &&
-                      exportAspectRatio === "9:16" && (
-                        <div className="previewFrameGuide" aria-hidden="true">
-                          <div className="previewFrameGuideWindow" />
-                        </div>
-                      )}
-                    {previewRenderBusy && (
-                      <div className="previewBusyBadge" aria-live="polite">
-                        <div className="previewBusyRow">
-                          <span className="previewSpinner" aria-hidden="true" />
-                          <span>{previewBusyDetail}</span>
-                        </div>
-                        <div
-                          className="jobProgressBar previewJobProgressBar"
-                          aria-hidden="true"
-                        >
-                          <span
-                            className="jobProgressFill"
-                            style={{ width: `${previewProgress}%` }}
-                          />
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-                <div className="previewMeta">
-                  <span>Playhead: {formatPreciseSeconds(currentTimeSec)}</span>
-                  <span>Preview: {previewStatusText}</span>
-                  <span>Editor frame: {previewFrameAspectRatio}</span>
-                  {showExportFrameGuide &&
-                    previewFrameAspectRatio === "16:9" &&
-                    exportAspectRatio === "9:16" && (
-                      <span>Portrait export guide on</span>
-                    )}
-                  {previewRenderBusy && previewSource && (
-                    <span>
-                      Showing last rendered preview while update runs.
-                    </span>
-                  )}
-                  <span>
-                    Job:{" "}
-                    {previewJob
-                      ? `${previewJob.status} (${previewProgress}%)`
-                      : "not queued"}
-                    {previewUpdateQueued ? " · update queued" : ""}
-                  </span>
-                </div>
-                {previewJob?.status === "failed" && (
-                  <p className="warning">
-                    Preview failed: {previewJob.error ?? "Unknown render error"}
-                  </p>
-                )}
-                <div className="wordActions">
-                  <div
-                    className="previewAspectToggle"
-                    role="group"
-                    aria-label="Preview frame aspect"
-                  >
-                    {(["16:9", "9:16"] as const).map((ratio) => (
-                      <button
-                        key={ratio}
-                        className={`previewAspectBtn ${previewFrameAspectRatio === ratio ? "active" : ""}`}
-                        onClick={() => setPreviewFrameAspectRatio(ratio)}
-                        type="button"
-                      >
-                        {ratio}
-                      </button>
-                    ))}
-                  </div>
-                  <button
-                    onClick={() => void queuePreview()}
-                    disabled={!project || queueingPreview}
-                  >
-                    {queueingPreview ? "Queueing..." : "Render Preview"}
-                  </button>
-                </div>
-              </div>
-            </section>
-
+            <PreviewDock
+              previewSource={previewSource}
+              uploading={uploading}
+              videoRef={videoRef}
+              previewFrameAspectRatio={previewFrameAspectRatio}
+              exportAspectRatio={exportAspectRatio}
+              livePreviewCaption={livePreviewCaption}
+              shouldShowLiveCaptionOverlay={shouldShowLiveCaptionOverlay}
+              showExportFrameGuide={showExportFrameGuide}
+              previewRenderBusy={previewRenderBusy}
+              previewBusyDetail={previewBusyDetail}
+              previewProgress={previewProgress}
+              currentTimeSec={currentTimeSec}
+              previewStatusText={previewStatusText}
+              previewJob={previewJob}
+              previewUpdateQueued={previewUpdateQueued}
+              queueingPreview={queueingPreview}
+              canRenderPreview={!!project}
+              onUploadVideo={(file) => void uploadVideo(file)}
+              onLoadedMetadata={() => setCurrentTimeSec(0)}
+              onPlay={startPlaybackSync}
+              onPause={() => {
+                stopPlaybackSync();
+                syncVideoTimeOnce();
+              }}
+              onSeeked={syncVideoTimeOnce}
+              onEnded={() => {
+                stopPlaybackSync();
+                syncVideoTimeOnce();
+              }}
+              onTimeUpdate={syncVideoTimeIfPlaying}
+              onFrameAspectRatioChange={setPreviewFrameAspectRatio}
+              onQueuePreview={() => void queuePreview()}
+              formatPreciseSeconds={formatPreciseSeconds}
+            />
             <main className="twoPanel">
               <section className="panel card panelTranscript">
                 <div className="transcriptPanelHead">
@@ -8699,131 +7899,8 @@ function App() {
         </>
       )}
 
-      {/* Keyboard Shortcuts Help Modal */}
       {showShortcutsHelp && (
-        <div
-          className="shortcutsOverlay"
-          onClick={() => setShowShortcutsHelp(false)}
-        >
-          <div className="shortcutsModal" onClick={(e) => e.stopPropagation()}>
-            <div className="shortcutsHeader">
-              <h3>
-                <Keyboard size={20} /> Keyboard Shortcuts
-              </h3>
-              <button
-                onClick={() => setShowShortcutsHelp(false)}
-                className="shortcutsClose"
-              >
-                &times;
-              </button>
-            </div>
-            <div className="shortcutsGrid">
-              <div className="shortcutGroup">
-                <h4>Playback</h4>
-                <div className="shortcutRow">
-                  <kbd>Space</kbd>
-                  <span>Play / Pause</span>
-                </div>
-                <div className="shortcutRow">
-                  <kbd>←</kbd> <kbd>→</kbd>
-                  <span>Seek ±5 seconds</span>
-                </div>
-                <div className="shortcutRow">
-                  <kbd>Shift+←</kbd> <kbd>Shift+→</kbd>
-                  <span>Seek ±1 second</span>
-                </div>
-              </div>
-              <div className="shortcutGroup">
-                <h4>Transcript Editing</h4>
-                <div className="shortcutRow">
-                  <kbd>Click</kbd>
-                  <span>Select word &amp; seek</span>
-                </div>
-                <div className="shortcutRow">
-                  <kbd>Shift+Click</kbd>
-                  <span>Select range</span>
-                </div>
-                <div className="shortcutRow">
-                  <kbd>Shift/Alt+Drag</kbd>
-                  <span>Range-select by time</span>
-                </div>
-                <div className="shortcutRow">
-                  <kbd>Double-click</kbd>
-                  <span>Edit word text (transcript or TXT track)</span>
-                </div>
-                <div className="shortcutRow">
-                  <kbd>Del</kbd> / <kbd>Backspace</kbd>
-                  <span>Delete selection / clip / caption</span>
-                </div>
-                <div className="shortcutRow">
-                  <kbd>Ctrl+Z</kbd>
-                  <span>Undo</span>
-                </div>
-                <div className="shortcutRow">
-                  <kbd>Ctrl+Y</kbd> / <kbd>Ctrl+Shift+Z</kbd>
-                  <span>Redo</span>
-                </div>
-                <div className="shortcutRow">
-                  <kbd>Esc</kbd>
-                  <span>Deselect all</span>
-                </div>
-              </div>
-              <div className="shortcutGroup">
-                <h4>Timeline Clips</h4>
-                <div className="shortcutRow">
-                  <kbd>Click clip</kbd>
-                  <span>Select clip</span>
-                </div>
-                <div className="shortcutRow">
-                  <kbd>Drag clip</kbd>
-                  <span>Move clip</span>
-                </div>
-                <div className="shortcutRow">
-                  <kbd>Drag edge</kbd>
-                  <span>Trim clip in / out</span>
-                </div>
-                <div className="shortcutRow">
-                  <kbd>S</kbd>
-                  <span>Split selected clip at playhead</span>
-                </div>
-                <div className="shortcutRow">
-                  <kbd>Right-click</kbd>
-                  <span>Context menu (split / delete / jump)</span>
-                </div>
-                <div className="shortcutRow">
-                  <kbd>Ctrl+Scroll</kbd>
-                  <span>Zoom in / out</span>
-                </div>
-              </div>
-              <div className="shortcutGroup">
-                <h4>Search</h4>
-                <div className="shortcutRow">
-                  <kbd>Ctrl+F</kbd>
-                  <span>Search transcript</span>
-                </div>
-                <div className="shortcutRow">
-                  <kbd>Enter</kbd>
-                  <span>Next match</span>
-                </div>
-                <div className="shortcutRow">
-                  <kbd>Shift+Enter</kbd>
-                  <span>Previous match</span>
-                </div>
-                <div className="shortcutRow">
-                  <kbd>Esc</kbd>
-                  <span>Clear search</span>
-                </div>
-              </div>
-              <div className="shortcutGroup">
-                <h4>General</h4>
-                <div className="shortcutRow">
-                  <kbd>?</kbd>
-                  <span>Toggle this help</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <KeyboardShortcutsModal onClose={() => setShowShortcutsHelp(false)} />
       )}
     </div>
   );
