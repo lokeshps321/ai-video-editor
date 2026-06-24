@@ -35,4 +35,6 @@ frontend/src/*.bak
 /frame.jpg
 gemini-cli/
 claude_code_zai_env.sh
+app.db*
+*.db*
 
