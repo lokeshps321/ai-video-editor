@@ -260,8 +260,7 @@ def test_apply_word_filters_drops_words_inside_nonvocal_music_regions(
     monkeypatch.setenv("TRANSCRIBE_HALLUCINATION_FILTER", "true")
     monkeypatch.setenv("TRANSCRIBE_NONVOCAL_REGION_FILTER", "true")
     monkeypatch.setattr(
-        ts,
-        "detect_silence_ranges",
+        "app._transcription_filters.detect_silence_ranges",
         lambda *_args, **_kwargs: [(8.0, 15.0)],
     )
     words = [
@@ -285,8 +284,7 @@ def test_apply_word_filters_keeps_words_in_speech_profile_even_if_silence_detect
     monkeypatch.setenv("TRANSCRIBE_HALLUCINATION_FILTER", "true")
     monkeypatch.setenv("TRANSCRIBE_NONVOCAL_REGION_FILTER", "true")
     monkeypatch.setattr(
-        ts,
-        "detect_silence_ranges",
+        "app._transcription_filters.detect_silence_ranges",
         lambda *_args, **_kwargs: [(8.0, 15.0)],
     )
     words = [
