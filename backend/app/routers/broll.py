@@ -2451,6 +2451,256 @@ def get_broll_plan(
     return _load_plan_response(session, plan_id, project_id=project_id)
 
 
+def _suggest_broll_for_selection(
+    *,
+    session: Session,
+    project: Project,
+    transcript: Transcript,
+    payload: BrollSuggestRequest,
+) -> BrollSuggestResponse:
+    """Create a single B-roll slot from user-selected transcript words."""
+    project_id = project.id
+    word_ids = payload.anchor_word_ids or []
+    if not word_ids:
+        raise HTTPException(
+            status_code=400, detail="anchor_word_ids must not be empty"
+        )
+
+    words = _load_transcript_words(transcript)
+    words_by_id = {str(w["id"]): w for w in words}
+    matched = [words_by_id[wid] for wid in word_ids if wid in words_by_id]
+    if not matched:
+        raise HTTPException(
+            status_code=400,
+            detail="None of the provided word IDs found in transcript",
+        )
+
+    matched.sort(key=lambda w: float(w["start_sec"]))
+    start_sec = round(float(matched[0]["start_sec"]), 3)
+    end_sec = round(float(matched[-1]["end_sec"]), 3)
+    if end_sec <= start_sec:
+        end_sec = start_sec + 0.5
+    chunk_text = " ".join(str(w["text"]) for w in matched)
+
+    # Use override text or extract concepts from the selected words
+    if payload.concept_override and payload.concept_override.strip():
+        concept_text = payload.concept_override.strip()
+        _ignored, concept_tokens = _extract_concepts(concept_text)
+    else:
+        concept_text, concept_tokens = _extract_concepts(chunk_text)
+
+    # Gather project assets
+    assets = list(
+        session.exec(
+            select(MediaAsset)
+            .where(
+                MediaAsset.project_id == project_id,
+                MediaAsset.media_type == "video",
+            )
+            .order_by(MediaAsset.created_at.desc())
+        ).all()
+    )
+    assets_by_id: dict[str, MediaAsset] = {a.id: a for a in assets}
+    domain_context = _domain_context_for_retrieval(transcript.text, assets)
+
+    shot_style, shot_hint = _shot_variant_for_index(0)
+    visual_intent = _local_visual_intent_from_text(chunk_text)
+    expanded_queries = expand_broll_queries(
+        chunk_text=chunk_text,
+        concept_text=concept_text,
+        concept_tokens=concept_tokens,
+    )
+    expanded_queries.extend(
+        q
+        for q in (shot_hint, f"{concept_text} {shot_hint}".strip())
+        if q and q not in expanded_queries
+    )
+
+    search_strategy = _prepare_search_strategy(
+        chunk_text=chunk_text,
+        concept_text=concept_text,
+        visual_intent=visual_intent,
+        expanded_queries=expanded_queries,
+        domain_context=domain_context,
+        language_hint=transcript.language,
+    )
+    search_concept_text = str(search_strategy["search_concept"])
+    search_concept_tokens = list(search_strategy["search_tokens"])  # type: ignore[arg-type]
+    search_visual_intent = str(search_strategy["visual_intent"] or visual_intent)
+    query_packets = list(search_strategy["query_packets"])  # type: ignore[arg-type]
+    slot_duration_sec = max(end_sec - start_sec, 0.1)
+    candidate_limit = payload.candidates_per_slot
+    retrieval_limit = max(candidate_limit * 6, 18)
+
+    # Local ranking
+    ranked_candidates: list[tuple[MediaAsset, float, dict[str, object]]] = []
+    if payload.include_project_assets and assets:
+        ranked_candidates = _rank_candidates(
+            assets=assets,
+            transcript_asset_id=transcript.asset_id,
+            concept_tokens=search_concept_tokens,
+            candidates_per_slot=retrieval_limit,
+            slot_duration=slot_duration_sec,
+            shot_style=shot_style,
+            visual_intent=search_visual_intent,
+        )
+
+    # External candidates
+    external_candidates: list[ExternalBrollCandidate] = []
+    if payload.include_external_sources:
+        try:
+            external_candidates = search_external_broll_candidates(
+                chunk_text=chunk_text,
+                concept_text=search_concept_text,
+                concept_tokens=search_concept_tokens,
+                slot_duration_sec=slot_duration_sec,
+                limit=retrieval_limit,
+                query_hints=expanded_queries,
+                query_packets=query_packets,
+                visual_intent=search_visual_intent,
+                domain_context=dict(domain_context),
+            )
+            external_candidates = [
+                ExternalBrollCandidate(
+                    source_type=c.source_type,
+                    source_url=c.source_url,
+                    source_label=c.source_label,
+                    score=c.score,
+                    reason={
+                        **c.reason,
+                        "shot_type": shot_style,
+                        "visual_intent": search_visual_intent,
+                        "search_concept": search_concept_text,
+                        "domain_label": str(domain_context.get("domain") or ""),
+                    },
+                )
+                for c in external_candidates
+            ]
+            top_score = max((c.score for c in external_candidates), default=0.0)
+            if top_score < settings.broll_generative_min_external_score:
+                generated = generate_generative_broll_candidates(
+                    concept_text=search_concept_text,
+                    concept_tokens=search_concept_tokens,
+                    shot_hint=shot_hint,
+                    slot_duration_sec=slot_duration_sec,
+                    limit=max(2, retrieval_limit // 3),
+                )
+                if generated:
+                    external_candidates.extend(generated)
+        except Exception:
+            logger.warning("External B-roll search failed for selection slot")
+
+    # Mix, rerank, store
+    merged_candidates = _mix_candidates(
+        local_candidates=ranked_candidates,
+        external_candidates=external_candidates,
+        limit=retrieval_limit,
+    )
+    if payload.ai_rerank and merged_candidates:
+        try:
+            merged_candidates = rerank_broll_candidates(
+                chunk_text=chunk_text,
+                concept_text=search_concept_text,
+                concept_tokens=search_concept_tokens,
+                slot_duration_sec=slot_duration_sec,
+                candidates=merged_candidates,
+                assets_by_id=assets_by_id,
+                visual_intent=search_visual_intent,
+            )
+        except Exception as exc:
+            logger.warning("B-roll AI rerank failed for selection slot: %s", exc)
+        try:
+            llm_ranked = llm_rerank_broll_candidates(
+                chunk_text=chunk_text,
+                concept_text=search_concept_text,
+                visual_intent=search_visual_intent,
+                candidates=merged_candidates,
+                assets_by_id=assets_by_id,
+                domain_context=dict(domain_context),
+            )
+            if llm_ranked:
+                merged_candidates = llm_ranked
+        except Exception as exc:
+            logger.warning("B-roll LLM rerank failed for selection slot: %s", exc)
+    merged_candidates = merged_candidates[:candidate_limit]
+
+    if not merged_candidates:
+        raise HTTPException(
+            status_code=400,
+            detail="No B-roll candidates found for the selected transcript segment",
+        )
+
+    now = _utcnow()
+    slot = BrollSlot(
+        project_id=project_id,
+        transcript_id=transcript.id,
+        start_sec=start_sec,
+        end_sec=end_sec,
+        anchor_word_ids_json=_json_dumps(word_ids),
+        concept_text=concept_text,
+        locked=False,
+        status="pending",
+        updated_at=now,
+    )
+    session.add(slot)
+
+    for source_type, asset_id, source_url, source_label, score, reason in merged_candidates:
+        session.add(
+            BrollCandidate(
+                project_id=project_id,
+                slot_id=slot.id,
+                asset_id=asset_id,
+                source_type=source_type,
+                source_url=source_url,
+                source_label=source_label,
+                score=score,
+                reason_json=_json_dumps(
+                    {
+                        **reason,
+                        "visual_intent": search_visual_intent,
+                        "search_concept": search_concept_text,
+                        "original_concept_text": concept_text,
+                        "shot_style": shot_style,
+                        "source_strategy": "local_first",
+                        "query_hints": expanded_queries[:8],
+                        **_strategy_debug_fields(
+                            search_strategy=search_strategy,
+                            fallback_chunk_text=chunk_text,
+                        ),
+                        "domain_label": str(domain_context.get("domain") or ""),
+                    }
+                ),
+            )
+        )
+
+    session.commit()
+    responses = _load_slots_with_candidates(
+        session,
+        project_id=project_id,
+        transcript_id=transcript.id,
+        slot_ids=[slot.id],
+    )
+    return BrollSuggestResponse(
+        project_id=project_id,
+        transcript_id=transcript.id,
+        created_slots=1,
+        slots=responses,
+    )
+
+
+def _local_visual_intent_from_text(text: str) -> str:
+    """Infer visual intent from raw text using keyword cues."""
+    terms = _focus_terms(text)
+    best_intent = "abstract_support"
+    best_hits = 0
+    for intent, cue_set in _LOCAL_VISUAL_INTENT_CUES.items():
+        hits = len(terms.intersection(cue_set))
+        if hits > best_hits:
+            best_hits = hits
+            best_intent = intent
+    return best_intent
+
+
 @router.post("/suggest", response_model=BrollSuggestResponse)
 def suggest_broll(
     payload: BrollSuggestRequest,
@@ -2462,6 +2712,17 @@ def suggest_broll(
     transcript = _resolve_broll_transcript(
         session, project_id=project_id, transcript_id=payload.transcript_id
     )
+
+    # ── Single-slot selection mode ────────────────────────────────────
+    if payload.anchor_word_ids:
+        return _suggest_broll_for_selection(
+            session=session,
+            project=project,
+            transcript=transcript,
+            payload=payload,
+        )
+
+    # ── Full-transcript mode (existing behaviour) ─────────────────────
     plan_response = _build_broll_plan(
         session,
         project=project,

@@ -321,6 +321,9 @@ class BrollSuggestRequest(BaseModel):
     include_project_assets: bool = True
     include_external_sources: bool = True
     ai_rerank: bool = True
+    # Single-slot selection mode: create a slot for specific transcript words
+    anchor_word_ids: Optional[list[str]] = None
+    concept_override: Optional[str] = None
 
 
 class BrollPlanRequest(BaseModel):

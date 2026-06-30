@@ -12,6 +12,7 @@ import {
   Check,
   Clapperboard,
   Download,
+  Film,
   Globe,
   Redo2,
   RefreshCw,
@@ -1015,6 +1016,8 @@ function App() {
   >([]);
   const [loadingBrollSlots, setLoadingBrollSlots] = useState(false);
   const [suggestingBroll, setSuggestingBroll] = useState(false);
+  const [suggestingBrollSelection, setSuggestingBrollSelection] =
+    useState(false);
   const [autoApplyingBroll, setAutoApplyingBroll] = useState(false);
   const [syncingBroll, setSyncingBroll] = useState(false);
   const [undoingBroll, setUndoingBroll] = useState(false);
@@ -5000,6 +5003,50 @@ function App() {
     }
   }
 
+  async function suggestBrollForSelection() {
+    if (
+      !project ||
+      !transcript ||
+      !selectedTranscriptRange ||
+      suggestingBrollSelection
+    )
+      return;
+    setSuggestingBrollSelection(true);
+    setError(null);
+    try {
+      const wordIds = Array.from(selectedWordIds);
+      const result = await api.suggestBroll(project.id, {
+        transcript_id: transcript.id,
+        candidates_per_slot: 4,
+        replace_existing: false,
+        include_project_assets: true,
+        include_external_sources: true,
+        ai_rerank: true,
+        anchor_word_ids: wordIds,
+      });
+      if (result.slots.length > 0) {
+        setBrollSlots((prev) => {
+          const existingIds = new Set(prev.map((s) => s.id));
+          const newSlots = result.slots.filter((s) => !existingIds.has(s.id));
+          return [...prev, ...newSlots];
+        });
+        const newSlotId = result.slots[0].id;
+        setExpandedBrollSlots((prev) => ({ ...prev, [newSlotId]: true }));
+        setActiveFeatureTab("broll_studio");
+        setFeatureDrawerOpen(true);
+        setNotice(
+          `B-roll suggestions ready for "${selectedTranscriptRange.text.slice(0, 40)}${selectedTranscriptRange.text.length > 40 ? "…" : ""}" — review in B-roll Studio.`,
+        );
+      } else {
+        setNotice("No B-roll candidates found for the selected words.");
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSuggestingBrollSelection(false);
+    }
+  }
+
   async function autoApplyBroll() {
     if (!project || !transcript || autoApplyingBroll) return;
     setAutoApplyingBroll(true);
@@ -6138,6 +6185,28 @@ function App() {
                           aria-hidden="true"
                         />
                         <span>Restore All</span>
+                      </button>
+                      <div className="toolbarSep" />
+                      <button
+                        className="brollSelectionBtn"
+                        onClick={() => void suggestBrollForSelection()}
+                        disabled={
+                          !selectedWordIds.size ||
+                          suggestingBrollSelection ||
+                          !transcript
+                        }
+                        title="Get AI B-roll suggestions for the selected transcript words"
+                      >
+                        <Film
+                          size={14}
+                          strokeWidth={1.9}
+                          aria-hidden="true"
+                        />
+                        <span>
+                          {suggestingBrollSelection
+                            ? "Finding B-roll…"
+                            : "Get B-roll"}
+                        </span>
                       </button>
                       <div className="toolbarSep" />
                       <button

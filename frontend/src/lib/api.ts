@@ -498,6 +498,8 @@ export const api = {
       include_project_assets?: boolean;
       include_external_sources?: boolean;
       ai_rerank?: boolean;
+      anchor_word_ids?: string[];
+      concept_override?: string;
     },
   ): Promise<BrollSuggestResponse> =>
     request<BrollSuggestResponse>(
@@ -520,6 +522,8 @@ export const api = {
       include_project_assets?: boolean;
       include_external_sources?: boolean;
       ai_rerank?: boolean;
+      anchor_word_ids?: string[];
+      concept_override?: string;
     },
     force = false,
   ): Promise<Job> =>
