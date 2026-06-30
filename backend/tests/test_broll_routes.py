@@ -444,10 +444,10 @@ def test_broll_external_candidate_can_be_materialized_on_choose(
         ],
     )
     monkeypatch.setattr(
-        "app.routers.broll.probe_stream_flags",
+        "app.routers._broll_media.probe_stream_flags",
         lambda _: {"has_video": True, "has_audio": False},
     )
-    monkeypatch.setattr("app.routers.broll.probe_duration_seconds", lambda _: 4.2)
+    monkeypatch.setattr("app.routers._broll_media.probe_duration_seconds", lambda _: 4.2)
 
     def _fake_download_external_video(
         project_id: str, _url: str
@@ -460,7 +460,7 @@ def test_broll_external_candidate_can_be_materialized_on_choose(
         return (str(destination.resolve()), relative, "video/mp4")
 
     monkeypatch.setattr(
-        "app.routers.broll._download_external_video", _fake_download_external_video
+        "app.routers._broll_media._download_external_video", _fake_download_external_video
     )
 
     with TestClient(app) as client:
@@ -542,14 +542,14 @@ def test_broll_external_materialize_reuses_existing_asset_for_same_source_url(
         ],
     )
     monkeypatch.setattr(
-        "app.routers.broll.probe_stream_flags",
+        "app.routers._broll_media.probe_stream_flags",
         lambda _: {"has_video": True, "has_audio": False},
     )
-    monkeypatch.setattr("app.routers.broll.probe_duration_seconds", lambda _: 4.2)
-    monkeypatch.setattr("app.routers.broll._detect_focus_track", lambda _: None)
-    monkeypatch.setattr("app.routers.broll._detect_focus_x_ratio", lambda _: None)
+    monkeypatch.setattr("app.routers._broll_media.probe_duration_seconds", lambda _: 4.2)
+    monkeypatch.setattr("app.routers._broll_media._detect_focus_track", lambda _: None)
+    monkeypatch.setattr("app.routers._broll_media._detect_focus_x_ratio", lambda _: None)
     monkeypatch.setattr(
-        "app.routers.broll._analyze_center_visual_risk", lambda _: (0.4, 0.1, "low")
+        "app.routers._broll_media._analyze_center_visual_risk", lambda _: (0.4, 0.1, "low")
     )
 
     download_calls: list[str] = []
@@ -566,7 +566,7 @@ def test_broll_external_materialize_reuses_existing_asset_for_same_source_url(
         return (str(destination.resolve()), relative, "video/mp4")
 
     monkeypatch.setattr(
-        "app.routers.broll._download_external_video", _fake_download_external_video
+        "app.routers._broll_media._download_external_video", _fake_download_external_video
     )
 
     with TestClient(app) as client:
@@ -810,10 +810,10 @@ def test_broll_slot_reroll_adds_variants_without_resetting_choice(
         "app.routers.broll.search_external_broll_candidates", _fake_external_candidates
     )
     monkeypatch.setattr(
-        "app.routers.broll.probe_stream_flags",
+        "app.routers._broll_media.probe_stream_flags",
         lambda _: {"has_video": True, "has_audio": False},
     )
-    monkeypatch.setattr("app.routers.broll.probe_duration_seconds", lambda _: 4.2)
+    monkeypatch.setattr("app.routers._broll_media.probe_duration_seconds", lambda _: 4.2)
 
     def _fake_download_external_video(
         project_id: str, source_url: str
@@ -827,7 +827,7 @@ def test_broll_slot_reroll_adds_variants_without_resetting_choice(
         return (str(destination.resolve()), relative, "video/mp4")
 
     monkeypatch.setattr(
-        "app.routers.broll._download_external_video", _fake_download_external_video
+        "app.routers._broll_media._download_external_video", _fake_download_external_video
     )
 
     with TestClient(app) as client:
@@ -904,8 +904,8 @@ def test_broll_sync_and_layer_undo_restore_only_overlay(
         lambda _: {"has_video": True, "has_audio": True},
     )
     monkeypatch.setattr("app.routers.transcript.generate_transcript", _fake_transcript)
-    monkeypatch.setattr("app.routers.broll._detect_focus_x_ratio", lambda _: 0.5)
-    monkeypatch.setattr("app.routers.broll._extract_audio_transients", lambda *_: ())
+    monkeypatch.setattr("app.routers._broll_media._detect_focus_x_ratio", lambda _: 0.5)
+    monkeypatch.setattr("app.routers._broll_media._extract_audio_transients", lambda *_: ())
 
     with TestClient(app) as client:
         project_id = _create_project(client, "Broll Sync Undo Layer")
@@ -993,7 +993,7 @@ def test_broll_suggest_async_job_returns_result(
         lambda _: {"has_video": True, "has_audio": True},
     )
     monkeypatch.setattr("app.routers.transcript.generate_transcript", _fake_transcript)
-    monkeypatch.setattr("app.routers.broll._extract_audio_transients", lambda *_: ())
+    monkeypatch.setattr("app.routers._broll_media._extract_audio_transients", lambda *_: ())
 
     with TestClient(app) as client:
         project_id = _create_project(client, "Broll Async Suggest")
