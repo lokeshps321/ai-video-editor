@@ -2840,14 +2840,18 @@ def _build_from_groq(
             try:
                 if translate_to_english:
                     # Use translation endpoint - translates any language to English
-                    # Note: translations endpoint doesn't support language parameter
+                    # Note: translations endpoint doesn't support language,
+                    # timestamp_granularities, or response_format='verbose_json'
                     request_payload.pop("language", None)
+                    request_payload.pop("timestamp_granularities", None)
                     response = client.audio.translations.create(**request_payload)
                 else:
                     response = client.audio.transcriptions.create(**request_payload)
             except TypeError:
-                # Some SDK versions may not expose `prompt` yet.
+                # Some SDK versions may not expose certain kwargs.
+                # Strip all potentially unsupported parameters and retry.
                 request_payload.pop("prompt", None)
+                request_payload.pop("timestamp_granularities", None)
                 if translate_to_english:
                     response = client.audio.translations.create(**request_payload)
                 else:

@@ -202,8 +202,15 @@ export type Transcript = {
   source: string;
   language: string | null;
   text: string;
+  word_count?: number;
+  words_truncated?: boolean;
   words: TranscriptWord[];
   regions: TranscriptRegion[];
+  quality_score?: number;
+  quality_label?: "trusted" | "needs_review";
+  weak_word_count?: number;
+  weak_word_ratio?: number;
+  issue_region_count?: number;
   script_tags?: string[];
   mixed_script?: boolean;
   duration_sec: number;

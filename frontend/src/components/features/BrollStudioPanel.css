@@ -59,6 +59,192 @@
   font-size: 0.75rem;
 }
 
+.brollTrustCard {
+  display: grid;
+  gap: 10px;
+  margin: 10px 0 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(15, 23, 42, 0.58);
+}
+
+.brollTrustCard.ready {
+  border-color: rgba(126, 242, 154, 0.3);
+  background: rgba(46, 160, 96, 0.08);
+}
+
+.brollTrustCard.review {
+  border-color: rgba(254, 202, 87, 0.3);
+  background: rgba(254, 202, 87, 0.08);
+}
+
+.brollTrustCard.risk {
+  border-color: rgba(255, 107, 107, 0.36);
+  background: rgba(255, 107, 107, 0.09);
+}
+
+.brollTrustCard.empty {
+  border-color: rgba(126, 220, 255, 0.22);
+  background: rgba(126, 220, 255, 0.07);
+}
+
+.brollTrustHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.brollTrustTitle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.brollTrustIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.brollTrustCard.ready .brollTrustIcon {
+  color: #7ef29a;
+}
+
+.brollTrustCard.review .brollTrustIcon {
+  color: #ffd36d;
+}
+
+.brollTrustCard.risk .brollTrustIcon {
+  color: #ff9a9a;
+}
+
+.brollTrustCard.empty .brollTrustIcon {
+  color: #9ee8ff;
+}
+
+.brollTrustEyebrow {
+  margin: 0 0 2px;
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.brollTrustTitle h4 {
+  margin: 0;
+  font-size: 0.94rem;
+  line-height: 1.2;
+}
+
+.brollTrustConfidence {
+  flex: 0 0 auto;
+  font-family: "JetBrains Mono", monospace;
+  color: var(--ink);
+  font-size: 0.8rem;
+}
+
+.brollTrustCopy,
+.brollTrustPlan,
+.brollTrustFootnote {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.brollTrustCopy {
+  color: rgba(236, 241, 255, 0.92);
+  font-size: 0.82rem;
+}
+
+.brollTrustPlan {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+}
+
+.brollTrustStats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.brollTrustStats span {
+  display: grid;
+  gap: 2px;
+  padding: 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--muted);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.brollTrustStats strong {
+  color: var(--ink);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.86rem;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.brollTrustGroups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.brollTrustGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ink);
+  font-size: 0.74rem;
+}
+
+.brollTrustGroup strong {
+  font-family: "JetBrains Mono", monospace;
+  color: var(--accent-secondary);
+}
+
+.brollTrustWeakList {
+  display: grid;
+  gap: 7px;
+}
+
+.brollTrustWeakList > strong {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.brollTrustWeakList button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(254, 202, 87, 0.28);
+  background: rgba(254, 202, 87, 0.08);
+  color: #ffe4a3;
+  font-size: 0.74rem;
+  text-align: left;
+}
+
 .brollSlots {
   display: grid;
   gap: 10px;

@@ -57,6 +57,58 @@ def probe_stream_flags(path: str) -> dict[str, bool]:
         return {"has_video": False, "has_audio": False}
 
 
+def extract_frame_thumbnail(
+    src_path: str,
+    out_path: str,
+    *,
+    time_sec: float,
+    width: int = 160,
+) -> bool:
+    """Extract a single complete frame at ``time_sec`` and write it as a JPEG.
+
+    Using ffmpeg server-side guarantees a fully-decoded frame, which avoids the
+    blank/torn frames that happen when the browser tries to seek many <video>
+    elements at once for a timeline filmstrip.
+    """
+    src = Path(src_path)
+    if not src.exists():
+        return False
+
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    safe_width = max(16, min(640, int(width)))
+    if safe_width % 2:
+        safe_width += 1
+    seek = max(0.0, float(time_sec))
+
+    cmd = [
+        settings.ffmpeg_bin,
+        "-nostdin",
+        "-y",
+        "-ss",
+        f"{seek:.3f}",
+        "-i",
+        str(src),
+        "-frames:v",
+        "1",
+        "-vf",
+        f"scale={safe_width}:-2:flags=fast_bilinear",
+        "-q:v",
+        "4",
+        str(out),
+    ]
+    try:
+        subprocess.run(cmd, capture_output=True, check=True, timeout=30)
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+    ):
+        return False
+    return out.exists() and out.stat().st_size > 0
+
+
 def infer_media_type(mime_type: str, filename: str) -> str:
     lower = (mime_type or "").lower()
     if lower.startswith("video/"):

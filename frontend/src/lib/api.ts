@@ -725,5 +725,14 @@ export const api = {
   health: (): Promise<{ status: string; ffmpeg?: string; ffprobe?: string }> =>
     request("/health"),
 
+  mediaThumbnailUrl: (
+    assetId: string,
+    timeSec: number,
+    width = 160,
+  ): string => {
+    const t = Math.max(0, Number.isFinite(timeSec) ? timeSec : 0);
+    return `${API_BASE}/api/v1/media/${encodeURIComponent(assetId)}/thumbnail?t=${t.toFixed(2)}&w=${Math.round(width)}`;
+  },
+
   apiBase: API_BASE,
 };

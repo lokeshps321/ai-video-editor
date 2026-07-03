@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from sqlmodel import Session, select
 
 from ..database import get_session
@@ -14,6 +16,7 @@ from ..jobs import (
     should_precompute_vocal_isolation,
 )
 from ..media_utils import (
+    extract_frame_thumbnail,
     extract_waveform_peaks,
     infer_media_type,
     probe_duration_seconds,
@@ -104,6 +107,51 @@ def list_media(
         )
         for item in items
     ]
+
+
+@router.get("/{asset_id}/thumbnail")
+def get_thumbnail(
+    asset_id: str,
+    t: float = 0.0,
+    w: int = 160,
+    session: Session = Depends(get_session),
+) -> FileResponse:
+    """Return a single cached JPEG frame for timeline filmstrips.
+
+    Served without auth (uploaded media is already public via ``/static``) so
+    the frontend can load it directly through an <img> tag.
+    """
+    asset = session.exec(select(MediaAsset).where(MediaAsset.id == asset_id)).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Media asset not found")
+    if asset.media_type != "video":
+        raise HTTPException(status_code=400, detail="Asset is not a video")
+
+    width = max(48, min(480, int(w)))
+    time_key = max(0.0, round(float(t), 2))
+    # Clamp to just inside the duration so a stale/over-range request still
+    # yields a real frame instead of failing on a seek past the end.
+    if asset.duration_sec and asset.duration_sec > 0:
+        time_key = min(time_key, max(0.0, round(asset.duration_sec - 0.1, 2)))
+    cache_dir = Path(storage.tmp_root) / "thumbs" / asset_id
+    out_path = cache_dir / f"{time_key:.2f}_{width}.jpg"
+
+    if not out_path.exists():
+        source_path = storage.resolve_upload_asset(asset.storage_path)
+        ok = extract_frame_thumbnail(
+            source_path,
+            str(out_path),
+            time_sec=time_key,
+            width=width,
+        )
+        if not ok:
+            raise HTTPException(status_code=422, detail="Could not extract frame")
+
+    return FileResponse(
+        out_path,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 @router.get("/{asset_id}/waveform")

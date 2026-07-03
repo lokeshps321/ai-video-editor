@@ -71,6 +71,8 @@ import {
   writeLockedLaneIds,
 } from "./utils/timelineSelection";
 import { BrollCandidateCard } from "./components/BrollCandidateCard";
+import { BrollTrustSummary } from "./components/features/BrollTrustSummary";
+import { TranscriptQualityPanel } from "./components/features/TranscriptQualityPanel";
 import { BRAND } from "./config/brand";
 import {
   AI_ACTION_ITEMS,
@@ -4446,13 +4448,20 @@ function App() {
     }
   }, [selectedCaptionBlock, captionBlocks]);
 
+  // Jump to the tab a selection suggests, but only once per new selection.
+  // Tracking the last handled context kind lets the user freely switch tabs
+  // afterwards instead of being snapped back on every manual click.
+  const lastInspectorKindRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!featureDrawerOpen) return;
-    if (inspectorContext.kind === "project") return;
-    if (activeFeatureTab !== inspectorContext.suggestedTab) {
-      setActiveFeatureTab(inspectorContext.suggestedTab);
+    if (!featureDrawerOpen) {
+      lastInspectorKindRef.current = null;
+      return;
     }
-  }, [featureDrawerOpen, inspectorContext.kind, inspectorContext.suggestedTab, activeFeatureTab]);
+    if (inspectorContext.kind === "project") return;
+    if (lastInspectorKindRef.current === inspectorContext.kind) return;
+    lastInspectorKindRef.current = inspectorContext.kind;
+    setActiveFeatureTab(inspectorContext.suggestedTab);
+  }, [featureDrawerOpen, inspectorContext.kind, inspectorContext.suggestedTab]);
 
   useEffect(() => {
     if (!featureDrawerOpen) return;
@@ -5982,76 +5991,24 @@ function App() {
                         regenerate.
                       </p>
                     )}
-                    {reviewWordCount > 0 && (
-                      <div
-                        className={`transcriptReviewCard ${shouldWarnLowConfidence ? "warningTone" : ""}`}
-                      >
-                        <div>
-                          <strong>
-                            {reviewWordCount} weak/uncertain word
-                            {reviewWordCount === 1 ? "" : "s"} to review
-                          </strong>
-                          <p>
-                            {weakQualityCount > 0
-                              ? `${weakQualityCount} weak-label`
-                              : "No weak-label"}{" "}
-                            ·{" "}
-                            {lowConfidenceOnlyCount > 0
-                              ? `${lowConfidenceOnlyCount} low-confidence`
-                              : "confidence looks stable"}
-                            {lowConfidenceCount > 0
-                              ? ` · ${(lowConfidenceRatio * 100).toFixed(0)}% of transcript below confidence target`
-                              : ""}
-                          </p>
-                        </div>
-                        <div className="transcriptReviewActions">
-                          <button
-                            type="button"
-                            onClick={() => reviewWeakWords(weakReviewIndex)}
-                          >
-                            Review weak words
-                          </button>
-                          <button type="button" onClick={reviewNextWeakWord}>
-                            Next weak word
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                    {transcriptIssueRegions.length > 0 && (
-                      <div className="transcriptRegionSummary">
-                        <div className="transcriptRegionSummaryHeader">
-                          <strong>Transcript watchlist</strong>
-                          <span>
-                            {transcriptIssueRegions.length} region
-                            {transcriptIssueRegions.length === 1 ? "" : "s"}
-                          </span>
-                        </div>
-                        <div className="transcriptRegionBar">
-                          {transcriptIssueRegions
-                            .slice(0, 8)
-                            .map((region, index) => (
-                              <button
-                                key={`${region.status}-${region.start_sec}-${region.end_sec}-${index}`}
-                                type="button"
-                                className={`transcriptRegionChip ${region.status}`}
-                                onClick={() => focusTranscriptRegion(region)}
-                                title={`${transcriptRegionLabel(region)} · ${formatSeconds(region.start_sec)} – ${formatSeconds(region.end_sec)}${region.reason ? ` · ${region.reason}` : ""}`}
-                              >
-                                <span>{transcriptRegionLabel(region)}</span>
-                                <span>
-                                  {formatSeconds(region.start_sec)}–
-                                  {formatSeconds(region.end_sec)}
-                                </span>
-                              </button>
-                            ))}
-                          {transcriptIssueRegions.length > 8 && (
-                            <span className="muted transcriptRegionOverflow">
-                              +{transcriptIssueRegions.length - 8} more
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    )}
+                    <TranscriptQualityPanel
+                      transcript={transcript}
+                      selectedLanguage={transcriptLanguage}
+                      scriptSummary={transcriptScriptSummary}
+                      captionBlockCount={captionBlocks.length}
+                      reviewWordCount={reviewWordCount}
+                      weakQualityCount={weakQualityCount}
+                      lowConfidenceOnlyCount={lowConfidenceOnlyCount}
+                      lowConfidenceCount={lowConfidenceCount}
+                      lowConfidenceRatio={lowConfidenceRatio}
+                      shouldWarnLowConfidence={shouldWarnLowConfidence}
+                      issueRegions={transcriptIssueRegions}
+                      onReviewWeakWords={() => reviewWeakWords(weakReviewIndex)}
+                      onReviewNextWeakWord={reviewNextWeakWord}
+                      onFocusRegion={focusTranscriptRegion}
+                      formatSeconds={formatSeconds}
+                      regionLabel={transcriptRegionLabel}
+                    />
 
                     {/* ── Search bar ────────────────────────────────── */}
                     <div className="searchBar">
@@ -6763,6 +6720,24 @@ function App() {
                           timing, color, and typography.
                         </p>
 
+                        <TranscriptQualityPanel
+                          transcript={transcript}
+                          selectedLanguage={transcriptLanguage}
+                          scriptSummary={transcriptScriptSummary}
+                          captionBlockCount={captionBlocks.length}
+                          reviewWordCount={reviewWordCount}
+                          weakQualityCount={weakQualityCount}
+                          lowConfidenceOnlyCount={lowConfidenceOnlyCount}
+                          lowConfidenceCount={lowConfidenceCount}
+                          lowConfidenceRatio={lowConfidenceRatio}
+                          shouldWarnLowConfidence={shouldWarnLowConfidence}
+                          issueRegions={transcriptIssueRegions}
+                          surface="captions"
+                          compact
+                          formatSeconds={formatSeconds}
+                          regionLabel={transcriptRegionLabel}
+                        />
+
                         <div className="captionStyleGrid">
                           {CAPTION_STYLE_PRESETS.map((style) => {
                             const isActive = captionStyle === style.id;
@@ -6923,6 +6898,23 @@ function App() {
                           Render your final video. Estimated render time:{" "}
                           <strong>{exportRuntimeHint}</strong>.
                         </p>
+                        <TranscriptQualityPanel
+                          transcript={transcript}
+                          selectedLanguage={transcriptLanguage}
+                          scriptSummary={transcriptScriptSummary}
+                          captionBlockCount={captionBlocks.length}
+                          reviewWordCount={reviewWordCount}
+                          weakQualityCount={weakQualityCount}
+                          lowConfidenceOnlyCount={lowConfidenceOnlyCount}
+                          lowConfidenceCount={lowConfidenceCount}
+                          lowConfidenceRatio={lowConfidenceRatio}
+                          shouldWarnLowConfidence={shouldWarnLowConfidence}
+                          issueRegions={transcriptIssueRegions}
+                          surface="export"
+                          compact
+                          formatSeconds={formatSeconds}
+                          regionLabel={transcriptRegionLabel}
+                        />
                         <div className="exportSettings">
                           <div className="exportField">
                             <label className="exportLabel">Aspect Ratio</label>
@@ -7317,47 +7309,14 @@ function App() {
                             </select>
                           </div>
                         </div>
-                        {selectedBrollPlan && (
-                          <div className="brollPlanCard">
-                            <strong>
-                              {selectedBrollPlan.modeLabel} estimate:{" "}
-                              {selectedBrollPlan.runtimeHint}
-                            </strong>
-                            <span>
-                              Plans up to {selectedBrollPlan.maxSlots} slot
-                              {selectedBrollPlan.maxSlots === 1
-                                ? ""
-                                : "s"} ·{" "}
-                              {selectedBrollPlan.includeExternalSources
-                                ? "stock search on"
-                                : "local clips only"}{" "}
-                              ·{" "}
-                              {selectedBrollPlan.aiRerank
-                                ? "AI rerank on"
-                                : "fast ranking"}
-                            </span>
-                          </div>
-                        )}
-                        <p className="muted brollMeta">
-                          Mode: {brollAutoMode} · Slots: {brollSlots.length} ·
-                          Ready:{" "}
-                          {
-                            brollSlots.filter(
-                              (slot) =>
-                                slot.review_status === "ready" ||
-                                slot.review_status === "approved",
-                            ).length
-                          }{" "}
-                          · Needs review:{" "}
-                          {
-                            brollSlots.filter(
-                              (slot) =>
-                                (slot.review_status ?? "needs_review") ===
-                                "needs_review",
-                            ).length
-                          }{" "}
-                          · Timeline overlay clips: {overlayClips.length}
-                        </p>
+                        <BrollTrustSummary
+                          slots={brollSlots}
+                          overlayClipCount={overlayClips.length}
+                          selectedPlan={selectedBrollPlan}
+                          formatSeconds={formatSeconds}
+                          reasonCodeLabel={reasonCodeLabel}
+                          onFocusSlot={focusBrollSlot}
+                        />
                         <div className="brollSlots">
                           {!brollSlots.length && (
                             <p className="muted">

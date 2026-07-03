@@ -25,6 +25,7 @@ import {
   VolumeX,
 } from "lucide-react";
 import type { Clip, TranscriptWord } from "../types";
+import { api } from "../lib/api";
 import "./Timeline.css";
 
 export type TimelineLane = {
@@ -139,9 +140,11 @@ const MIN_BROLL_DURATION_SEC = 0.1;
 const MIN_CLIP_SOURCE_DURATION_SEC = 0.05;
 
 type LaneClipThumbProps = {
-  src: string;
+  assetId: string;
   seekSec: number;
 };
+
+const FILMSTRIP_THUMB_WIDTH = 160;
 
 type SnapGuide = {
   ownerKey: string;
@@ -186,52 +189,36 @@ type CaptionDragState = {
   currentDurationSec: number;
 };
 
-function LaneClipThumb({ src, seekSec }: LaneClipThumbProps) {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+const LaneClipThumb = memo(function LaneClipThumb({
+  assetId,
+  seekSec,
+}: LaneClipThumbProps) {
   const [isReady, setIsReady] = useState(false);
-
-  const seekToFrame = useCallback(() => {
-    const video = videoRef.current;
-    if (!video || video.readyState < HTMLMediaElement.HAVE_METADATA) return;
-    const duration = Number.isFinite(video.duration)
-      ? Math.max(video.duration - 0.05, 0)
-      : seekSec;
-    const target = Math.max(0, Math.min(seekSec, duration));
-    try {
-      if (Math.abs(video.currentTime - target) <= 0.033) {
-        setIsReady(true);
-        return;
-      }
-      setIsReady(false);
-      video.currentTime = target;
-    } catch {
-      setIsReady(false);
-    }
-  }, [seekSec]);
+  const src = useMemo(
+    () => api.mediaThumbnailUrl(assetId, seekSec, FILMSTRIP_THUMB_WIDTH),
+    [assetId, seekSec],
+  );
 
   useEffect(() => {
     setIsReady(false);
-  }, [src, seekSec]);
+  }, [src]);
 
   return (
     <div className="timelineLaneThumb">
-      <video
-        ref={videoRef}
+      <img
         className={`timelineLaneThumbVideo ${isReady ? "ready" : ""}`}
         src={src}
-        muted
-        playsInline
-        preload="auto"
-        onLoadedMetadata={seekToFrame}
-        onLoadedData={seekToFrame}
-        onCanPlay={seekToFrame}
-        onSeeked={() => setIsReady(true)}
+        loading="lazy"
+        decoding="async"
+        draggable={false}
+        onLoad={() => setIsReady(true)}
         onError={() => setIsReady(false)}
+        alt=""
         aria-hidden="true"
       />
     </div>
   );
-}
+});
 
 function formatTimecode(sec: number): string {
   const m = Math.floor(sec / 60);
@@ -595,9 +582,13 @@ function Timeline({
               MIN_BROLL_DURATION_SEC,
             );
             const clipWidthPx = Math.max(duration * pxPerSec, 4);
+            // One frame roughly every ~120px so the filmstrip stays crisp
+            // across the full clip width instead of stretching a handful of
+            // frames over a very long clip. Lazy loading keeps off-screen
+            // frames from loading until scrolled into view.
             const thumbCount = Math.max(
               1,
-              Math.min(8, Math.floor(clipWidthPx / 54)),
+              Math.min(80, Math.ceil(clipWidthPx / 120)),
             );
             const sourceDuration = Math.max(
               sourceEndSec - sourceStartSec,
@@ -606,11 +597,11 @@ function Timeline({
             const thumbTimes = Array.from(
               { length: thumbCount },
               (_unused, idx) => {
-                if (thumbCount <= 1) {
-                  return sourceStartSec + Math.min(0.35, sourceDuration * 0.25);
-                }
-                const t = idx / (thumbCount - 1);
-                return sourceStartSec + sourceDuration * t;
+                // Sample the midpoint of each segment instead of the exact
+                // clip edges. Videos commonly fade in/out from black, so
+                // sampling at t=start or t=end produces black filmstrip slots.
+                const frac = (idx + 0.5) / thumbCount;
+                return sourceStartSec + sourceDuration * frac;
               },
             );
             return {
@@ -622,6 +613,7 @@ function Timeline({
               sourceEndSec,
               timelineStartSec,
               thumbSrc: assetUrlById.get(clip.asset_id) ?? null,
+              assetId: clip.asset_id,
               clipName: (() => {
                 const raw = assetNameById?.get(clip.asset_id);
                 return raw ? raw.replace(/\.[^.]+$/, "") : null;
@@ -1466,6 +1458,7 @@ function Timeline({
                   duration,
                   timelineStartSec,
                   thumbSrc,
+                  assetId,
                   thumbTimes,
                   clipName,
                   isSelected,
@@ -1520,7 +1513,7 @@ function Timeline({
                         {thumbTimes.map((seekSec, index) => (
                           <LaneClipThumb
                             key={`${clip.id}-thumb-${index}`}
-                            src={thumbSrc}
+                            assetId={assetId}
                             seekSec={seekSec}
                           />
                         ))}
