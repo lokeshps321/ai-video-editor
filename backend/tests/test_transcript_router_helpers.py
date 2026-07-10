@@ -10,7 +10,68 @@ os.environ.setdefault("RENDER_DIR", "/tmp/prompt_video_editor_renders")
 os.environ.setdefault("TMP_DIR", "/tmp/prompt_video_editor_tmp")
 
 from app.routers import transcript as transcript_router
+from app.schemas import Clip, TimelineState, Track
 from app.transcription_service import TranscriptPayload, TranscriptWordPayload
+
+
+def test_full_range_transcript_generation_keeps_the_existing_v1_clip() -> None:
+    clip = Clip(
+        id="v1-original",
+        asset_id="asset-v1",
+        start_sec=0.0,
+        end_sec=12.5,
+        timeline_start_sec=0.0,
+    )
+    state = TimelineState(
+        tracks=[Track(id="video-track", kind="video", clips=[clip])],
+        duration_sec=12.5,
+    )
+
+    assert transcript_router._video_track_already_matches_ranges(
+        state,
+        asset_id="asset-v1",
+        ranges=[{"start_sec": 0.0, "end_sec": 12.5}],
+    )
+
+
+def test_video_range_match_requires_a_real_no_op() -> None:
+    state = TimelineState(
+        tracks=[
+            Track(
+                id="video-track",
+                kind="video",
+                clips=[
+                    Clip(
+                        id="v1-trimmed",
+                        asset_id="asset-v1",
+                        start_sec=0.0,
+                        end_sec=6.0,
+                        timeline_start_sec=0.0,
+                    )
+                ],
+            ),
+            Track(
+                id="audio-track",
+                kind="audio",
+                clips=[
+                    Clip(
+                        id="music",
+                        asset_id="asset-a1",
+                        start_sec=0.0,
+                        end_sec=6.0,
+                        timeline_start_sec=0.0,
+                    )
+                ],
+            ),
+        ],
+        duration_sec=6.0,
+    )
+
+    assert not transcript_router._video_track_already_matches_ranges(
+        state,
+        asset_id="asset-v1",
+        ranges=[{"start_sec": 0.0, "end_sec": 6.0}],
+    )
 
 
 def test_materialize_transcript_items_exposes_blanked_regions() -> None:

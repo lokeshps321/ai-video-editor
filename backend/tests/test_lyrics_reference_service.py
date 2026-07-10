@@ -1,5 +1,6 @@
 from app.lyrics_reference_service import (
     LyricsReference,
+    _build_reference_words_with_asr_timing,
     align_reference_lyrics,
     looks_like_song_media,
     parse_track_hints,
@@ -55,6 +56,29 @@ def test_looks_like_song_media_matches_music_video_filename() -> None:
         "Googly_-_Bisilu_Kudreyondu_Full_Song_Video_Yash_Kriti_Kharbanda_720P.mp4"
     )
     assert not looks_like_song_media("weekly_product_walkthrough_meeting.mp4")
+
+
+def test_reference_lyrics_keep_matched_asr_word_boundaries() -> None:
+    asr_words = [
+        TranscriptWordPayload(id="w1", text="as", start_sec=1.0, end_sec=1.08),
+        TranscriptWordPayload(id="w2", text="i", start_sec=1.08, end_sec=1.31),
+        TranscriptWordPayload(id="w3", text="walk", start_sec=1.31, end_sec=1.46),
+        TranscriptWordPayload(id="w4", text="through", start_sec=1.46, end_sec=1.88),
+    ]
+
+    corrected = _build_reference_words_with_asr_timing(
+        ["As", "I", "walk", "through"],
+        asr_words,
+        id_prefix="timing",
+    )
+
+    assert [word.text for word in corrected] == ["As", "I", "walk", "through"]
+    assert [(word.start_sec, word.end_sec) for word in corrected] == [
+        (1.0, 1.08),
+        (1.08, 1.31),
+        (1.31, 1.46),
+        (1.46, 1.88),
+    ]
 
 
 def test_align_reference_lyrics_replaces_bad_asr_words_with_reference() -> None:

@@ -471,6 +471,71 @@ def _build_interpolated_words(
     return words
 
 
+def _build_reference_words_with_asr_timing(
+    ref_tokens: list[str],
+    asr_words: list[TranscriptWordPayload],
+    *,
+    id_prefix: str,
+    confidence: float = 1.0,
+    quality_score: float = 0.82,
+    quality_label: str = "trusted",
+    source_pass: str = "manual",
+) -> list[TranscriptWordPayload]:
+    """Apply corrected lyric text without flattening the ASR timing rhythm.
+
+    Synced lyric providers normally provide a timestamp for an entire line,
+    not every word. Splitting that line into equal word windows makes fast and
+    slow words visibly lead or lag the vocal. A matched ASR word window has
+    useful per-word timing, so it remains the timing source.
+    """
+    if not ref_tokens or not asr_words:
+        return []
+
+    source_count = len(asr_words)
+    token_count = len(ref_tokens)
+    boundaries = [float(asr_words[0].start_sec)]
+    for word in asr_words:
+        boundaries.append(max(boundaries[-1], float(word.end_sec)))
+
+    def time_at(position: float) -> float:
+        clamped = max(0.0, min(float(source_count), position))
+        lower = int(clamped)
+        if lower >= source_count or abs(clamped - lower) < 1e-9:
+            return boundaries[lower]
+        upper = lower + 1
+        fraction = clamped - lower
+        return boundaries[lower] + (boundaries[upper] - boundaries[lower]) * fraction
+
+    words: list[TranscriptWordPayload] = []
+    for idx, token in enumerate(ref_tokens):
+        start_sec = time_at((idx * source_count) / token_count)
+        end_sec = time_at(((idx + 1) * source_count) / token_count)
+        if end_sec <= start_sec:
+            end_sec = start_sec + 0.001
+        source_idx = min(
+            source_count - 1,
+            int(((idx + 0.5) * source_count) / token_count),
+        )
+        source_word = asr_words[source_idx]
+        words.append(
+            TranscriptWordPayload(
+                id=f"{id_prefix}-{idx}",
+                text=token,
+                start_sec=round(start_sec, 3),
+                end_sec=round(end_sec, 3),
+                confidence=max(0.0, min(float(confidence), 1.0)),
+                quality_score=max(0.0, min(float(quality_score), 1.0)),
+                quality_label="trusted"
+                if str(quality_label) == "trusted"
+                else "weak",
+                source_pass=source_pass,
+                speaker_id=source_word.speaker_id,
+                speaker_label=source_word.speaker_label,
+            )
+        )
+    return words
+
+
 def _lyrics_line_quality(score: float) -> tuple[float, str]:
     bounded = max(0.0, min(float(score), 1.0))
     trusted_threshold = _env_float(
@@ -688,10 +753,9 @@ def _align_reference_lyrics_by_synced_lines(
             adopted_token_count += len(tokens)
             quality_score, quality_label = _lyrics_line_quality(line_score)
             corrected.extend(
-                _build_interpolated_words(
+                _build_reference_words_with_asr_timing(
                     tokens,
-                    start_sec=adjusted_start_sec,
-                    end_sec=end_sec,
+                    asr_words[replace_start_idx:replace_end_idx],
                     id_prefix=f"lyrics-sync-{idx}",
                     confidence=quality_score,
                     quality_score=quality_score,
@@ -708,10 +772,9 @@ def _align_reference_lyrics_by_synced_lines(
             adopted_token_count += len(tokens)
             quality_score, quality_label = _lyrics_line_quality(line_score)
             corrected.extend(
-                _build_interpolated_words(
+                _build_reference_words_with_asr_timing(
                     tokens,
-                    start_sec=float(asr_words[replace_start_idx].start_sec),
-                    end_sec=float(asr_words[replace_end_idx - 1].end_sec),
+                    asr_words[replace_start_idx:replace_end_idx],
                     id_prefix=f"lyrics-sync-rescue-{idx}",
                     confidence=quality_score,
                     quality_score=quality_score,
@@ -1053,66 +1116,74 @@ def _rebuild_payload_from_synced_reference(
         return None
 
     quality_score, quality_label = _lyrics_line_quality(anchor_average)
-    corrected: list[TranscriptWordPayload] = []
     asr_words = list(payload.words)
-    if not synced_lines:
+    if not synced_lines or not asr_words:
         return None
 
-    first_synced_start = max(0.0, min(duration_sec, synced_lines[0][0] + time_offset_sec))
-    if asr_words:
-        first_word_end_sec = float(asr_words[0].end_sec)
-        if first_synced_start <= first_word_end_sec + 0.25:
-            first_synced_start = float(asr_words[0].start_sec)
-    last_synced_start = max(0.0, min(duration_sec, synced_lines[-1][0] + time_offset_sec))
-    last_tokens = synced_lines[-1][1]
-    last_natural_span = max(0.7, 0.24 * len(last_tokens))
-    last_synced_end = min(duration_sec, last_synced_start + min(max(last_natural_span, 1.0), 4.0))
-
-    leading_words = [
-        word for word in asr_words if float(word.end_sec) <= first_synced_start
-    ]
-    corrected.extend(leading_words)
+    # Line timestamps tell us *where* to search, but are not precise enough to
+    # create new word timing. Reuse the matched ASR window so every corrected
+    # lyric keeps the singer's actual, non-uniform cadence.
+    corrected: list[TranscriptWordPayload] = []
+    cursor_word_idx = 0
+    matched_line_count = 0
     for idx, (start_sec, tokens) in enumerate(synced_lines):
-        adjusted_start_sec = max(0.0, min(duration_sec, start_sec + time_offset_sec))
+        adjusted_start_sec = max(
+            0.0, min(duration_sec, start_sec + time_offset_sec)
+        )
         next_start_sec = (
-            max(0.0, min(duration_sec, synced_lines[idx + 1][0] + time_offset_sec))
+            max(
+                0.0,
+                min(duration_sec, synced_lines[idx + 1][0] + time_offset_sec),
+            )
             if idx + 1 < len(synced_lines)
             else duration_sec
         )
         natural_span = max(0.7, 0.24 * len(tokens))
         gap_to_next = max(0.0, next_start_sec - adjusted_start_sec - 0.02)
-        span = gap_to_next if 0.0 < gap_to_next <= 4.0 else min(max(natural_span, 1.0), 4.0)
+        span = (
+            gap_to_next
+            if 0.0 < gap_to_next <= 4.0
+            else min(max(natural_span, 1.0), 4.0)
+        )
         end_sec = min(duration_sec, adjusted_start_sec + span)
         if end_sec <= adjusted_start_sec:
             end_sec = min(duration_sec, adjusted_start_sec + max(0.6, natural_span))
 
-        if idx == 0 and asr_words:
-            first_word_end_sec = float(asr_words[0].end_sec)
-            if adjusted_start_sec <= first_word_end_sec + 0.25:
-                adjusted_start_sec = float(asr_words[0].start_sec)
-
+        reference_tokens = [
+            _normalize_token(token) for token in tokens if _normalize_token(token)
+        ]
+        match = _find_best_synced_line_window(
+            asr_words,
+            reference_tokens,
+            expected_start_sec=adjusted_start_sec,
+            expected_end_sec=end_sec,
+            start_word_idx=cursor_word_idx,
+        )
+        if match is None:
+            continue
+        # The first synced lyric line is the content anchor. Anything before
+        # its matched ASR window is commonly spoken/video-intro noise rather
+        # than part of the lyric reference, so preserve gaps only after that
+        # first anchor.
+        if match.start_word_idx > cursor_word_idx and matched_line_count > 0:
+            corrected.extend(asr_words[cursor_word_idx : match.start_word_idx])
         corrected.extend(
-            _build_interpolated_words(
+            _build_reference_words_with_asr_timing(
                 tokens,
-                start_sec=adjusted_start_sec,
-                end_sec=end_sec,
+                asr_words[match.start_word_idx : match.end_word_idx],
                 id_prefix=f"lyrics-sync-rebuild-{idx}",
                 confidence=quality_score,
                 quality_score=quality_score,
                 quality_label=quality_label,
             )
         )
+        cursor_word_idx = match.end_word_idx
+        matched_line_count += 1
 
-    trailing_words = [
-        word for word in asr_words if float(word.start_sec) >= last_synced_end
-    ]
-    corrected.extend(trailing_words)
-    corrected = _trim_synced_reference_edge_words(
-        corrected,
-        synced_lines=synced_lines,
-        duration_sec=duration_sec,
-        time_offset_sec=time_offset_sec,
-    )
+    if matched_line_count < min_anchor_count:
+        return None
+    if cursor_word_idx < len(asr_words):
+        corrected.extend(asr_words[cursor_word_idx:])
     return _finalize_corrected_payload(payload, corrected)
 
 
@@ -1443,10 +1514,9 @@ def _align_reference_lyrics_by_lines(
         if word_start_idx > cursor_word_idx:
             corrected.extend(asr_words[cursor_word_idx:word_start_idx])
         corrected.extend(
-            _build_interpolated_words(
+            _build_reference_words_with_asr_timing(
                 reference_tokens,
-                start_sec=float(asr_words[word_start_idx].start_sec),
-                end_sec=float(asr_words[word_end_idx - 1].end_sec),
+                asr_words[word_start_idx:word_end_idx],
                 id_prefix=f"lyrics-ref-block-{match_idx}",
             )
         )
