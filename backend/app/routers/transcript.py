@@ -1905,55 +1905,6 @@ def _word_needs_cut_safety(word: TranscriptWord | None) -> bool:
     return (word.source_pass or "") in {"retry", "rescue"}
 
 
-def _video_track_already_matches_ranges(
-    state: TimelineState,
-    *,
-    asset_id: str,
-    ranges: list[dict[str, float]],
-) -> bool:
-    """Return whether replacing V1 would be a true no-op.
-
-    Generating a transcript initially asks for the full source range.  The
-    upload flow has already created that exact V1 clip, so replacing it creates
-    a new clip ID without changing any media.  Apart from creating needless
-    history, that remounts the editor filmstrip and can leave V1 looking blank
-    until another timeline edit rebuilds it.
-
-    Keep this deliberately strict: any real cut, non-default speed, shifted
-    clip, or populated audio track still follows the normal replacement path.
-    """
-    video_track = next(
-        (track for track in state.tracks if track.kind == "video"), None
-    )
-    if video_track is None or len(video_track.clips) != len(ranges):
-        return False
-    if any(track.kind == "audio" and track.clips for track in state.tracks):
-        return False
-
-    ordered_clips = sorted(
-        video_track.clips, key=lambda clip: clip.timeline_start_sec
-    )
-    cursor = 0.0
-    for clip, requested in zip(ordered_clips, ranges, strict=True):
-        try:
-            start_sec = float(requested["start_sec"])
-            end_sec = float(requested["end_sec"])
-        except (KeyError, TypeError, ValueError):
-            return False
-        if not math.isfinite(start_sec) or not math.isfinite(end_sec):
-            return False
-        if (
-            clip.asset_id != asset_id
-            or not math.isclose(clip.start_sec, start_sec, abs_tol=0.001)
-            or not math.isclose(clip.end_sec, end_sec, abs_tol=0.001)
-            or not math.isclose(clip.timeline_start_sec, cursor, abs_tol=0.001)
-            or not math.isclose(clip.speed, 1.0, abs_tol=0.001)
-        ):
-            return False
-        cursor += end_sec - start_sec
-    return True
-
-
 def _apply_video_ranges(
     session: Session,
     *,
@@ -1969,13 +1920,6 @@ def _apply_video_ranges(
 
     timeline = get_timeline_row(session, project_id)
     state = load_timeline_state(timeline)
-    if _video_track_already_matches_ranges(
-        state,
-        asset_id=asset_id,
-        ranges=ranges,
-    ):
-        return ranges, state
-
     operation = OperationPayload(
         op_type="replace_video_track_clips",
         source="ui",
