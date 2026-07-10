@@ -69,3 +69,6 @@ gemini-cli/
 claude_code_zai_env.sh
 
 
+.vercel
+.env*
+*.AppImage

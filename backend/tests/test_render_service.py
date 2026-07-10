@@ -2,6 +2,8 @@ import re
 from io import StringIO
 from pathlib import Path
 
+import pytest
+
 from app.render_service import _build_ass_subtitle_file, _resolve_h264_video_encoder, build_ffmpeg_command, run_ffmpeg
 from app.schemas import Clip, ExportSettings, TextOverlay, TimelineState, Track, Transition
 
@@ -483,6 +485,86 @@ def test_build_ffmpeg_command_uses_filter_complex_script_for_large_graph(monkeyp
     script_path.unlink(missing_ok=True)
     ass_path.unlink(missing_ok=True)
     assert "long subtitle text" in ass_content
+
+
+@pytest.mark.parametrize(
+    ("style", "expected_fragment"),
+    [
+        ("hormozi_bold", "\\fad("),
+        ("pop_color", "\\fad("),
+        ("street_impact", "\\fad("),
+        ("cinematic_serif", "\\fad("),
+        ("neon_gamer", "\\fad("),
+        ("bounce", "\\fad("),
+    ],
+)
+def test_build_ffmpeg_command_ass_includes_style_motion(style: str, expected_fragment: str) -> None:
+    state = _timeline()
+    video_clip = state.tracks[0].clips[0]
+    video_clip.text_overlays = [
+        TextOverlay(
+            id=f"ov-{style}",
+            text="motion check",
+            start_sec=0.0,
+            duration_sec=1.2,
+            style=style,
+            font_name="Montserrat-Bold",
+        )
+    ]
+    command = build_ffmpeg_command(
+        timeline=state,
+        clip_inputs=[(video_clip, "/tmp/video.mp4")],
+        clip_has_audio_flags=[False],
+        bg_audio_inputs=[],
+        bg_has_audio_flags=[],
+        output_path="/tmp/out.mp4",
+        export_settings=ExportSettings(format="mp4", resolution="1080p", fps=30, quality="high"),
+    )
+    ass_path = _extract_ass_path(command)
+    ass_content = ass_path.read_text(encoding="utf-8")
+    ass_path.unlink(missing_ok=True)
+    assert expected_fragment in ass_content
+    assert "\\fscx" not in ass_content
+    assert "\\blur" not in ass_content
+    assert "motion check" in ass_content
+    assert "Style: Default,DejaVu Sans," in ass_content
+
+
+def test_build_ffmpeg_command_ass_font_none_uses_fallback() -> None:
+    state = _timeline()
+    video_clip = state.tracks[0].clips[0]
+    video_clip.text_overlays = [
+        TextOverlay(
+            id="ov-none-font",
+            text="hello",
+            start_sec=0.0,
+            duration_sec=1.0,
+            style="static",
+            font_name=None,
+        )
+    ]
+    command = build_ffmpeg_command(
+        timeline=state,
+        clip_inputs=[(video_clip, "/tmp/video.mp4")],
+        clip_has_audio_flags=[False],
+        bg_audio_inputs=[],
+        bg_has_audio_flags=[],
+        output_path="/tmp/out.mp4",
+        export_settings=ExportSettings(format="mp4", resolution="1080p", fps=30, quality="high"),
+    )
+    ass_path = _extract_ass_path(command)
+    ass_content = ass_path.read_text(encoding="utf-8")
+    ass_path.unlink(missing_ok=True)
+    assert "Style: Default,DejaVu Sans," in ass_content
+    assert ",None," not in ass_content
+
+
+def test_ass_style_motion_tags_indic_safe_uses_fade_only() -> None:
+    from app.render_service import _ass_style_motion_tags
+
+    tags = _ass_style_motion_tags("hormozi_bold", 1.0, indic_safe=True)
+    assert "\\fad(" in tags
+    assert "\\fscx" not in tags
 
 
 def test_run_ffmpeg_cleans_temp_filter_script(monkeypatch, tmp_path) -> None:

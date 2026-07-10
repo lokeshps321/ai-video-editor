@@ -199,6 +199,101 @@ def _scale_ass_caption_metrics(
     return scaled_font, scaled_margin, scaled_outline, scaled_shadow
 
 
+def _ass_ms(seconds: float) -> int:
+    return max(0, int(round(max(seconds, 0.0) * 1000)))
+
+
+def _ass_style_motion_tags(
+    style: str,
+    duration_sec: float,
+    *,
+    indic_safe: bool = False,
+    karaoke_segment: bool = False,
+) -> str:
+    """ASS override tags that mirror caption preset motion using libass-safe fades."""
+    if karaoke_segment:
+        return ""
+
+    normalized = _normalize_caption_style(style)
+    dur_ms = max(50, _ass_ms(duration_sec))
+
+    def _fad(in_ms: int, out_ms: int) -> str:
+        fade_in = max(20, min(in_ms, max(20, dur_ms // 2)))
+        fade_out = max(20, min(out_ms, max(20, dur_ms // 2)))
+        return f"{{\\fad({fade_in},{fade_out})}}"
+
+    if indic_safe:
+        kinetic_styles = {
+            "pop",
+            "hormozi_bold",
+            "hormozi_green",
+            "shorts_viral",
+            "pop_color",
+            "street_impact",
+            "neon_gamer",
+            "retro_vhs",
+            "bounce",
+            "karaoke",
+        }
+        if normalized in kinetic_styles or normalized in {
+            "fade",
+            "cinematic_serif",
+            "elegant_gold",
+            "creator",
+            "minimalist",
+            "typewriter",
+            "basic_white",
+        }:
+            return _fad(120, 100)
+        return ""
+
+    if normalized in {"pop", "hormozi_bold", "pop_color", "street_impact"}:
+        snap_in = 70 if normalized == "street_impact" else 90
+        return _fad(snap_in, 80)
+
+    if normalized in {"fade", "cinematic_serif"}:
+        return _fad(280, 260)
+
+    if normalized == "elegant_gold":
+        return _fad(360, 300)
+
+    if normalized in {"typewriter", "retro_vhs"}:
+        return _fad(60, 70)
+
+    if normalized in {"karaoke", "neon_gamer", "bounce"}:
+        return _fad(80, 90)
+
+    if normalized == "creator":
+        return _fad(90, 120)
+
+    if normalized == "minimalist":
+        return _fad(100, 90)
+
+    return ""
+
+
+def _resolve_ass_font_name(value: object) -> str:
+    raw = str(value).strip() if value not in (None, "") else ""
+    if not raw or raw.lower() == "none":
+        return "DejaVu Sans"
+    family = raw.split("-")[0].split(" ")[0]
+    if family.lower() in (
+        "arial",
+        "helvetica",
+        "inter",
+        "roboto",
+        "montserrat",
+        "poppins",
+        "impact",
+        "orbitron",
+        "courier",
+        "playfair",
+        "georgia",
+    ):
+        return "DejaVu Sans"
+    return family
+
+
 def _build_ass_subtitle_file(
     text_overlays: list[dict],
     out_w: int,
@@ -242,14 +337,10 @@ def _build_ass_subtitle_file(
         margin_v = int(sample.get("margin_v", 60))
         alignment = int(sample.get("alignment", 2))
         
-        raw_font = str(sample.get("font_name", "Arial"))
+        font_name = _resolve_ass_font_name(sample.get("font_name"))
+        raw_font = str(sample.get("font_name") or "")
         if "bold" in raw_font.lower():
             bold = -1
-        # Strip common weight suffixes that libass might not like in the family name
-        font_name = raw_font.split("-")[0].split(" ")[0]
-        # Common Linux fallbacks if Windows fonts are requested
-        if font_name.lower() in ("arial", "helvetica", "inter", "roboto"):
-            font_name = "DejaVu Sans"
 
         # Detect Indic scripts and override font if needed
         all_text = " ".join([str(o.get("text", "")) for o in text_overlays])
@@ -302,6 +393,7 @@ def _build_ass_subtitle_file(
     for overlay in text_overlays:
         start_sec = float(overlay.get("start", 0.0))
         end_sec = float(overlay.get("end", start_sec + 1.0))
+        overlay_style = str(overlay.get("style", "") or "")
         raw_text = str(overlay.get("text", "")).replace("\n", "\\N")
         # Escape special ASS characters
         raw_text = raw_text.replace("{", "").replace("}", "")
@@ -333,6 +425,12 @@ def _build_ass_subtitle_file(
                     # Word segment covers the time until the START of the next word
                     seg_start = start_sec if i == 0 else float(words[i]["start_tl"])
                     seg_end = end_sec if i == len(words) - 1 else float(words[i+1]["start_tl"])
+                    seg_motion = _ass_style_motion_tags(
+                        overlay_style,
+                        max(seg_end - seg_start, 0.05),
+                        indic_safe=overlay_uses_indic_font,
+                        karaoke_segment=True,
+                    )
                     
                     colored_line = []
                     for j, w in enumerate(final_words):
@@ -341,13 +439,20 @@ def _build_ass_subtitle_file(
                         else:
                             colored_line.append(w)
                     
-                    full_line = " ".join(colored_line)
+                    full_line = f"{seg_motion}{' '.join(colored_line)}"
                     # Use Layer 1 to ensure it's above the video
                     lines.append(f"Dialogue: 1,{_ts(seg_start)},{_ts(seg_end)},Default,,0,0,0,,{full_line}")
                 continue
                 
         # Standard fallback (no highlights, just plain text block)
-        lines.append(f"Dialogue: 1,{_ts(start_sec)},{_ts(end_sec)},Default,,0,0,0,,{raw_text}")
+        block_motion = _ass_style_motion_tags(
+            overlay_style,
+            max(end_sec - start_sec, 0.05),
+            indic_safe=overlay_uses_indic_font,
+        )
+        lines.append(
+            f"Dialogue: 1,{_ts(start_sec)},{_ts(end_sec)},Default,,0,0,0,,{block_motion}{raw_text}"
+        )
 
     content = "\n".join(lines)
     tmp = tempfile.NamedTemporaryFile(

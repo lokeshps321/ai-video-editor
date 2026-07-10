@@ -930,16 +930,6 @@ function App() {
       return "auto";
     }
   });
-  const [translateTranscriptToEnglish, setTranslateTranscriptToEnglish] =
-    useState(() => {
-      try {
-        return (
-          localStorage.getItem("clipmind_transcript_translate_en") === "true"
-        );
-      } catch {
-        return false;
-      }
-    });
   const [transcriptStageStartedAtMs, setTranscriptStageStartedAtMs] = useState<
     number | null
   >(null);
@@ -2757,7 +2747,7 @@ function App() {
         transcriptMode,
         language,
         undefined,
-        translateTranscriptToEnglish,
+        false,
         { forceRegenerate },
       );
       setTranscriptJob(job);
@@ -5786,24 +5776,6 @@ function App() {
                       ))}
                     </select>
                   </label>
-                  <label className="transcriptToggleField">
-                    <input
-                      type="checkbox"
-                      checked={translateTranscriptToEnglish}
-                      disabled={generatingTranscript}
-                      onChange={(event) => {
-                        const checked = event.target.checked;
-                        setTranslateTranscriptToEnglish(checked);
-                        try {
-                          localStorage.setItem(
-                            "clipmind_transcript_translate_en",
-                            String(checked),
-                          );
-                        } catch {}
-                      }}
-                    />
-                    <span>Translate transcript to English</span>
-                  </label>
                   <button
                     className="primaryBtn transcriptGenerateBtn"
                     onClick={() => void generateTranscript()}
@@ -5833,9 +5805,6 @@ function App() {
                   Estimated transcript time:{" "}
                   <strong>{transcriptRuntimeHint}</strong>.{" "}
                   {transcriptModeDetail(transcriptMode)}
-                  {translateTranscriptToEnglish
-                    ? " Output will be translated to English."
-                    : ""}
                   {transcriptJob?.status === "running" && transcriptStageLabel
                     ? ` Current stage: ${transcriptStageLabel}`
                     : ""}

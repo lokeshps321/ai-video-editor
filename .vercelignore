@@ -1,0 +1,11 @@
+backend/
+.venv/
+.cursor/
+.agents/
+uploads/
+renders/
+tmp/
+*.db
+*.db-*
+cursor.AppImage
+.git/
