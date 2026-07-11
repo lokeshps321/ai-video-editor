@@ -790,6 +790,26 @@
   box-shadow: 0 0 8px rgba(239, 68, 68, 0.6);
 }
 
+/* ── Snap Indicator ─────────────────────── */
+.snapIndicator {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: #fbbf24;
+  box-shadow: 0 0 6px rgba(251, 191, 36, 0.7);
+  z-index: 9;
+  pointer-events: none;
+  margin-left: var(--timeline-rail-width, 52px);
+}
+
+/* ── Cross-track Drop Target ────────────── */
+.timelineLane.dropTarget,
+.brollTrack.dropTarget {
+  background: rgba(251, 191, 36, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.55);
+}
+
 /* ── Range Selection Overlay ────────────── */
 .rangeSelection {
   position: absolute;

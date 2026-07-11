@@ -627,3 +627,54 @@ def test_replace_video_track_keeps_overlay_clips() -> None:
     )
     assert len(overlay_track.clips) == 1
     assert overlay_track.clips[0].id == overlay_clip_id
+
+
+def test_paste_clip_preserves_properties_and_regenerates_ids() -> None:
+    state = make_timeline()
+    source = state.tracks[0].clips[0]
+    source.speed = 2.0
+    source.text_overlays = [
+        TextOverlay(id="overlay-1", text="hi", start_sec=1, duration_sec=2)
+    ]
+    payload = source.model_dump()
+    payload.pop("id")
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="paste_clip",
+            params={
+                "clip": payload,
+                "track_kind": "video",
+                "timeline_start_sec": 5.0,
+                "ripple": True,
+            },
+        ),
+    )
+    video_track = state.tracks[0]
+    assert len(video_track.clips) == 2
+    pasted = video_track.clips[1]
+    assert pasted.id != source.id
+    assert pasted.speed == 2.0
+    assert pasted.text_overlays[0].id != "overlay-1"
+    # ripple packs the track back-to-back
+    assert pasted.timeline_start_sec == 5.0
+
+
+def test_move_clip_to_track_id_destination() -> None:
+    state = make_timeline()
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="move_clip",
+            params={
+                "clip": "clip-a",
+                "track_kind": "audio",
+                "track_id": "audio-1",
+                "timeline_start_sec": 0.0,
+                "ripple": True,
+                "source_ripple": True,
+            },
+        ),
+    )
+    assert state.tracks[0].clips == []
+    assert [clip.id for clip in state.tracks[1].clips] == ["clip-a"]

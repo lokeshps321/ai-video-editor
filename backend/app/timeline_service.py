@@ -795,6 +795,26 @@ def _apply_add_clip(state: TimelineState, params: dict[str, Any]) -> None:
     track.clips.append(clip)
 
 
+def _apply_paste_clip(state: TimelineState, params: dict[str, Any]) -> None:
+    clip_data = params.get("clip")
+    if not isinstance(clip_data, dict):
+        raise ValueError("paste_clip requires a clip object")
+    clip = Clip.model_validate({**clip_data, "id": str(uuid4())})
+    for overlay in clip.text_overlays:
+        overlay.id = str(uuid4())
+    if params.get("timeline_start_sec") is not None:
+        clip.timeline_start_sec = round(float(params["timeline_start_sec"]), 3)
+    track = _track_by_ref(
+        state,
+        params.get("track_id"),
+        str(params.get("track_kind", "video")),
+    )
+    track.clips.append(clip)
+    track.clips = sorted(track.clips, key=lambda item: item.timeline_start_sec)
+    if bool(params.get("ripple", False)):
+        _ripple_track(track)
+
+
 def _apply_add_audio_track(state: TimelineState, params: dict[str, Any]) -> None:
     params = {**params, "track_kind": "audio"}
     _apply_add_clip(state, params)
@@ -1029,7 +1049,7 @@ def _apply_move_clip(state: TimelineState, params: dict[str, Any]) -> None:
     source_track, idx = _clip_index_by_ref(state, _normalize_clip_ref(params["clip"]))
     clip = source_track.clips.pop(idx)
     destination_kind = str(params.get("track_kind", source_track.kind))
-    destination_track = _primary_track(state, destination_kind)
+    destination_track = _track_by_ref(state, params.get("track_id"), destination_kind)
     clip.timeline_start_sec = round(float(params.get("timeline_start_sec", clip.timeline_start_sec)), 3)
     destination_track.clips.append(clip)
     destination_track.clips = sorted(destination_track.clips, key=lambda item: item.timeline_start_sec)
@@ -1394,6 +1414,7 @@ def apply_operation(state: TimelineState, operation: OperationPayload) -> Timeli
 
     handlers = {
         "add_clip": _apply_add_clip,
+        "paste_clip": _apply_paste_clip,
         "trim_clip": _apply_trim,
         "split_clip": _apply_split,
         "merge_clips": _apply_merge,

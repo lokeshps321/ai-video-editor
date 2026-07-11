@@ -46,6 +46,7 @@ import type {
 import Timeline, {
   type TimelineCaptionBlock,
   type TimelineCaptionSelection,
+  type TimelineDropTarget,
   type TimelineLane,
   type TimelineLaneClipSelection,
 } from "./components/Timeline";
@@ -1044,6 +1045,11 @@ function App() {
   const [featureDrawerOpen, setFeatureDrawerOpen] = useState(false);
   const [selectedTimelineClip, setSelectedTimelineClip] =
     useState<InspectorTimelineSelection | null>(null);
+  const [clipClipboard, setClipClipboard] = useState<{
+    clip: Clip;
+    laneKind: "video" | "audio";
+    laneLabel: string;
+  } | null>(null);
   const [selectedBrollClipId, setSelectedBrollClipId] = useState<string | null>(
     null,
   );
@@ -1677,18 +1683,24 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!previewJob || previewJob.status !== "completed") {
+      return;
+    }
     const pending = pendingCaptionSeekRef.current;
-    if (
-      !pending ||
-      !previewJob ||
-      previewJob.status !== "completed" ||
-      previewJob.id !== pending.jobId
-    ) {
+    if (pending && previewJob.id !== pending.jobId) {
       return;
     }
     const element = videoRef.current;
     if (!element) return;
-    const seekTarget = Math.max(0, pending.targetSec);
+    // Without a pending caption seek, still nudge the freshly mounted
+    // <video> off t=0 — a paused remounted element never decodes a frame,
+    // leaving the preview black until something forces a paint. Only do so
+    // while the element is parked at the start, so a completing render can't
+    // yank the playhead mid-viewing.
+    if (!pending && (!element.paused || element.currentTime > 0.05)) {
+      return;
+    }
+    const seekTarget = pending ? Math.max(0, pending.targetSec) : 0.001;
     const applySeek = () => {
       const duration = Number.isFinite(element.duration)
         ? element.duration
@@ -3817,25 +3829,74 @@ function App() {
   );
 
   const handleTimelineMoveLaneClip = useCallback(
-    (selection: TimelineLaneClipSelection, timelineStartSec: number) => {
+    (
+      selection: TimelineLaneClipSelection,
+      timelineStartSec: number,
+      dropTarget?: TimelineDropTarget,
+    ) => {
       if (lockedLaneIds.has(selection.laneId)) return;
+      const crossTrack = !!dropTarget && dropTarget.laneId !== selection.laneId;
+      const destinationKind = crossTrack ? dropTarget.kind : selection.laneKind;
       void applyTimelineOperations(
         [
           {
             op_type: "move_clip",
             params: {
               clip: selection.clipId,
-              track_kind: selection.laneKind,
+              track_kind: destinationKind,
+              ...(crossTrack && dropTarget.kind !== "overlay"
+                ? { track_id: dropTarget.laneId }
+                : {}),
               timeline_start_sec: Number(
                 Math.max(0, timelineStartSec).toFixed(3),
               ),
-              ripple: true,
+              // The overlay (B-roll) track keeps clips freely positioned;
+              // video/audio tracks stay packed.
+              ripple: destinationKind !== "overlay",
+              source_ripple: crossTrack,
             },
             source: "ui",
           },
         ],
-        { notice: `${selection.laneLabel} clip moved.` },
-      );
+        {
+          notice: crossTrack
+            ? `Clip moved to ${dropTarget.label}.`
+            : `${selection.laneLabel} clip moved.`,
+        },
+      ).then(() => {
+        if (crossTrack) setSelectedTimelineClip(null);
+      });
+    },
+    [applyTimelineOperations, lockedLaneIds],
+  );
+
+  const handleTimelineMoveBrollClipToLane = useCallback(
+    (
+      clipId: string,
+      timelineStartSec: number,
+      dropTarget: TimelineDropTarget,
+    ) => {
+      if (dropTarget.kind === "overlay") return;
+      if (lockedLaneIds.has(dropTarget.laneId)) return;
+      void applyTimelineOperations(
+        [
+          {
+            op_type: "move_clip",
+            params: {
+              clip: clipId,
+              track_kind: dropTarget.kind,
+              track_id: dropTarget.laneId,
+              timeline_start_sec: Number(
+                Math.max(0, timelineStartSec).toFixed(3),
+              ),
+              ripple: true,
+              source_ripple: false,
+            },
+            source: "ui",
+          },
+        ],
+        { notice: `B-roll clip moved to ${dropTarget.label}.` },
+      ).then(() => setSelectedBrollClipId(null));
     },
     [applyTimelineOperations, lockedLaneIds],
   );
@@ -4172,6 +4233,70 @@ function App() {
       setSelectedTimelineClip(null);
     });
   }, [applyTimelineOperations, selectedTimelineClip]);
+
+  const copySelectedTimelineClip = useCallback(() => {
+    if (!selectedTimelineClipDetails) return;
+    const { lane, clip } = selectedTimelineClipDetails;
+    setClipClipboard({
+      clip: JSON.parse(JSON.stringify(clip)) as Clip,
+      laneKind: lane.kind,
+      laneLabel: lane.label,
+    });
+    setNotice(`${lane.label} clip copied.`);
+  }, [selectedTimelineClipDetails]);
+
+  const pasteTimelineClip = useCallback(
+    (atSec?: number) => {
+      if (!clipClipboard) return;
+      const { id: _copiedId, ...clipPayload } = clipClipboard.clip;
+      void applyTimelineOperations(
+        [
+          {
+            op_type: "paste_clip",
+            params: {
+              clip: clipPayload,
+              track_kind: clipClipboard.laneKind,
+              timeline_start_sec: Number(
+                Math.max(0, atSec ?? currentTimeSec).toFixed(3),
+              ),
+              ripple: true,
+            },
+            source: "ui",
+          },
+        ],
+        { notice: `${clipClipboard.laneLabel} clip pasted.` },
+      );
+    },
+    [applyTimelineOperations, clipClipboard, currentTimeSec],
+  );
+
+  const duplicateSelectedTimelineClip = useCallback(() => {
+    if (!selectedTimelineClipDetails) return;
+    const { lane, clip, durationSec } = selectedTimelineClipDetails;
+    const { id: _copiedId, ...clipPayload } = clip;
+    // Land just before the next clip's start so the duplicate sorts in
+    // directly after the original before the track ripples.
+    const insertAtSec = Math.max(
+      clip.timeline_start_sec + 0.001,
+      clip.timeline_start_sec + durationSec - 0.001,
+    );
+    void applyTimelineOperations(
+      [
+        {
+          op_type: "paste_clip",
+          params: {
+            clip: clipPayload,
+            track_kind: lane.kind,
+            track_id: lane.id,
+            timeline_start_sec: Number(insertAtSec.toFixed(3)),
+            ripple: true,
+          },
+          source: "ui",
+        },
+      ],
+      { notice: `${lane.label} clip duplicated.` },
+    );
+  }, [applyTimelineOperations, selectedTimelineClipDetails]);
 
   const splitSelectedTimelineClip = useCallback(() => {
     if (!selectedTimelineClipDetails) return;
@@ -4882,6 +5007,37 @@ function App() {
       }
 
       if (
+        !isEditableTarget &&
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "c" &&
+        selectedTimelineClip &&
+        !window.getSelection()?.toString()
+      ) {
+        event.preventDefault();
+        copySelectedTimelineClip();
+      }
+
+      if (
+        !isEditableTarget &&
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "v" &&
+        clipClipboard
+      ) {
+        event.preventDefault();
+        pasteTimelineClip();
+      }
+
+      if (
+        !isEditableTarget &&
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "d" &&
+        selectedTimelineClip
+      ) {
+        event.preventDefault();
+        duplicateSelectedTimelineClip();
+      }
+
+      if (
         event.key === "z" &&
         (event.ctrlKey || event.metaKey) &&
         !event.shiftKey
@@ -4927,10 +5083,14 @@ function App() {
     cancelCaptionEdit,
     cancelEdit,
     clearEditorSelections,
+    clipClipboard,
+    copySelectedTimelineClip,
     deleteSelectedCaptionBlock,
     deleteSelectedTimelineClip,
+    duplicateSelectedTimelineClip,
     editingCaptionOverlayId,
     editingWordId,
+    pasteTimelineClip,
     redo,
     removeBrollClipById,
     selectedBrollClipId,
@@ -7872,6 +8032,7 @@ function App() {
             onToggleLaneSolo={handleTimelineToggleLaneSolo}
             onToggleLaneLock={handleTimelineToggleLaneLock}
             onMoveBrollClip={handleTimelineMoveBrollClip}
+            onMoveBrollClipToLane={handleTimelineMoveBrollClipToLane}
             onTrimBrollClip={handleTimelineTrimBrollClip}
             onSetBrollOpacity={handleTimelineSetBrollOpacity}
             onDeleteBrollClip={handleTimelineDeleteBrollClip}
@@ -7891,6 +8052,10 @@ function App() {
             captionEditInputRef={captionEditInputRef}
             onDeleteLaneClip={handleTimelineDeleteLaneClip}
             onSplitLaneClip={handleTimelineSplitLaneClip}
+            onCopyLaneClip={copySelectedTimelineClip}
+            onDuplicateLaneClip={duplicateSelectedTimelineClip}
+            onPasteLaneClip={pasteTimelineClip}
+            canPasteLaneClip={!!clipClipboard}
             brollEditBusy={!!brollTimelineActionKey}
           />
         </>
