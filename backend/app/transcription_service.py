@@ -3864,72 +3864,12 @@ def generate_transcript(
                 "Sarvam transcription failed. Check SARVAM API key and network."
             )
 
-        # Check if local fallback is requested or allowed when cloud fails
-        run_local_fallback = backend in {"local", "faster_whisper"}
-        if backend in {"groq", "auto", "sarvam"}:
-            groq_local_fallback = _env_bool(
-                "TRANSCRIBE_GROQ_LOCAL_FALLBACK", backend != "groq"
-            )
-            if fast_mode_enabled or speed_optimized:
-                groq_local_fallback = False
-            if groq_local_fallback and not _env_bool("TRANSCRIBE_GROQ_STRICT_ONLY", False):
-                run_local_fallback = True
-
-        if run_local_fallback:
-            primary_model = (os.getenv("TRANSCRIBE_MODEL", "base.en") or "base.en").strip() or "base.en"
-            retry_model = (os.getenv("TRANSCRIBE_RETRY_MODEL", "medium") or "medium").strip() or "medium"
-            retry_beam_size = _env_int("TRANSCRIBE_RETRY_BEAM_SIZE", 8, 1)
-            allow_quality_retry = _env_bool("TRANSCRIBE_ENABLE_QUALITY_RETRY", True)
-            retry_min_duration_sec = _env_float("TRANSCRIBE_RETRY_MIN_DURATION_SEC", 90.0, 0.0)
-            can_retry = allow_quality_retry and safe_duration >= retry_min_duration_sec and not speed_optimized
-            force_vad = False if transcript_mode == "song" else None
-
-            from_faster_whisper = _build_from_faster_whisper(
-                path,
-                safe_duration,
-                model_name=primary_model,
-                force_vad_filter=force_vad,
-            )
-            if from_faster_whisper is not None:
-                should_retry = (
-                    _is_low_coverage(from_faster_whisper, safe_duration)
-                    or _is_low_confidence_quality(from_faster_whisper)
-                    or _has_suspicious_long_gap(from_faster_whisper, safe_duration)
-                )
-                if can_retry and should_retry:
-                    retry_result = _build_from_faster_whisper(
-                        path,
-                        safe_duration,
-                        model_name=retry_model,
-                        beam_size=retry_beam_size,
-                        force_vad_filter=False,
-                    )
-                    preferred = _pick_better_transcript(
-                        from_faster_whisper,
-                        retry_result,
-                        safe_duration,
-                    )
-                    if preferred is not None:
-                        return preferred
-                return from_faster_whisper
-
-            if can_retry:
-                retry_result = _build_from_faster_whisper(
-                    path,
-                    safe_duration,
-                    model_name=retry_model,
-                    beam_size=retry_beam_size,
-                    force_vad_filter=False,
-                )
-                if retry_result is not None:
-                    return retry_result
-
         # Cloud-only mode: no local offline model fallback.
         # Always raise a clear error when cloud transcription fails.
         if allow_mock:
             return _build_mock_transcript(safe_duration)
         raise RuntimeError(
-            "Transcription failed (Groq/Sarvam). "
+            "Cloud transcription failed (Groq/Sarvam). "
             "Check your GROQ_API_KEY, SARVAM_API_KEY, and network connectivity. "
             "Ensure the API keys are valid and the services are reachable."
         )
