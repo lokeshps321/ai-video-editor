@@ -220,3 +220,9 @@ def health() -> dict[str, str]:
         else "false",
         "vocal_isolation_backend": vocal_backend,
     }
+
+
+# Serve React frontend static files
+frontend_dist = Path(__file__).parent.parent.parent / "frontend" / "dist"
+if frontend_dist.exists():
+    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
