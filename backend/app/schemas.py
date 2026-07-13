@@ -176,6 +176,22 @@ class OperationApplyResponse(BaseModel):
     timeline_can_redo: bool = False
 
 
+class SmartReframeRequest(BaseModel):
+    clip_ids: list[str] = Field(default_factory=list)
+
+
+class SmartReframeResponse(BaseModel):
+    project_id: str
+    reframed_clip_count: int
+    tracked_clip_count: int
+    center_crop_clip_count: int
+    skipped_clip_count: int
+    version: int
+    timeline: TimelineState
+    timeline_can_undo: bool = False
+    timeline_can_redo: bool = False
+
+
 class PromptParseRequest(BaseModel):
     prompt: str
 
@@ -449,7 +465,7 @@ class BrollAutoApplyRequest(BaseModel):
     clear_existing_overlay: bool = True
     fallback_to_top_candidate: bool = True
     min_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    overlay_opacity: float = Field(default=0.85, ge=0.0, le=1.0)
+    overlay_opacity: float = Field(default=1.0, ge=0.0, le=1.0)
 
 
 class BrollAutoApplyResponse(BaseModel):
@@ -484,7 +500,7 @@ class BrollConfigResponse(BaseModel):
 class BrollSyncRequest(BaseModel):
     transcript_id: Optional[str] = None
     clear_existing_overlay: bool = True
-    overlay_opacity: float = Field(default=0.85, ge=0.0, le=1.0)
+    overlay_opacity: float = Field(default=1.0, ge=0.0, le=1.0)
     slot_ids: list[str] = Field(default_factory=list)
 
 

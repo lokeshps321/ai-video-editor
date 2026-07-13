@@ -90,7 +90,7 @@ export const CAPTION_STYLE_PRESETS: ReadonlyArray<CaptionStylePreset> = [
       font_name: "Arial-Bold",
       font_size: 26,
       primary_color: "&H00FFFFFF",
-      highlight_color: "&H0000DDFF",
+      highlight_color: "&H00FFFFFF",
       outline_color: "&H00000000",
       outline_width: 3,
       shadow: 2,

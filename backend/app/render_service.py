@@ -1264,7 +1264,13 @@ def build_ffmpeg_command(
         )
 
     filter_parts: list[str] = []
-    main_cover_output = False
+    # Reels and Shorts must fill the vertical canvas.  Using the legacy
+    # fit-and-pad path here produces black side bars for a normal 16:9 source.
+    # The cover path preserves aspect ratio, then centre-crops the excess width
+    # (or height), matching the full-screen behaviour already used for B-roll.
+    # Landscape exports retain fit-and-pad so an intentionally vertical source
+    # is not unexpectedly cropped in a normal 16:9 edit.
+    main_cover_output = export_settings.aspect_ratio == "9:16"
     for idx, (clip, _src) in enumerate(clip_inputs):
         vf = _video_filters_for_clip(clip, out_w, out_h, fps, cover_output=main_cover_output)
         filter_parts.append(f"[{idx}:v]{vf}[v{idx}]")

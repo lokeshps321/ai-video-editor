@@ -93,7 +93,7 @@ def test_build_ffmpeg_command_uses_landscape_resolution_by_default() -> None:
     assert "pad=1280:720:(ow-iw)/2:(oh-ih)/2" in joined
 
 
-def test_build_ffmpeg_command_uses_portrait_resolution_when_requested() -> None:
+def test_build_ffmpeg_command_uses_full_screen_crop_for_portrait_reels() -> None:
     state = _timeline()
     command = build_ffmpeg_command(
         timeline=state,
@@ -106,8 +106,9 @@ def test_build_ffmpeg_command_uses_portrait_resolution_when_requested() -> None:
     )
     joined = " ".join(command)
     assert "scale=720:1280" in joined
-    assert "force_original_aspect_ratio=decrease" in joined
-    assert "pad=720:1280:(ow-iw)/2:(oh-ih)/2" in joined
+    assert "force_original_aspect_ratio=increase" in joined
+    assert "crop=720:1280:(iw-ow)/2:(ih-oh)/2" in joined
+    assert "pad=720:1280:(ow-iw)/2:(oh-ih)/2" not in joined
 
 
 def test_build_ass_subtitle_file_keeps_portrait_captions_in_lower_third() -> None:

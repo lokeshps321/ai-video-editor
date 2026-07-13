@@ -331,6 +331,18 @@ export type BrollSyncResponse = {
   slots: BrollSlot[];
 };
 
+export type SmartReframeResponse = {
+  project_id: string;
+  reframed_clip_count: number;
+  tracked_clip_count: number;
+  center_crop_clip_count: number;
+  skipped_clip_count: number;
+  version: number;
+  timeline: Timeline;
+  timeline_can_undo: boolean;
+  timeline_can_redo: boolean;
+};
+
 export type BrollUndoResponse = {
   project_id: string;
   restored_clip_count: number;

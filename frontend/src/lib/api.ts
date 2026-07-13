@@ -12,6 +12,7 @@ import type {
   OperationHistoryItem,
   Project,
   PromptParse,
+  SmartReframeResponse,
   Transcript,
   TranscriptCutResponse,
   TranscriptEditResponse,
@@ -483,6 +484,20 @@ export const api = {
           asset_id: assetId,
           options: options ?? {},
         }),
+      },
+      ACTION_TIMEOUT_MS,
+    ),
+
+  smartReframe: (
+    projectId: string,
+    clipIds?: string[],
+  ): Promise<SmartReframeResponse> =>
+    request<SmartReframeResponse>(
+      `/api/v1/timeline/smart-reframe?project_id=${encodeURIComponent(projectId)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clip_ids: clipIds ?? [] }),
       },
       ACTION_TIMEOUT_MS,
     ),

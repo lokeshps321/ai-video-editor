@@ -25,7 +25,10 @@ import {
   Wand2,
 } from "lucide-react";
 import { api } from "./lib/api";
-import { consumePendingUploadFile } from "./lib/pendingUpload";
+import {
+  consumePendingUploadFile,
+  hasPendingUploadFile,
+} from "./lib/pendingUpload";
 import type {
   BrollCandidate,
   BrollConfig,
@@ -1031,6 +1034,7 @@ function App() {
     "replace",
   );
   const [brollAutoMode, setBrollAutoMode] = useState<BrollAutoMode>("fast");
+  const [brollDefaultOpacity, setBrollDefaultOpacity] = useState(1);
   const [brollIntensity, setBrollIntensity] =
     useState<BrollIntensity>("medium");
   const [brollSuggestJob, setBrollSuggestJob] = useState<Job | null>(null);
@@ -1091,6 +1095,7 @@ function App() {
   const [previewFrameAspectRatio, setPreviewFrameAspectRatio] =
     useState<ExportAspectRatio>("16:9");
   const [showExportFrameGuide, setShowExportFrameGuide] = useState(false);
+  const [smartReframing, setSmartReframing] = useState(false);
   const [exportingVideo, setExportingVideo] = useState(false);
   const [exportJob, setExportJob] = useState<Job | null>(null);
   const [exportCompletion, setExportCompletion] =
@@ -2430,6 +2435,49 @@ function App() {
     }
   }
 
+  async function smartReframeForReel() {
+    if (!project) return;
+    setSmartReframing(true);
+    setError(null);
+    try {
+      const response = await api.smartReframe(project.id);
+      setProject((prev) =>
+        prev
+          ? {
+              ...prev,
+              timeline: response.timeline,
+              timeline_version: response.version,
+              timeline_can_undo: response.timeline_can_undo,
+              timeline_can_redo: response.timeline_can_redo,
+            }
+          : prev,
+      );
+      setTimelineCanUndo(response.timeline_can_undo);
+      setTimelineCanRedo(response.timeline_can_redo);
+      setExportAspectRatio("9:16");
+      setPreviewFrameAspectRatio("9:16");
+
+      if (response.reframed_clip_count > 0) {
+        const trackedDetail =
+          response.tracked_clip_count > 0
+            ? ` ${response.tracked_clip_count} clip${response.tracked_clip_count === 1 ? "" : "s"} follow${response.tracked_clip_count === 1 ? "s" : ""} the detected subject.`
+            : " Centre crop was used where no subject track was available.";
+        setNotice(
+          `Smart Reframe applied to ${response.reframed_clip_count} wide clip${response.reframed_clip_count === 1 ? "" : "s"} for a full-screen 9:16 Reel.${trackedDetail}`,
+        );
+        await queuePreview(true, { aspectRatio: "9:16" });
+      } else {
+        setNotice(
+          "No wide main-video clips needed reframing. Reel export will still fill the 9:16 frame.",
+        );
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSmartReframing(false);
+    }
+  }
+
   const updateDeletedWords = useCallback(
     (wordIds: string[], deleted: boolean) => {
       if (!wordIds.length) return;
@@ -2651,10 +2699,9 @@ function App() {
           await openProject(updatedProjects[0].id);
           setNotice("Project deleted. Switched to next project.");
         } else {
-          // No projects left – let the existing useEffect auto-create one
-          autoCreateAttemptedRef.current = false;
+          // No projects left – show the welcome screen; the user creates the
+          // next project explicitly.
           setNotice("Project deleted.");
-          setProjectsPanelOpen(true);
         }
       } else {
         setNotice("Project deleted.");
@@ -4647,12 +4694,30 @@ function App() {
       project ||
       creatingProject ||
       autoCreateAttemptedRef.current ||
-      backendStatus === "down"
+      backendStatus !== "ok"
     ) {
       return;
     }
     autoCreateAttemptedRef.current = true;
-    void createProject(BRAND.defaultProjectName, { silent: true });
+    void (async () => {
+      // A file dropped on the landing page needs a project to receive the
+      // upload, so creating one here is the user's explicit intent.
+      if (hasPendingUploadFile()) {
+        await createProject(BRAND.defaultProjectName, { silent: true });
+        return;
+      }
+      try {
+        const projects = await api.listProjects();
+        setRecentProjects(projects);
+        if (projects.length > 0) {
+          await openProject(projects[0].id);
+        }
+        // No projects yet: stay on the welcome screen and wait for the user
+        // to create one explicitly.
+      } catch (err) {
+        setError((err as Error).message);
+      }
+    })();
   }, [project, creatingProject, backendStatus]);
 
   // Auto-upload pending file from landing page drop zone
@@ -5236,7 +5301,7 @@ function App() {
         clear_existing_overlay: true,
         fallback_to_top_candidate: brollAutoMode === "fast",
         min_confidence: plan.minConfidence,
-        overlay_opacity: 0.85,
+        overlay_opacity: brollDefaultOpacity,
       });
       setBrollSlots(response.slots);
       setLastBrollAutoApplySkips(response.skipped_slot_summaries ?? []);
@@ -5359,7 +5424,7 @@ function App() {
       const response = await api.syncBroll(project.id, {
         transcript_id: transcript?.id,
         clear_existing_overlay: clearExistingOverlay,
-        overlay_opacity: 0.85,
+        overlay_opacity: brollDefaultOpacity,
         slot_ids: slotIds ?? [],
       });
       setProject((prev) =>
@@ -5477,7 +5542,7 @@ function App() {
           ? Math.min(maybeDuration, sourceDuration)
           : sourceDuration;
       const opacity =
-        typeof clip.broll_opacity === "number" ? clip.broll_opacity : 0.85;
+        typeof clip.broll_opacity === "number" ? clip.broll_opacity : 1;
 
       await applyBrollTimelineOperations(
         clip.id,
@@ -5700,20 +5765,42 @@ function App() {
             <p className="muted" style={{ margin: 0, marginRight: "auto" }}>
               {creatingProject
                 ? "Preparing your workspace..."
-                : "Starting studio..."}
+                : loadingProjects || openingProjectId
+                  ? "Loading your projects..."
+                  : recentProjects.length > 0
+                    ? "Open a recent project or start a new one."
+                    : "No projects yet. Create one to start editing."}
             </p>
             <button
               className="primaryBtn"
-              onClick={() => {
-                autoCreateAttemptedRef.current = false;
-                void createProject(BRAND.defaultProjectName, { silent: true });
-              }}
-              disabled={creatingProject}
+              onClick={() => void createProject(BRAND.defaultProjectName)}
+              disabled={creatingProject || !!openingProjectId}
             >
               <Wand2 size={16} />
-              {creatingProject ? "Loading..." : "Retry"}
+              {creatingProject ? "Creating..." : "New Project"}
             </button>
           </section>
+
+          {recentProjects.length > 0 && (
+            <section className="controls card">
+              <div style={{ display: "grid", gap: 8, width: "100%" }}>
+                {recentProjects.slice(0, 8).map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className="brollSyncOption"
+                    style={{ justifyContent: "flex-start", textAlign: "left" }}
+                    onClick={() => void openProject(item.id)}
+                    disabled={!!openingProjectId || creatingProject}
+                  >
+                    {openingProjectId === item.id
+                      ? `Opening ${item.name}...`
+                      : item.name}
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
 
           {error && <div className="message error">{error}</div>}
           {notice && (
@@ -7065,6 +7152,28 @@ function App() {
                               ))}
                             </div>
                           </div>
+                          {exportAspectRatio === "9:16" && (
+                            <div className="smartReframeCard">
+                              <div>
+                                <strong>Smart Reframe</strong>
+                                <p>
+                                  Keep the main subject inside a full-screen
+                                  Reel crop. Falls back to a centre crop when
+                                  no subject is detected.
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                className="smartReframeBtn"
+                                onClick={() => void smartReframeForReel()}
+                                disabled={!project || smartReframing || exportingVideo}
+                              >
+                                {smartReframing
+                                  ? "Analysing framing..."
+                                  : "Smart Reframe"}
+                              </button>
+                            </div>
+                          )}
                           <div className="exportField">
                             <label className="exportLabel">Format</label>
                             <div className="exportOptions">
@@ -7418,6 +7527,25 @@ function App() {
                             >
                               Append
                             </button>
+                          </div>
+                          <div className="brollIntensity">
+                            <span className="brollSyncLabel">
+                              B-roll opacity:
+                            </span>
+                            <select
+                              value={String(brollDefaultOpacity)}
+                              onChange={(event) =>
+                                setBrollDefaultOpacity(
+                                  Number(event.target.value),
+                                )
+                              }
+                              disabled={autoApplyingBroll || syncingBroll}
+                            >
+                              <option value="1">100% (Full frame)</option>
+                              <option value="0.85">85%</option>
+                              <option value="0.7">70%</option>
+                              <option value="0.5">50%</option>
+                            </select>
                           </div>
                           <div className="brollIntensity">
                             <span className="brollSyncLabel">

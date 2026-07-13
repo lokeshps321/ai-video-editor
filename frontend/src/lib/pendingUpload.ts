@@ -11,6 +11,10 @@ export function setPendingUploadFile(file: File) {
   pendingFile = file;
 }
 
+export function hasPendingUploadFile(): boolean {
+  return pendingFile !== null;
+}
+
 export function consumePendingUploadFile(): File | null {
   const file = pendingFile;
   pendingFile = null;
