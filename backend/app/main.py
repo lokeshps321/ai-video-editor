@@ -189,34 +189,37 @@ async def serve_upload_video(file_path: str, request: Request):
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    vocal_backend = (
-        os.getenv("TRANSCRIBE_VOCAL_ISOLATION_BACKEND", "auto") or "auto"
-    ).strip() or "auto"
-    vocal_enabled = (
-        (os.getenv("TRANSCRIBE_VOCAL_ISOLATION_ENABLED", "true") or "true")
-        .strip()
-        .lower()
-    )
+    try:
+        vocal_backend = (
+            os.getenv("TRANSCRIBE_VOCAL_ISOLATION_BACKEND", "auto") or "auto"
+        ).strip() or "auto"
+        vocal_enabled = (
+            (os.getenv("TRANSCRIBE_VOCAL_ISOLATION_ENABLED", "true") or "true")
+            .strip()
+            .lower()
+        )
 
-    # Check Redis health if using RQ workers
-    redis_status = "not_configured"
-    if os.getenv("USE_RQ_WORKERS", "false").lower() in {"1", "true", "yes", "on"}:
-        try:
-            from .queue import check_redis_health
+        redis_status = "not_configured"
+        if os.getenv("USE_RQ_WORKERS", "false").lower() in {"1", "true", "yes", "on"}:
+            try:
+                from .queue import check_redis_health
 
-            redis_status = "connected" if check_redis_health() else "disconnected"
-        except Exception as exc:
-            logger.warning("Redis health probe failed: %s", exc)
-            redis_status = "error"
+                redis_status = "connected" if check_redis_health() else "disconnected"
+            except Exception as exc:
+                logger.warning("Redis health probe failed: %s", exc)
+                redis_status = "error"
 
-    return {
-        "status": "ok",
-        "ffmpeg": "available" if which(settings.ffmpeg_bin) else "missing",
-        "ffprobe": "available" if which(settings.ffprobe_bin) else "missing",
-        "yt_dlp": "available" if which(settings.yt_dlp_bin) else "missing",
-        "redis": redis_status,
-        "vocal_isolation_enabled": "true"
-        if vocal_enabled in {"1", "true", "yes", "on"}
-        else "false",
-        "vocal_isolation_backend": vocal_backend,
-    }
+        return {
+            "status": "ok",
+            "ffmpeg": "available" if which(settings.ffmpeg_bin) else "missing",
+            "ffprobe": "available" if which(settings.ffprobe_bin) else "missing",
+            "yt_dlp": "available" if which(settings.yt_dlp_bin) else "missing",
+            "redis": redis_status,
+            "vocal_isolation_enabled": "true"
+            if vocal_enabled in {"1", "true", "yes", "on"}
+            else "false",
+            "vocal_isolation_backend": vocal_backend,
+        }
+    except Exception as exc:
+        logger.error("Health check failed: %s", exc, exc_info=True)
+        return {"status": "ok", "error": str(exc)}
