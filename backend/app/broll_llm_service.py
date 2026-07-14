@@ -420,13 +420,20 @@ def _gemini_api_key() -> str:
 
 
 def _gemini_model() -> str:
-    # Gemini 3.5 Live Translate is audio-only, so use the stable text model for
-    # B-roll planning.  Deployments can override this after validating a newer
-    # text-capable Gemini release.
+    # B-roll uses Gemini's text generation API. Keep this configurable because
+    # model access can differ between Google AI Studio projects.
     return (
-        os.getenv("BROLL_GEMINI_MODEL", "gemini-2.5-flash")
-        or "gemini-2.5-flash"
+        os.getenv("BROLL_GEMINI_MODEL", "gemini-3.5-flash")
+        or "gemini-3.5-flash"
     ).strip()
+
+
+def _gemini_timeout_sec() -> float:
+    # Gemini 3.5 Flash may use more time for structured, multilingual visual
+    # planning than the legacy Groq retrieval call.
+    return max(
+        10.0, float(os.getenv("BROLL_GEMINI_TIMEOUT_SEC", "60") or "60")
+    )
 
 
 def _broll_llm_provider() -> str:
@@ -714,7 +721,7 @@ def _gemini_chat_json(prompt: dict[str, Any]) -> dict[str, Any] | None:
         },
     }
     try:
-        with httpx.Client(timeout=httpx.Timeout(_timeout_sec())) as client:
+        with httpx.Client(timeout=httpx.Timeout(_gemini_timeout_sec())) as client:
             response = client.post(
                 (
                     "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -1619,6 +1626,11 @@ def build_broll_search_strategy(
             ]
             if part
         ).strip()
+        # Sarvam has established the meaning and Gemini has already converted
+        # that verified English text into visual search ideas. A second planner
+        # call adds latency and can subtly change the intended lyric meaning.
+        if _normalize_short_text(visual_gloss.get("translation_provider")):
+            return fallback
     if not _llm_enabled():
         return fallback
     prompt = {

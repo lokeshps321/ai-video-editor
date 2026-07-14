@@ -69,7 +69,7 @@ def test_broll_chat_prefers_gemini_with_existing_provider_fallback(
 
     assert _chat_json({"goal": "test"}) == {
         "ok": True,
-        "__broll_planner_provider": "gemini-2.5-flash",
+        "__broll_planner_provider": "gemini-3.5-flash",
     }
 
 
@@ -314,23 +314,10 @@ def test_indic_broll_uses_sarvam_translation_before_gemini_visual_planning(
                     "rain on glass at night",
                 ],
                 "rationale": "Used the verified English translation for the scene.",
-                "__broll_planner_provider": "gemini-2.5-flash",
+                "__broll_planner_provider": "gemini-3.5-flash",
             }
         if goal == "Convert one noisy transcript beat into strong stock-video retrieval queries.":
-            assert prompt["beat_text"] == (
-                "someone waits by a rainy window for their loved one"
-            )
-            return {
-                "search_concept": "rainy longing by window",
-                "visual_intent": "abstract_support",
-                "stockability": "high",
-                "blocked_terms": [],
-                "queries": [
-                    {"query": "person waiting by rainy window", "mode": "literal"},
-                    {"query": "rain on glass at night", "mode": "abstract"},
-                ],
-                "rationale": "Built stock queries from the approved English meaning.",
-            }
+            raise AssertionError("translated Indic B-roll should not call Gemini twice")
         raise AssertionError(f"Unexpected goal: {goal}")
 
     monkeypatch.setattr("app.broll_llm_service._chat_json", _fake_chat)
@@ -353,7 +340,7 @@ def test_indic_broll_uses_sarvam_translation_before_gemini_visual_planning(
         "someone waits by a rainy window for their loved one"
     )
     assert strategy["translation_provider"] == "sarvam-translate:v1"
-    assert strategy["planner_provider"] == "gemini-2.5-flash"
+    assert strategy["planner_provider"] == "gemini-3.5-flash"
     assert [item["query"] for item in strategy["queries"]] == [
         "person waiting by rainy window",
         "rain on glass at night",
