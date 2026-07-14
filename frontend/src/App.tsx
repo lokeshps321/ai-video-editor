@@ -2011,10 +2011,9 @@ function App() {
           next[slot.id] = prev[slot.id];
           continue;
         }
-        const gloss = readReasonText(
-          slot.candidates[0]?.reason,
-          "english_gloss",
-        );
+        const gloss =
+          slot.meaning?.english_gloss ??
+          readReasonText(slot.candidates[0]?.reason, "english_gloss");
         next[slot.id] = gloss ?? "";
         changed = true;
       }
@@ -7617,14 +7616,22 @@ function App() {
                                 transcript?.words ?? [],
                                 showRomanizedTranscript,
                               );
-                              const englishGloss = readReasonText(
-                                primaryReason,
-                                "english_gloss",
-                              );
-                              const searchQueries = readReasonStringList(
-                                primaryReason,
-                                "search_queries",
-                              );
+                              const englishGloss =
+                                slot.meaning?.english_gloss ??
+                                readReasonText(primaryReason, "english_gloss");
+                              const searchConcept =
+                                slot.meaning?.search_concept ??
+                                readReasonText(primaryReason, "search_concept") ??
+                                slot.concept_text;
+                              const searchQueries =
+                                slot.meaning?.search_queries?.length
+                                  ? slot.meaning.search_queries
+                                  : readReasonStringList(
+                                      primaryReason,
+                                      "search_queries",
+                                    );
+                              const languageMix =
+                                slot.meaning?.source_languages ?? [];
                               const meaningDraft =
                                 brollMeaningDrafts[slot.id] ?? "";
                               const hasMeaningDraft = !!meaningDraft.trim();
@@ -7709,8 +7716,17 @@ function App() {
                                     <span className="brollContextLabel">
                                       Search
                                     </span>
-                                    {slot.concept_text || "general scene"}
+                                    {searchConcept || "general scene"}
                                   </p>
+                                  {slot.meaning?.code_switched &&
+                                    languageMix.length > 1 && (
+                                      <p className="brollLanguageMix muted">
+                                        <span className="brollContextLabel">
+                                          Language mix
+                                        </span>
+                                        {languageMix.join(" + ")}
+                                      </p>
+                                    )}
                                   {!!searchQueries.length && (
                                     <p className="brollQueryText muted">
                                       <span className="brollContextLabel">
@@ -7761,7 +7777,7 @@ function App() {
                                       }
                                     />
                                     <span className="brollMeaningPersistHint">
-                                      Saved in this review session and used on
+                                      Saved with this B-roll slot when you
                                       re-roll.
                                     </span>
                                   </label>

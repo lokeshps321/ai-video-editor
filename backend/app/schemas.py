@@ -384,6 +384,17 @@ class BrollCandidateResponse(BaseModel):
     created_at: str
 
 
+class BrollMeaningResponse(BaseModel):
+    source_text: str = ""
+    source_languages: list[str] = Field(default_factory=list)
+    code_switched: bool = False
+    english_gloss: Optional[str] = None
+    search_concept: Optional[str] = None
+    search_queries: list[str] = Field(default_factory=list)
+    rationale: Optional[str] = None
+    gloss_override_used: Optional[str] = None
+
+
 class BrollSlotResponse(BaseModel):
     id: str
     project_id: str
@@ -398,6 +409,7 @@ class BrollSlotResponse(BaseModel):
     visual_intent: Optional[str] = None
     review_summary: Optional[str] = None
     weak_reason_codes: list[str] = Field(default_factory=list)
+    meaning: BrollMeaningResponse = Field(default_factory=BrollMeaningResponse)
     chosen_candidate_id: Optional[str]
     created_at: str
     updated_at: str

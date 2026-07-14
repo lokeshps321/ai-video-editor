@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import threading
+import unicodedata
 from bisect import bisect_left
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -59,6 +60,7 @@ from ..schemas import (
     BrollChooseRequest,
     BrollConfigResponse,
     BrollCoverageSectionResponse,
+    BrollMeaningResponse,
     BrollPlanBeatResponse,
     BrollPlanRequest,
     BrollPlanResponse,
@@ -1317,6 +1319,144 @@ def _strategy_debug_fields(
     }
 
 
+def _source_language_context(
+    source_text: str, language_hint: str | None
+) -> tuple[list[str], bool]:
+    """Return conservative language evidence for one B-roll source segment.
+
+    This is intentionally script-based, not a claim of acoustic word-level
+    language identification.  A Romanized Indic transcript therefore remains
+    labelled with the transcript language instead of being incorrectly marked
+    as English.  English is added only when Latin and a non-Latin script occur
+    in the same source segment.
+    """
+    normalized_hint = str(language_hint or "").strip().lower()
+    primary_languages = [
+        item
+        for item in re.split(r"[,+/\\s]+", normalized_hint)
+        if item and item not in {"auto", "detect", "default"}
+    ]
+    has_latin = False
+    has_non_latin = False
+    for char in source_text:
+        if not char.isalpha():
+            continue
+        if "LATIN" in unicodedata.name(char, ""):
+            has_latin = True
+        else:
+            has_non_latin = True
+
+    languages: list[str] = []
+    if has_non_latin:
+        languages.extend(language for language in primary_languages if language != "en")
+        if not languages and any(
+            "ARABIC" in unicodedata.name(char, "") for char in source_text
+        ):
+            languages.append("ur")
+    elif primary_languages:
+        languages.extend(primary_languages)
+
+    if has_latin and (has_non_latin or not languages):
+        languages.append("en")
+    deduped = list(dict.fromkeys(languages))
+    return deduped, len(deduped) > 1
+
+
+def _build_slot_meaning(
+    *,
+    source_text: str,
+    language_hint: str | None,
+    search_strategy: dict[str, object],
+) -> dict[str, object]:
+    raw_strategy = search_strategy.get("raw_strategy")
+    raw = dict(raw_strategy) if isinstance(raw_strategy, dict) else {}
+    source_languages, code_switched = _source_language_context(
+        source_text, language_hint
+    )
+    english_gloss = str(raw.get("english_gloss") or "").strip()
+    search_concept = str(search_strategy.get("search_concept") or "").strip()
+    rationale = str(search_strategy.get("rationale") or "").strip()
+    override = str(raw.get("gloss_override_used") or "").strip()
+    return {
+        "source_text": " ".join(source_text.split()),
+        "source_languages": source_languages,
+        "code_switched": code_switched,
+        "english_gloss": english_gloss or None,
+        "search_concept": search_concept or None,
+        "search_queries": _query_packet_labels(search_strategy),
+        "rationale": rationale or None,
+        "gloss_override_used": override or None,
+    }
+
+
+def _parse_slot_meaning(
+    row: BrollSlot, ordered_candidates: list[BrollCandidate]
+) -> BrollMeaningResponse:
+    try:
+        stored = json.loads(row.meaning_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        stored = {}
+    if not isinstance(stored, dict):
+        stored = {}
+
+    top_reason = _parse_reason_json(ordered_candidates[0]) if ordered_candidates else {}
+    source_text = str(
+        stored.get("source_text")
+        or top_reason.get("original_chunk_text")
+        or row.concept_text
+        or ""
+    ).strip()
+    source_languages_raw = stored.get("source_languages")
+    source_languages = (
+        [str(item).strip() for item in source_languages_raw if str(item).strip()]
+        if isinstance(source_languages_raw, list)
+        else _source_language_context(source_text, None)[0]
+    )
+    search_queries_raw = stored.get("search_queries")
+    search_queries = (
+        [str(item).strip() for item in search_queries_raw if str(item).strip()]
+        if isinstance(search_queries_raw, list)
+        else [
+            str(item).strip()
+            for item in top_reason.get("search_queries", [])
+            if str(item).strip()
+        ]
+        if isinstance(top_reason.get("search_queries"), list)
+        else []
+    )
+    return BrollMeaningResponse(
+        source_text=source_text,
+        source_languages=list(dict.fromkeys(source_languages)),
+        code_switched=bool(stored.get("code_switched"))
+        or len(set(source_languages)) > 1,
+        english_gloss=(
+            str(stored.get("english_gloss") or top_reason.get("english_gloss") or "").strip()
+            or None
+        ),
+        search_concept=(
+            str(stored.get("search_concept") or top_reason.get("search_concept") or row.concept_text or "").strip()
+            or None
+        ),
+        search_queries=list(dict.fromkeys(search_queries))[:8],
+        rationale=(
+            str(
+                stored.get("rationale")
+                or top_reason.get("search_strategy_rationale")
+                or ""
+            ).strip()
+            or None
+        ),
+        gloss_override_used=(
+            str(
+                stored.get("gloss_override_used")
+                or top_reason.get("gloss_override_used")
+                or ""
+            ).strip()
+            or None
+        ),
+    )
+
+
 def _to_candidate_response(row: BrollCandidate) -> BrollCandidateResponse:
     reason = _parse_reason_json(row)
     return BrollCandidateResponse(
@@ -1359,6 +1499,7 @@ def _to_slot_response(
         visual_intent=visual_intent,
         review_summary=review_summary,
         weak_reason_codes=weak_reason_codes,
+        meaning=_parse_slot_meaning(row, ordered_candidates),
         chosen_candidate_id=row.chosen_candidate_id,
         created_at=row.created_at.isoformat(),
         updated_at=row.updated_at.isoformat(),
@@ -1683,6 +1824,13 @@ def _suggest_broll_for_selection(
         end_sec=end_sec,
         anchor_word_ids_json=_json_dumps(word_ids),
         concept_text=concept_text,
+        meaning_json=_json_dumps(
+            _build_slot_meaning(
+                source_text=chunk_text,
+                language_hint=transcript.language,
+                search_strategy=search_strategy,
+            )
+        ),
         locked=False,
         status="pending",
         updated_at=now,
@@ -2052,7 +2200,14 @@ def suggest_broll(
             start_sec=round(float(beat.start_sec), 3),
             end_sec=round(float(beat.end_sec), 3),
             anchor_word_ids_json=_json_dumps(beat.anchor_word_ids),
-            concept_text=concept_text,
+            concept_text=original_concept_text,
+            meaning_json=_json_dumps(
+                _build_slot_meaning(
+                    source_text=chunk_text,
+                    language_hint=transcript.language,
+                    search_strategy=search_strategy,
+                )
+            ),
             locked=False,
             status="pending",
             updated_at=now,
@@ -3276,7 +3431,13 @@ def reroll_broll_slot(
         session.add(row)
         added_candidate_ids.append(row.id)
 
-    slot.concept_text = search_concept_text
+    slot.meaning_json = _json_dumps(
+        _build_slot_meaning(
+            source_text=chunk_text,
+            language_hint=transcript.language if transcript is not None else None,
+            search_strategy=search_strategy,
+        )
+    )
     slot.updated_at = _utcnow()
     session.add(slot)
     session.add(

@@ -267,6 +267,17 @@ export type BrollCandidate = {
   created_at: string;
 };
 
+export type BrollMeaning = {
+  source_text: string;
+  source_languages: string[];
+  code_switched: boolean;
+  english_gloss: string | null;
+  search_concept: string | null;
+  search_queries: string[];
+  rationale: string | null;
+  gloss_override_used: string | null;
+};
+
 export type BrollSlot = {
   id: string;
   project_id: string;
@@ -281,6 +292,7 @@ export type BrollSlot = {
   visual_intent: string | null;
   review_summary: string | null;
   weak_reason_codes: string[];
+  meaning: BrollMeaning;
   chosen_candidate_id: string | null;
   created_at: string;
   updated_at: string;

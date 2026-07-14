@@ -72,6 +72,10 @@ class BrollSlot(SQLModel, table=True):
     end_sec: float = 0.0
     anchor_word_ids_json: str = "[]"
     concept_text: str = ""
+    # The source-language meaning and its English retrieval representation are
+    # stored separately from concept_text.  This keeps a user-visible audit
+    # trail when a mixed-language transcript needs an English stock query.
+    meaning_json: str = "{}"
     locked: bool = False
     status: str = "pending"
     chosen_candidate_id: Optional[str] = Field(default=None, index=True)

@@ -40,6 +40,7 @@ def _set_sqlite_pragmas(dbapi_connection: object, _connection_record: object) ->
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)
     _migrate_add_owner_id()
+    _migrate_add_broll_slot_meaning_json()
 
 
 def _migrate_add_owner_id() -> None:
@@ -53,6 +54,27 @@ def _migrate_add_owner_id() -> None:
             conn.execute(text("ALTER TABLE project ADD COLUMN owner_id TEXT"))
             conn.commit()
             logger.info("Migration: added owner_id column to project table")
+
+
+def _migrate_add_broll_slot_meaning_json() -> None:
+    """Persist multilingual B-roll reasoning for databases created before this field."""
+    from sqlalchemy import inspect, text
+
+    from .models import BrollSlot
+
+    table_name = BrollSlot.__table__.name
+    with engine.connect() as conn:
+        inspector = inspect(engine)
+        columns = [col["name"] for col in inspector.get_columns(table_name)]
+        if "meaning_json" not in columns:
+            conn.execute(
+                text(
+                    f"ALTER TABLE {table_name} "
+                    "ADD COLUMN meaning_json TEXT DEFAULT '{}' NOT NULL"
+                )
+            )
+            conn.commit()
+            logger.info("Migration: added meaning_json column to %s", table_name)
 
 
 def get_session() -> Generator[Session, None, None]:
