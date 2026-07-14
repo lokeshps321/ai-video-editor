@@ -393,6 +393,8 @@ class BrollMeaningResponse(BaseModel):
     search_queries: list[str] = Field(default_factory=list)
     rationale: Optional[str] = None
     gloss_override_used: Optional[str] = None
+    translation_provider: Optional[str] = None
+    planner_provider: Optional[str] = None
 
 
 class BrollSlotResponse(BaseModel):

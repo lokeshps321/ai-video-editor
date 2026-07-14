@@ -276,6 +276,8 @@ export type BrollMeaning = {
   search_queries: string[];
   rationale: string | null;
   gloss_override_used: string | null;
+  translation_provider: string | null;
+  planner_provider: string | null;
 };
 
 export type BrollSlot = {

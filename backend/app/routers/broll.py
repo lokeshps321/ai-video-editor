@@ -1377,6 +1377,8 @@ def _build_slot_meaning(
     search_concept = str(search_strategy.get("search_concept") or "").strip()
     rationale = str(search_strategy.get("rationale") or "").strip()
     override = str(raw.get("gloss_override_used") or "").strip()
+    translation_provider = str(raw.get("translation_provider") or "").strip()
+    planner_provider = str(raw.get("planner_provider") or "").strip()
     return {
         "source_text": " ".join(source_text.split()),
         "source_languages": source_languages,
@@ -1386,6 +1388,8 @@ def _build_slot_meaning(
         "search_queries": _query_packet_labels(search_strategy),
         "rationale": rationale or None,
         "gloss_override_used": override or None,
+        "translation_provider": translation_provider or None,
+        "planner_provider": planner_provider or None,
     }
 
 
@@ -1454,6 +1458,10 @@ def _parse_slot_meaning(
             ).strip()
             or None
         ),
+        translation_provider=(
+            str(stored.get("translation_provider") or "").strip() or None
+        ),
+        planner_provider=(str(stored.get("planner_provider") or "").strip() or None),
     )
 
 

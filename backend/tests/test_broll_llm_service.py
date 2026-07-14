@@ -8,6 +8,70 @@ from app.broll_llm_service import (
     infer_broll_domain_context,
 )
 
+# app.config deliberately loads backend/.env during import. Restore the unit-test
+# defaults after importing the service so ordinary strategy tests never call a
+# real provider; individual tests explicitly monkeypatch the integration seam.
+os.environ["BROLL_LLM_ENABLED"] = "false"
+os.environ["BROLL_SARVAM_TRANSLATE_ENABLED"] = "false"
+
+
+@pytest.mark.parametrize(
+    ("language_hint", "sarvam_code"),
+    [
+        ("as", "as-IN"),
+        ("bn", "bn-IN"),
+        ("brx", "brx-IN"),
+        ("doi", "doi-IN"),
+        ("gu", "gu-IN"),
+        ("hi", "hi-IN"),
+        ("kn", "kn-IN"),
+        ("ks", "ks-IN"),
+        ("kok", "kok-IN"),
+        ("mai", "mai-IN"),
+        ("ml", "ml-IN"),
+        ("mni", "mni-IN"),
+        ("mr", "mr-IN"),
+        ("ne", "ne-IN"),
+        ("od", "od-IN"),
+        ("pa", "pa-IN"),
+        ("sa", "sa-IN"),
+        ("sat", "sat-IN"),
+        ("sd", "sd-IN"),
+        ("ta", "ta-IN"),
+        ("te", "te-IN"),
+        ("ur", "ur-IN"),
+    ],
+)
+def test_sarvam_broll_translation_supports_all_indic_languages(
+    language_hint: str, sarvam_code: str
+) -> None:
+    from app.broll_llm_service import _sarvam_source_language_code
+
+    assert _sarvam_source_language_code(language_hint) == sarvam_code
+
+
+def test_broll_chat_prefers_gemini_with_existing_provider_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.broll_llm_service._llm_enabled", lambda: True)
+    monkeypatch.setattr(
+        "app.broll_llm_service._broll_llm_provider", lambda: "gemini"
+    )
+    monkeypatch.setattr(
+        "app.broll_llm_service._gemini_chat_json", lambda _prompt: {"ok": True}
+    )
+    monkeypatch.setattr(
+        "app.broll_llm_service._openai_chat_json",
+        lambda _prompt: (_ for _ in ()).throw(AssertionError("should not fall back")),
+    )
+
+    from app.broll_llm_service import _chat_json
+
+    assert _chat_json({"goal": "test"}) == {
+        "ok": True,
+        "__broll_planner_provider": "gemini-2.5-flash",
+    }
+
 
 def test_infer_broll_domain_context_prefers_motorsport() -> None:
     context = infer_broll_domain_context(
@@ -212,6 +276,88 @@ def test_build_broll_search_strategy_uses_translated_visual_gloss_before_query_b
         == "woman waiting by the window in the rain thinking about her lover"
     )
     assert all(str(item["query"]).isascii() for item in strategy["queries"])
+
+
+def test_indic_broll_uses_sarvam_translation_before_gemini_visual_planning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.broll_llm_service._llm_enabled", lambda: True)
+    monkeypatch.setattr(
+        "app.broll_llm_service._translate_indic_text_to_english",
+        lambda **_kwargs: {
+            "english_text": "I wait for you by the window in the rain.",
+            "provider": "sarvam-translate:v1",
+            "source_language_code": "kn-IN",
+        },
+    )
+    monkeypatch.setattr(
+        "app.broll_llm_service._broll_llm_provider", lambda: "gemini"
+    )
+    monkeypatch.setattr("app.broll_llm_service._gemini_api_key", lambda: "test-key")
+
+    def _fake_chat(prompt: dict[str, object]) -> dict[str, object]:
+        goal = str(prompt.get("goal") or "")
+        if goal == (
+            "Turn a verified English Indic-language translation into B-roll meaning "
+            "and stock-video search ideas."
+        ):
+            assert prompt["source_language"] == "kn-IN"
+            assert (
+                prompt["verified_english_translation"]
+                == "I wait for you by the window in the rain."
+            )
+            return {
+                "english_gloss": "someone waits by a rainy window for their loved one",
+                "english_search_concept": "rainy longing by window",
+                "english_query_hints": [
+                    "person waiting by rainy window",
+                    "rain on glass at night",
+                ],
+                "rationale": "Used the verified English translation for the scene.",
+                "__broll_planner_provider": "gemini-2.5-flash",
+            }
+        if goal == "Convert one noisy transcript beat into strong stock-video retrieval queries.":
+            assert prompt["beat_text"] == (
+                "someone waits by a rainy window for their loved one"
+            )
+            return {
+                "search_concept": "rainy longing by window",
+                "visual_intent": "abstract_support",
+                "stockability": "high",
+                "blocked_terms": [],
+                "queries": [
+                    {"query": "person waiting by rainy window", "mode": "literal"},
+                    {"query": "rain on glass at night", "mode": "abstract"},
+                ],
+                "rationale": "Built stock queries from the approved English meaning.",
+            }
+        raise AssertionError(f"Unexpected goal: {goal}")
+
+    monkeypatch.setattr("app.broll_llm_service._chat_json", _fake_chat)
+
+    strategy = build_broll_search_strategy(
+        chunk_text="ನಿನ್ನ ಕಾದು ಕಿಟಕಿಯ ಬಳಿ ಮಳೆಯಲ್ಲಿ ನಿಂತಿರುವೆ",
+        concept_text="ನಿನ್ನ ಕಾದು",
+        visual_intent="abstract_support",
+        query_hints=["ನಿನ್ನ ಕಾದು", "ಕಿಟಕಿಯ ಬಳಿ", "ಮಳೆ"],
+        max_queries=6,
+        domain_context={
+            "domain": "music",
+            "summary": "music and performance video with studio sessions and emotion",
+            "anchors": ["music", "stage"],
+        },
+        language_hint="kn",
+    )
+
+    assert strategy["english_gloss"] == (
+        "someone waits by a rainy window for their loved one"
+    )
+    assert strategy["translation_provider"] == "sarvam-translate:v1"
+    assert strategy["planner_provider"] == "gemini-2.5-flash"
+    assert [item["query"] for item in strategy["queries"]] == [
+        "person waiting by rainy window",
+        "rain on glass at night",
+    ]
 
 
 def test_build_broll_search_strategy_prefers_manual_english_gloss_override(

@@ -7727,6 +7727,24 @@ function App() {
                                         {languageMix.join(" + ")}
                                       </p>
                                     )}
+                                  {!!(slot.meaning?.translation_provider ||
+                                    slot.meaning?.planner_provider) && (
+                                    <p className="brollLanguageMix muted">
+                                      <span className="brollContextLabel">
+                                        AI pipeline
+                                      </span>
+                                      {[
+                                        slot.meaning?.translation_provider
+                                          ? `Meaning: ${slot.meaning.translation_provider}`
+                                          : "",
+                                        slot.meaning?.planner_provider
+                                          ? `B-roll: ${slot.meaning.planner_provider}`
+                                          : "",
+                                      ]
+                                        .filter(Boolean)
+                                        .join(" · ")}
+                                    </p>
+                                  )}
                                   {!!searchQueries.length && (
                                     <p className="brollQueryText muted">
                                       <span className="brollContextLabel">
