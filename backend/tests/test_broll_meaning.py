@@ -17,6 +17,9 @@ def test_broll_meaning_persists_code_switched_source_and_english_retrieval() -> 
         "raw_strategy": {
             "english_gloss": "I started a startup and planned the first launch.",
             "gloss_override_used": "startup founder planning a launch",
+            "normalized_source_text": "ನಾನು ಸ್ಟಾರ್ಟಪ್ ಆರಂಭಿಸಿದೆ",
+            "meaning_review_required": True,
+            "meaning_warning": "Romanized lyric spelling is ambiguous.",
         },
     }
 
@@ -43,3 +46,6 @@ def test_broll_meaning_persists_code_switched_source_and_english_retrieval() -> 
         "business team whiteboard",
     ]
     assert response.gloss_override_used == "startup founder planning a launch"
+    assert response.normalized_source_text == "ನಾನು ಸ್ಟಾರ್ಟಪ್ ಆರಂಭಿಸಿದೆ"
+    assert response.meaning_review_required is True
+    assert response.meaning_warning == "Romanized lyric spelling is ambiguous."

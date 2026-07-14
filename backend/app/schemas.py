@@ -395,6 +395,9 @@ class BrollMeaningResponse(BaseModel):
     gloss_override_used: Optional[str] = None
     translation_provider: Optional[str] = None
     planner_provider: Optional[str] = None
+    normalized_source_text: Optional[str] = None
+    meaning_review_required: bool = False
+    meaning_warning: Optional[str] = None
 
 
 class BrollSlotResponse(BaseModel):

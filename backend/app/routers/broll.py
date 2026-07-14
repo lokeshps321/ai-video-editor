@@ -1153,6 +1153,21 @@ def _weak_reason_codes_from_reason(reason: dict[str, object]) -> list[str]:
     return [str(item).strip() for item in raw if str(item).strip()][:6]
 
 
+def _slot_meaning_metadata(row: BrollSlot) -> dict[str, object]:
+    try:
+        parsed = json.loads(row.meaning_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _slot_meaning_requires_review(row: BrollSlot) -> tuple[bool, str]:
+    metadata = _slot_meaning_metadata(row)
+    required = bool(metadata.get("meaning_review_required"))
+    warning = str(metadata.get("meaning_warning") or "").strip()
+    return required, warning
+
+
 def _visual_intent_from_reason(reason: dict[str, object]) -> str | None:
     raw = str(reason.get("visual_intent") or "").strip()
     return raw or None
@@ -1174,6 +1189,16 @@ def _review_status_for_slot(
     )
     weak_reason_codes = _weak_reason_codes_from_reason(top_reason)
     visual_intent = _visual_intent_from_reason(top_reason)
+    meaning_review_required, meaning_warning = _slot_meaning_requires_review(row)
+    if meaning_review_required:
+        review_codes = list(dict.fromkeys(["meaning_uncertain", *weak_reason_codes]))
+        return (
+            "needs_review",
+            review_codes,
+            visual_intent,
+            meaning_warning
+            or "Review required: Romanized lyric meaning is uncertain.",
+        )
     if (
         confidence >= settings.broll_confidence_autopick_threshold
         and not weak_reason_codes
@@ -1379,6 +1404,9 @@ def _build_slot_meaning(
     override = str(raw.get("gloss_override_used") or "").strip()
     translation_provider = str(raw.get("translation_provider") or "").strip()
     planner_provider = str(raw.get("planner_provider") or "").strip()
+    normalized_source_text = str(raw.get("normalized_source_text") or "").strip()
+    meaning_review_required = bool(raw.get("meaning_review_required"))
+    meaning_warning = str(raw.get("meaning_warning") or "").strip()
     return {
         "source_text": " ".join(source_text.split()),
         "source_languages": source_languages,
@@ -1390,6 +1418,9 @@ def _build_slot_meaning(
         "gloss_override_used": override or None,
         "translation_provider": translation_provider or None,
         "planner_provider": planner_provider or None,
+        "normalized_source_text": normalized_source_text or None,
+        "meaning_review_required": meaning_review_required,
+        "meaning_warning": meaning_warning or None,
     }
 
 
@@ -1462,6 +1493,11 @@ def _parse_slot_meaning(
             str(stored.get("translation_provider") or "").strip() or None
         ),
         planner_provider=(str(stored.get("planner_provider") or "").strip() or None),
+        normalized_source_text=(
+            str(stored.get("normalized_source_text") or "").strip() or None
+        ),
+        meaning_review_required=bool(stored.get("meaning_review_required")),
+        meaning_warning=(str(stored.get("meaning_warning") or "").strip() or None),
     )
 
 
@@ -2459,6 +2495,38 @@ def auto_apply_broll(
     for slot in slots:
         ordered = by_slot.get(slot.id, [])
         selected_candidate: BrollCandidate | None = None
+        meaning_review_required, meaning_warning = _slot_meaning_requires_review(slot)
+        if meaning_review_required:
+            slot.status = "needs_review"
+            slot.chosen_candidate_id = None
+            slot.updated_at = _utcnow()
+            session.add(slot)
+            session.add(
+                BrollChoice(
+                    project_id=project_id,
+                    slot_id=slot.id,
+                    candidate_id=None,
+                    action="auto_skip",
+                    payload_json=_json_dumps(
+                        {
+                            "reason": "meaning_uncertain",
+                            "detail": meaning_warning,
+                        }
+                    ),
+                )
+            )
+            skipped_slot_summaries.append(
+                BrollAutoApplySkipSummary(
+                    slot_id=slot.id,
+                    concept_text=slot.concept_text or "",
+                    reason="meaning_uncertain",
+                    detail=meaning_warning
+                    or "Romanized lyric meaning needs user review before auto-applying B-roll.",
+                )
+            )
+            skipped_slots += 1
+            session.commit()
+            continue
         if not ordered:
             slot.status = "needs_review"
             slot.chosen_candidate_id = None

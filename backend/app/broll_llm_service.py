@@ -281,6 +281,31 @@ _SARVAM_TRANSLATE_LANGUAGE_CODES: dict[str, str] = {
     "urdu": "ur-IN",
 }
 
+_INDIC_LANGUAGE_DISPLAY_NAMES: dict[str, str] = {
+    "as-IN": "Assamese",
+    "bn-IN": "Bengali",
+    "brx-IN": "Bodo",
+    "doi-IN": "Dogri",
+    "gu-IN": "Gujarati",
+    "hi-IN": "Hindi",
+    "kn-IN": "Kannada",
+    "ks-IN": "Kashmiri",
+    "kok-IN": "Konkani",
+    "mai-IN": "Maithili",
+    "ml-IN": "Malayalam",
+    "mni-IN": "Manipuri",
+    "mr-IN": "Marathi",
+    "ne-IN": "Nepali",
+    "od-IN": "Odia",
+    "pa-IN": "Punjabi",
+    "sa-IN": "Sanskrit",
+    "sat-IN": "Santali",
+    "sd-IN": "Sindhi",
+    "ta-IN": "Tamil",
+    "te-IN": "Telugu",
+    "ur-IN": "Urdu",
+}
+
 
 def _env_enabled(name: str, default: bool) -> bool:
     raw = os.getenv(name)
@@ -320,6 +345,102 @@ def _sarvam_translate_enabled(language_hint: str | None) -> bool:
         and _sarvam_translate_api_key()
         and _sarvam_source_language_code(language_hint)
     )
+
+
+def _has_latin_letters(text: str) -> bool:
+    return any(
+        char.isalpha() and "LATIN" in unicodedata.name(char, "") for char in text
+    )
+
+
+def _is_romanized_indic_source(text: str, language_hint: str | None) -> bool:
+    """Detect an Indic transcript written only in Latin/Roman letters.
+
+    This matters because a translation provider should not be told that
+    ``avaLu hoda...`` is native Kannada script. Romanized song lyrics are
+    ambiguous and require a literal language-analysis pass first.
+    """
+    return bool(
+        _sarvam_source_language_code(language_hint)
+        and _has_latin_letters(text)
+        and not _contains_non_latin_letters(text)
+    )
+
+
+def _analyze_romanized_indic_lyric(
+    *, text: str, language_hint: str | None, max_queries: int
+) -> dict[str, Any] | None:
+    """Use Gemini for literal analysis of Romanized Indic text, not poetry."""
+    source_language_code = _sarvam_source_language_code(language_hint)
+    cleaned_text = _normalize_short_text(text)
+    if not source_language_code or not cleaned_text or not _gemini_api_key():
+        return None
+    language_name = _INDIC_LANGUAGE_DISPLAY_NAMES.get(
+        source_language_code, source_language_code
+    )
+    prompt = {
+        "goal": "Analyze a Romanized Indic lyric literally before choosing B-roll.",
+        "language": language_name,
+        "source_language_code": source_language_code,
+        "romanized_lyric": cleaned_text[:700],
+        "rules": [
+            "The text is written in Latin letters but is not English. First normalize it to native script.",
+            "Give a literal, grammatical English meaning. Preserve questions, speakers, and actions.",
+            "Never invent grief, romance, loneliness, landscapes, or story details not present in the words.",
+            "Do not identify or rely on a song title, singer, film, or outside lyric context.",
+            "If spelling or grammar is ambiguous, set meaning_review_required to true and state exactly why.",
+            "Create only a concrete B-roll concept supported by the literal meaning; do not add poetic emotion.",
+            "All English output must be concise and in English only.",
+        ],
+        "output_schema": {
+            "normalized_native_script": "string",
+            "english_gloss": "string",
+            "english_search_concept": "string",
+            "english_query_hints": ["string"],
+            "meaning_review_required": "boolean",
+            "meaning_warning": "string",
+            "rationale": "string",
+        },
+    }
+    parsed = _gemini_chat_json(prompt)
+    if not parsed:
+        return None
+    english_gloss = _normalize_short_text(parsed.get("english_gloss"))
+    if not _looks_like_valid_english_search_text(english_gloss):
+        return None
+    search_concept = _normalize_short_text(parsed.get("english_search_concept"))
+    if not _looks_like_valid_english_search_text(search_concept):
+        search_concept = english_gloss
+    query_hints = _dedupe_strings(
+        [str(item) for item in parsed.get("english_query_hints", [])]
+        if isinstance(parsed.get("english_query_hints"), list)
+        else [],
+        limit=max_queries,
+    )
+    valid_hints = [
+        hint for hint in query_hints if _looks_like_valid_english_search_text(hint)
+    ]
+    if not valid_hints:
+        valid_hints = [search_concept, f"{search_concept} cinematic"]
+    review_required = bool(parsed.get("meaning_review_required"))
+    warning = _normalize_short_text(parsed.get("meaning_warning"))
+    if review_required and not warning:
+        warning = "Romanized lyric spelling is ambiguous; confirm the literal meaning before auto-applying B-roll."
+    return {
+        "english_gloss": english_gloss,
+        "english_search_concept": search_concept,
+        "english_query_hints": valid_hints[:max_queries],
+        "rationale": _normalize_short_text(parsed.get("rationale"))
+        or "Used literal Gemini analysis for Romanized Indic text before B-roll planning.",
+        "translation_provider": f"{_gemini_model()} literal Indic analysis",
+        "planner_provider": _gemini_model(),
+        "translation_source_language": source_language_code,
+        "normalized_source_text": _normalize_short_text(
+            parsed.get("normalized_native_script")
+        ),
+        "meaning_review_required": review_required,
+        "meaning_warning": warning,
+    }
 
 
 def _translate_indic_text_to_english(
@@ -1222,6 +1343,26 @@ def _build_cross_lingual_visual_gloss(
         visual_intent=visual_intent,
         max_queries=max_queries,
     )
+    if _is_romanized_indic_source(chunk_text, language_hint):
+        romanized_analysis = _analyze_romanized_indic_lyric(
+            text=chunk_text,
+            language_hint=language_hint,
+            max_queries=max_queries,
+        )
+        if romanized_analysis:
+            return romanized_analysis
+        # Never send Romanized Indic lyrics through the native-script Sarvam
+        # translation route. If literal analysis is unavailable, retain a safe
+        # generic fallback and force the editor to confirm the meaning.
+        return {
+            **fallback,
+            "meaning_review_required": True,
+            "meaning_warning": (
+                "Romanized Indic lyric needs a literal meaning review before "
+                "B-roll can be trusted."
+            ),
+            "translation_provider": "Romanized Indic review required",
+        }
     translation = _translate_indic_text_to_english(
         text=chunk_text,
         language_hint=language_hint,
@@ -1614,10 +1755,14 @@ def build_broll_search_strategy(
             "translation_provider",
             "translation_source_language",
             "planner_provider",
+            "normalized_source_text",
+            "meaning_warning",
         ):
             metadata_value = _normalize_short_text(visual_gloss.get(metadata_key))
             if metadata_value:
                 fallback[metadata_key] = metadata_value
+        if bool(visual_gloss.get("meaning_review_required")):
+            fallback["meaning_review_required"] = True
         fallback["rationale"] = " ".join(
             part
             for part in [
@@ -1716,10 +1861,14 @@ def build_broll_search_strategy(
             "translation_provider",
             "translation_source_language",
             "planner_provider",
+            "normalized_source_text",
+            "meaning_warning",
         ):
             metadata_value = _normalize_short_text(visual_gloss.get(metadata_key))
             if metadata_value:
                 result[metadata_key] = metadata_value
+        if bool(visual_gloss.get("meaning_review_required")):
+            result["meaning_review_required"] = True
     return result
 
 

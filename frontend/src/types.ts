@@ -278,6 +278,9 @@ export type BrollMeaning = {
   gloss_override_used: string | null;
   translation_provider: string | null;
   planner_provider: string | null;
+  normalized_source_text: string | null;
+  meaning_review_required: boolean;
+  meaning_warning: string | null;
 };
 
 export type BrollSlot = {

@@ -347,6 +347,61 @@ def test_indic_broll_uses_sarvam_translation_before_gemini_visual_planning(
     ]
 
 
+def test_romanized_indic_lyrics_use_literal_gemini_analysis_and_require_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.broll_llm_service._gemini_api_key", lambda: "test-key")
+    monkeypatch.setattr(
+        "app.broll_llm_service._translate_indic_text_to_english",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Romanized Kannada must not use native-script translation")
+        ),
+    )
+
+    def _fake_gemini(prompt: dict[str, object]) -> dict[str, object]:
+        assert prompt["goal"] == "Analyze a Romanized Indic lyric literally before choosing B-roll."
+        assert prompt["language"] == "Kannada"
+        assert prompt["romanized_lyric"] == "avaLu hoda mele bamdano omde sumdara"
+        return {
+            "normalized_native_script": "ಅವಳು ಹೋದ ಮೇಲೆ ಬಂದನೋ ಒಂದೇ ಸುಂದರ",
+            "english_gloss": "After she left, did only one beautiful or handsome person come?",
+            "english_search_concept": "person arriving after someone leaves",
+            "english_query_hints": [
+                "person arriving after someone leaves",
+                "person walking through doorway",
+            ],
+            "meaning_review_required": True,
+            "meaning_warning": "The Romanized word 'bamdano' is ambiguous.",
+            "rationale": "Kept the question literal and avoided emotional interpretation.",
+        }
+
+    monkeypatch.setattr("app.broll_llm_service._gemini_chat_json", _fake_gemini)
+
+    strategy = build_broll_search_strategy(
+        chunk_text="avaLu hoda mele bamdano omde sumdara",
+        concept_text="avaLu hoda mele bamdano omde sumdara",
+        visual_intent="abstract_support",
+        query_hints=["avaLu hoda mele bamdano omde sumdara"],
+        max_queries=4,
+        domain_context={
+            "domain": "music",
+            "summary": "music performance with song lyrics",
+            "anchors": ["music"],
+        },
+        language_hint="kn",
+    )
+
+    assert strategy["english_gloss"] == (
+        "After she left, did only one beautiful or handsome person come?"
+    )
+    assert strategy["search_concept"] == "person arriving after someone leaves"
+    assert strategy["normalized_source_text"] == "ಅವಳು ಹೋದ ಮೇಲೆ ಬಂದನೋ ಒಂದೇ ಸುಂದರ"
+    assert strategy["meaning_review_required"] is True
+    assert strategy["meaning_warning"] == "The Romanized word 'bamdano' is ambiguous."
+    assert strategy["translation_provider"] == "gemini-3.5-flash literal Indic analysis"
+    assert strategy["planner_provider"] == "gemini-3.5-flash"
+
+
 def test_build_broll_search_strategy_prefers_manual_english_gloss_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

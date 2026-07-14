@@ -648,6 +648,7 @@ function reasonCodeLabel(code: string): string {
     crop_weak: "crop weak",
     generated_fallback: "gen fallback",
     intent_weak: "intent mismatch",
+    meaning_uncertain: "meaning needs review",
     no_candidates: "no candidates",
     semantic_weak: "semantic weak",
     specificity_low: "generic match",
@@ -661,6 +662,7 @@ function autoApplySkipReasonLabel(reason: string): string {
   if (reason === "no_candidates") return "no candidates found";
   if (reason === "needs_review") return "below confidence threshold";
   if (reason === "materialize_failed") return "stock download failed";
+  if (reason === "meaning_uncertain") return "meaning needs review";
   return reason.replace(/_/g, " ");
 }
 
@@ -7710,6 +7712,19 @@ function App() {
                                         Means (English)
                                       </span>
                                       {englishGloss}
+                                    </p>
+                                  )}
+                                  {slot.meaning?.meaning_review_required && (
+                                    <p className="brollWeakHint">
+                                      Romanized lyric needs review — {slot.meaning.meaning_warning ?? "confirm the literal meaning before using this B-roll."}
+                                    </p>
+                                  )}
+                                  {!!slot.meaning?.normalized_source_text && (
+                                    <p className="brollLanguageMix muted">
+                                      <span className="brollContextLabel">
+                                        Normalized script
+                                      </span>
+                                      {slot.meaning.normalized_source_text}
                                     </p>
                                   )}
                                   <p className="brollSearchText">
