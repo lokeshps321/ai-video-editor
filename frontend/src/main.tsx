@@ -35,6 +35,8 @@ createRoot(document.getElementById("root")!).render(
     <ErrorBoundary>
       <ClerkProvider
         publishableKey={PUBLISHABLE_KEY}
+        afterSignInUrl="/editor"
+        afterSignUpUrl="/editor"
         afterSignOutUrl="/"
         signInUrl="/sign-in"
         signUpUrl="/sign-up"
