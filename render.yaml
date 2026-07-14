@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: ai-video-editor-backend
+    env: python
+    region: oregon
+    plan: standard
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: cd backend && python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: DATABASE_URL
+        value: sqlite:///./app.db
+      - key: DISABLE_BACKGROUND_WORKERS
+        value: "true"
+      - key: PORT
+        value: "8000"
+
+crons:
+  - id: health-check
+    service: ai-video-editor-backend
+    schedule: "*/5 * * * *"
+    httpPath: /health
