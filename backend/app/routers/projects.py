@@ -40,9 +40,35 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/projects", tags=["projects"])
 
+LEGACY_DEFAULT_PROJECT_NAME = "ClipMind Project"
+
 
 class ProjectRenameRequest(BaseModel):
     name: str
+
+
+def _visible_projects(session: Session, projects: list[Project]) -> list[Project]:
+    """Hide the empty default workspaces created by the legacy auto-create flow."""
+    legacy_ids = [
+        project.id
+        for project in projects
+        if project.name.strip() == LEGACY_DEFAULT_PROJECT_NAME
+    ]
+    if not legacy_ids:
+        return projects
+
+    project_ids_with_media = set(
+        session.exec(
+            select(MediaAsset.project_id).where(
+                MediaAsset.project_id.in_(legacy_ids)
+            )
+        ).all()
+    )
+    return [
+        project
+        for project in projects
+        if project.id not in legacy_ids or project.id in project_ids_with_media
+    ]
 
 
 @router.post("", response_model=ProjectResponse)
@@ -75,7 +101,10 @@ def list_projects(
         .where(Project.owner_id == current_user["sub"])
         .order_by(Project.created_at.desc())
     ).all()
-    return [build_project_response(session, project) for project in projects]
+    return [
+        build_project_response(session, project)
+        for project in _visible_projects(session, projects)
+    ]
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)
