@@ -5,7 +5,7 @@ export const BRAND = {
   shortName: "ClipMind",
   editorName: "ClipMind Editor",
   editorEyebrow: "ClipMind",
-  defaultProjectName: "ClipMind Project",
+  defaultProjectName: "Untitled Project",
   loadingTitle: "Loading ClipMind",
   landingDocumentTitle: "ClipMind — Create Shorts Like a Pro",
   landingMetaDescription:

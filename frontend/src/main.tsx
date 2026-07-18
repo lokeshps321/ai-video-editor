@@ -1,4 +1,4 @@
-import { lazy, StrictMode, Suspense, useEffect } from "react";
+import { lazy, StrictMode, Suspense, useLayoutEffect } from "react";
 import { createRoot } from "react-dom/client";
 import ErrorBoundary from "./ErrorBoundary";
 import "./styles.css";
@@ -23,10 +23,18 @@ if (!PUBLISHABLE_KEY) {
 
 // Syncs Clerk's getToken into the api module so every request gets a Bearer token.
 function AuthTokenSync() {
-  const { getToken } = useAuth();
-  useEffect(() => {
-    setTokenGetter(() => getToken());
-  }, [getToken]);
+  const { getToken, isLoaded, isSignedIn } = useAuth();
+
+  // Register before App's regular effects can request protected API routes.
+  // Otherwise the first project-list request can reach FastAPI without a
+  // bearer token while Clerk is still hydrating its session.
+  useLayoutEffect(() => {
+    setTokenGetter(async () => {
+      if (!isLoaded || !isSignedIn) return null;
+      return getToken();
+    });
+    return () => setTokenGetter(null);
+  }, [getToken, isLoaded, isSignedIn]);
   return null;
 }
 

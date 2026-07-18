@@ -20,3 +20,22 @@ export function consumePendingUploadFile(): File | null {
   pendingFile = null;
   return file;
 }
+
+/** Return the pending upload's filename without consuming the file. */
+export function peekPendingUploadName(): string | null {
+  return pendingFile?.name ?? null;
+}
+
+/**
+ * Create a readable project name from an uploaded filename.
+ * "interview_take-02.mp4" becomes "interview take 02".
+ */
+export function filenameToProjectName(
+  fileName: string | null | undefined,
+  fallback: string,
+): string {
+  if (!fileName) return fallback;
+  const withoutExtension = fileName.replace(/\.[^./\\]+$/, "");
+  const name = withoutExtension.replace(/[_-]+/g, " ").trim();
+  return name || fallback;
+}

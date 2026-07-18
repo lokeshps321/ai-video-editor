@@ -33,9 +33,11 @@ function resolveDefaultApiBase(): string {
   return origin;
 }
 
-const configuredApiBase = String(import.meta.env.VITE_API_BASE ?? "").trim();
+const configuredApiBase = String(
+  import.meta.env.VITE_API_BASE ?? import.meta.env.VITE_API_BASE_URL ?? "",
+).trim();
 const DEFAULT_API_BASE = resolveDefaultApiBase();
-const API_BASE = configuredApiBase || DEFAULT_API_BASE;
+const API_BASE = (configuredApiBase || DEFAULT_API_BASE).replace(/\/+$/, "");
 const parsedDefaultTimeoutMs = Number(
   import.meta.env.VITE_REQUEST_TIMEOUT_MS ?? 120000,
 );
@@ -48,8 +50,10 @@ const TRANSCRIPT_TIMEOUT_MS = 30 * 60 * 1000;
 const ACTION_TIMEOUT_MS = 30 * 60 * 1000;
 const WAVEFORM_TIMEOUT_MS = 5 * 60 * 1000;
 
-let _getToken: (() => Promise<string | null>) | null = null;
-export function setTokenGetter(getter: () => Promise<string | null>): void {
+type TokenGetter = () => Promise<string | null>;
+
+let _getToken: TokenGetter | null = null;
+export function setTokenGetter(getter: TokenGetter | null): void {
   _getToken = getter;
 }
 
@@ -90,11 +94,17 @@ async function request<T>(
   path: string,
   init?: RequestInit,
   timeoutMs = REQUEST_TIMEOUT_MS,
+  options?: { requiresAuth?: boolean },
 ): Promise<T> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
     const token = _getToken ? await _getToken() : null;
+    if (options?.requiresAuth !== false && !token) {
+      throw new Error(
+        "Your sign-in session is not ready. Please wait a moment and try again.",
+      );
+    }
     const authHeader: Record<string, string> = token
       ? { Authorization: `Bearer ${token}` }
       : {};
@@ -738,7 +748,7 @@ export const api = {
     ),
 
   health: (): Promise<{ status: string; ffmpeg?: string; ffprobe?: string }> =>
-    request("/health"),
+    request("/health", undefined, REQUEST_TIMEOUT_MS, { requiresAuth: false }),
 
   mediaThumbnailUrl: (
     assetId: string,

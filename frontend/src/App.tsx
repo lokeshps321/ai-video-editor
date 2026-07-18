@@ -23,11 +23,14 @@ import {
   Trash2,
   Undo2,
   Wand2,
+  X,
 } from "lucide-react";
 import { api } from "./lib/api";
 import {
   consumePendingUploadFile,
+  filenameToProjectName,
   hasPendingUploadFile,
+  peekPendingUploadName,
 } from "./lib/pendingUpload";
 import type {
   BrollCandidate,
@@ -991,6 +994,8 @@ function App() {
   const [deletingProjectId, setDeletingProjectId] = useState<string | null>(
     null,
   );
+  const [showNewProjectForm, setShowNewProjectForm] = useState(false);
+  const [newProjectName, setNewProjectName] = useState("");
   const [uploading, setUploading] = useState(false);
   const [generatingTranscript, setGeneratingTranscript] = useState(false);
   const [transcriptStartedAtMs, setTranscriptStartedAtMs] = useState<
@@ -4704,7 +4709,13 @@ function App() {
       // A file dropped on the landing page needs a project to receive the
       // upload, so creating one here is the user's explicit intent.
       if (hasPendingUploadFile()) {
-        await createProject(BRAND.defaultProjectName, { silent: true });
+        await createProject(
+          filenameToProjectName(
+            peekPendingUploadName(),
+            BRAND.defaultProjectName,
+          ),
+          { silent: true },
+        );
         return;
       }
       try {
@@ -5763,23 +5774,75 @@ function App() {
           <EditorHeader title={BRAND.loadingTitle} />
 
           <section className="controls card">
-            <p className="muted" style={{ margin: 0, marginRight: "auto" }}>
-              {creatingProject
-                ? "Preparing your workspace..."
-                : loadingProjects || openingProjectId
-                  ? "Loading your projects..."
-                  : recentProjects.length > 0
-                    ? "Open a recent project or start a new one."
-                    : "No projects yet. Create one to start editing."}
-            </p>
-            <button
-              className="primaryBtn"
-              onClick={() => void createProject(BRAND.defaultProjectName)}
-              disabled={creatingProject || !!openingProjectId}
-            >
-              <Wand2 size={16} />
-              {creatingProject ? "Creating..." : "New Project"}
-            </button>
+            <div style={{ display: "grid", gap: 10, width: "100%" }}>
+              <p className="muted" style={{ margin: 0 }}>
+                {creatingProject
+                  ? "Preparing your workspace..."
+                  : loadingProjects || openingProjectId
+                    ? "Loading your projects..."
+                    : recentProjects.length > 0
+                      ? "Open a recent project or create a new one."
+                      : "No projects yet. Create one to start editing."}
+              </p>
+              {showNewProjectForm ? (
+                <div className="newProjectInputRow">
+                  <input
+                    autoFocus
+                    type="text"
+                    className="controlInput newProjectInput"
+                    placeholder="Project name (optional)"
+                    value={newProjectName}
+                    onChange={(event) => setNewProjectName(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        void createProject(
+                          newProjectName.trim() || BRAND.defaultProjectName,
+                        );
+                      }
+                      if (event.key === "Escape") {
+                        setShowNewProjectForm(false);
+                        setNewProjectName("");
+                      }
+                    }}
+                    disabled={creatingProject}
+                  />
+                  <button
+                    type="button"
+                    className="primaryBtn"
+                    onClick={() =>
+                      void createProject(
+                        newProjectName.trim() || BRAND.defaultProjectName,
+                      )
+                    }
+                    disabled={creatingProject}
+                  >
+                    {creatingProject ? "Creating..." : "Create project"}
+                  </button>
+                  <button
+                    type="button"
+                    className="projectActionBtnClose"
+                    onClick={() => {
+                      setShowNewProjectForm(false);
+                      setNewProjectName("");
+                    }}
+                    disabled={creatingProject}
+                    title="Cancel"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  className="primaryBtn"
+                  onClick={() => setShowNewProjectForm(true)}
+                  disabled={creatingProject || !!openingProjectId}
+                  style={{ justifySelf: "start" }}
+                >
+                  <Wand2 size={16} />
+                  New Project
+                </button>
+              )}
+            </div>
           </section>
 
           {recentProjects.length > 0 && (
