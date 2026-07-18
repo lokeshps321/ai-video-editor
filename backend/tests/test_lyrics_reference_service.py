@@ -585,3 +585,77 @@ def test_align_reference_lyrics_skips_when_alignment_ratio_is_too_low(monkeypatc
 
     result = align_reference_lyrics(payload, reference, duration_sec=4.8)
     assert result is payload
+
+
+def _span_words(entries: list[tuple[float, float, str]]) -> list[TranscriptWordPayload]:
+    return [
+        TranscriptWordPayload(id=f"s{idx}", text=text, start_sec=start_sec, end_sec=end_sec)
+        for idx, (start_sec, end_sec, text) in enumerate(entries)
+    ]
+
+
+def test_synced_line_span_uses_short_gap_directly() -> None:
+    from app.lyrics_reference_service import _synced_line_span
+
+    span = _synced_line_span(
+        ["one", "two", "three"],
+        adjusted_start_sec=10.0,
+        next_start_sec=13.0,
+    )
+    assert abs(span - 2.98) < 1e-6
+
+
+def test_synced_line_span_heuristic_for_long_gap_without_asr() -> None:
+    from app.lyrics_reference_service import _synced_line_span
+
+    tokens = ["w"] * 10
+    span = _synced_line_span(
+        tokens,
+        adjusted_start_sec=10.0,
+        next_start_sec=16.0,
+    )
+    # 0.24 * 10 * 1.6 = 3.84 — no longer squeezed to 2.4s, still under the gap
+    assert abs(span - 3.84) < 1e-6
+
+
+def test_synced_line_span_caps_at_ceiling_for_huge_gap() -> None:
+    from app.lyrics_reference_service import _synced_line_span
+
+    tokens = ["w"] * 30
+    span = _synced_line_span(
+        tokens,
+        adjusted_start_sec=10.0,
+        next_start_sec=25.0,
+    )
+    assert span <= 8.0
+
+
+def test_synced_line_span_measures_from_asr_words() -> None:
+    from app.lyrics_reference_service import _synced_line_span
+
+    tokens = ["w"] * 10
+    asr_words = _span_words(
+        [(10.0 + 0.55 * i, 10.0 + 0.55 * i + 0.4, f"t{i}") for i in range(10)]
+    )
+    span = _synced_line_span(
+        tokens,
+        adjusted_start_sec=10.0,
+        next_start_sec=16.0,
+        asr_words=asr_words,
+    )
+    # Last ASR word ends at 10 + 0.55*9 + 0.4 = 15.35 → measured span 5.35s
+    assert abs(span - 5.35) < 1e-6
+
+
+def test_synced_line_span_falls_back_when_asr_sparse() -> None:
+    from app.lyrics_reference_service import _synced_line_span
+
+    tokens = ["w"] * 10
+    asr_words = _span_words([(10.0, 10.4, "t0"), (11.0, 11.4, "t1")])
+    span = _synced_line_span(
+        tokens,
+        adjusted_start_sec=10.0,
+        next_start_sec=16.0,
+        asr_words=asr_words,
+    )
+    assert abs(span - 3.84) < 1e-6

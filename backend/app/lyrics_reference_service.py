@@ -450,6 +450,14 @@ def _build_interpolated_words(
         return []
     span = max(float(end_sec) - float(start_sec), 0.05 * len(ref_tokens))
     step = span / max(len(ref_tokens), 1)
+    # #region agent log
+    try:
+        import json as _json, time as _time
+        with open("/home/lokesh/ai_video_editor/.cursor/debug-4d81ec.log", "a") as _df:
+            _df.write(_json.dumps({"sessionId":"4d81ec","hypothesisId":"A","location":"lyrics_reference_service.py:_build_interpolated_words","message":"equal-split word rebuild","data":{"id_prefix":id_prefix,"token_count":len(ref_tokens),"start_sec":round(float(start_sec),3),"end_sec":round(float(end_sec),3),"span":round(span,3),"step_ms":round(step*1000,1),"sample_tokens":ref_tokens[:6]},"timestamp":int(_time.time()*1000)})+"\n")
+    except Exception:
+        pass
+    # #endregion
     words: list[TranscriptWordPayload] = []
     for idx, token in enumerate(ref_tokens):
         word_start = float(start_sec) + (idx * step)
@@ -567,6 +575,36 @@ def _parse_synced_lyric_lines(synced_lyrics: str) -> list[tuple[float, list[str]
     return lines
 
 
+def _synced_line_span(
+    tokens: list[str],
+    *,
+    adjusted_start_sec: float,
+    next_start_sec: float,
+    asr_words: list[TranscriptWordPayload] | None = None,
+) -> float:
+    natural_span = max(0.7, 0.24 * len(tokens))
+    gap_to_next = max(0.0, next_start_sec - adjusted_start_sec - 0.02)
+    if 0.0 < gap_to_next <= 4.0:
+        return gap_to_next
+    # Large gaps often contain instrumental silence, so the raw gap cannot be
+    # trusted as the sung duration; cap how far a line may stretch, then prefer
+    # measuring the sung duration from ASR word timestamps in the window.
+    ceiling = _env_float("TRANSCRIBE_LYRICS_REFERENCE_LINE_SPAN_CEILING", 8.0, 4.0)
+    limit = min(gap_to_next, ceiling) if gap_to_next > 0.0 else ceiling
+    if asr_words:
+        window_end = adjusted_start_sec + limit
+        overlapping = [
+            word
+            for word in asr_words
+            if float(word.end_sec) > adjusted_start_sec
+            and float(word.start_sec) < window_end
+        ]
+        if len(overlapping) >= max(2, len(tokens) // 2):
+            measured = float(overlapping[-1].end_sec) - adjusted_start_sec
+            return min(max(measured, natural_span, 1.0), limit)
+    return min(max(natural_span * 1.6, 1.0), limit)
+
+
 def _align_reference_lyrics_by_synced_lines(
     payload: TranscriptPayload,
     reference: LyricsReference,
@@ -587,6 +625,14 @@ def _align_reference_lyrics_by_synced_lines(
         synced_lines,
         duration_sec=duration_sec,
     )
+    # #region agent log
+    try:
+        import json as _json, time as _time
+        with open("/home/lokesh/ai_video_editor/.cursor/debug-4d81ec.log", "a") as _df:
+            _df.write(_json.dumps({"sessionId":"4d81ec","hypothesisId":"B","location":"lyrics_reference_service.py:_align_reference_lyrics_by_synced_lines","message":"original LRC vs offset","data":{"synced_line_count":len(synced_lines),"asr_word_count":len(asr_words),"synced_time_offset_sec":round(float(synced_time_offset_sec),3),"first_orig_line_sec":synced_lines[0][0] if synced_lines else None,"first_orig_tokens":(synced_lines[0][1][:8] if synced_lines else []),"track":getattr(reference,"track",None),"artist":getattr(reference,"artist",None)},"timestamp":int(_time.time()*1000)})+"\n")
+    except Exception:
+        pass
+    # #endregion
     synced_anchor_scores = _collect_synced_anchor_scores(
         asr_words,
         synced_lines,
@@ -599,6 +645,14 @@ def _align_reference_lyrics_by_synced_lines(
         anchor_scores=synced_anchor_scores,
     )
     if rebuilt_payload is not None:
+        # #region agent log
+        try:
+            import json as _json, time as _time
+            with open("/home/lokesh/ai_video_editor/.cursor/debug-4d81ec.log", "a") as _df:
+                _df.write(_json.dumps({"sessionId":"4d81ec","hypothesisId":"A","location":"lyrics_reference_service.py:_align_reference_lyrics_by_synced_lines","message":"used full synced rebuild path","data":{"our_word_count":len(rebuilt_payload.words),"source":rebuilt_payload.source},"timestamp":int(_time.time()*1000)})+"\n")
+        except Exception:
+            pass
+        # #endregion
         return rebuilt_payload
 
     min_replace_score = _env_float(
@@ -635,11 +689,12 @@ def _align_reference_lyrics_by_synced_lines(
             else duration_sec
         )
         natural_span = max(0.7, 0.24 * len(tokens))
-        gap_to_next = max(0.0, next_start - adjusted_start_sec - 0.02)
-        if 0.0 < gap_to_next <= 4.0:
-            span = gap_to_next
-        else:
-            span = min(max(natural_span, 1.0), 4.0)
+        span = _synced_line_span(
+            tokens,
+            adjusted_start_sec=adjusted_start_sec,
+            next_start_sec=next_start,
+            asr_words=asr_words,
+        )
         end_sec = min(duration_sec, adjusted_start_sec + span)
         if end_sec <= adjusted_start_sec:
             end_sec = min(duration_sec, adjusted_start_sec + max(0.6, natural_span))
@@ -1065,8 +1120,16 @@ def _rebuild_payload_from_synced_reference(
             first_synced_start = float(asr_words[0].start_sec)
     last_synced_start = max(0.0, min(duration_sec, synced_lines[-1][0] + time_offset_sec))
     last_tokens = synced_lines[-1][1]
-    last_natural_span = max(0.7, 0.24 * len(last_tokens))
-    last_synced_end = min(duration_sec, last_synced_start + min(max(last_natural_span, 1.0), 4.0))
+    last_synced_end = min(
+        duration_sec,
+        last_synced_start
+        + _synced_line_span(
+            last_tokens,
+            adjusted_start_sec=last_synced_start,
+            next_start_sec=duration_sec,
+            asr_words=asr_words,
+        ),
+    )
 
     leading_words = [
         word for word in asr_words if float(word.end_sec) <= first_synced_start
@@ -1080,8 +1143,12 @@ def _rebuild_payload_from_synced_reference(
             else duration_sec
         )
         natural_span = max(0.7, 0.24 * len(tokens))
-        gap_to_next = max(0.0, next_start_sec - adjusted_start_sec - 0.02)
-        span = gap_to_next if 0.0 < gap_to_next <= 4.0 else min(max(natural_span, 1.0), 4.0)
+        span = _synced_line_span(
+            tokens,
+            adjusted_start_sec=adjusted_start_sec,
+            next_start_sec=next_start_sec,
+            asr_words=asr_words,
+        )
         end_sec = min(duration_sec, adjusted_start_sec + span)
         if end_sec <= adjusted_start_sec:
             end_sec = min(duration_sec, adjusted_start_sec + max(0.6, natural_span))
@@ -1112,6 +1179,7 @@ def _rebuild_payload_from_synced_reference(
         synced_lines=synced_lines,
         duration_sec=duration_sec,
         time_offset_sec=time_offset_sec,
+        asr_words=asr_words,
     )
     return _finalize_corrected_payload(payload, corrected)
 
@@ -1187,6 +1255,7 @@ def _trim_synced_reference_edge_words(
     synced_lines: list[tuple[float, list[str]]],
     duration_sec: float,
     time_offset_sec: float,
+    asr_words: list[TranscriptWordPayload] | None = None,
 ) -> list[TranscriptWordPayload]:
     if not words or not synced_lines:
         return words
@@ -1199,9 +1268,15 @@ def _trim_synced_reference_edge_words(
         0.0, min(duration_sec, float(synced_lines[-1][0]) + float(time_offset_sec))
     )
     last_tokens = synced_lines[-1][1]
-    last_natural_span = max(0.7, 0.24 * len(last_tokens))
     last_end_sec = min(
-        duration_sec, last_start_sec + min(max(last_natural_span, 1.0), 4.0)
+        duration_sec,
+        last_start_sec
+        + _synced_line_span(
+            last_tokens,
+            adjusted_start_sec=last_start_sec,
+            next_start_sec=duration_sec,
+            asr_words=asr_words,
+        ),
     )
 
     leading_count = 0
@@ -1595,6 +1670,17 @@ def maybe_apply_reference_lyrics(
     duration_sec: float,
 ) -> TranscriptPayload:
     reference = fetch_lyrics_reference(filename, duration_sec)
+    # #region agent log
+    try:
+        import json as _json, time as _time
+        synced_n = 0
+        if reference is not None:
+            synced_n = len(_parse_synced_lyric_lines(reference.synced_lyrics or ""))
+        with open("/home/lokesh/ai_video_editor/.cursor/debug-4d81ec.log", "a") as _df:
+            _df.write(_json.dumps({"sessionId":"4d81ec","hypothesisId":"C","location":"lyrics_reference_service.py:maybe_apply_reference_lyrics","message":"reference lyrics fetch","data":{"filename":filename,"duration_sec":round(float(duration_sec),2),"has_reference":reference is not None,"synced_line_count":synced_n,"asr_words":len(payload.words),"asr_source":payload.source},"timestamp":int(_time.time()*1000)})+"\n")
+    except Exception:
+        pass
+    # #endregion
     if reference is None:
         return payload
     return align_reference_lyrics(payload, reference, duration_sec=duration_sec)
