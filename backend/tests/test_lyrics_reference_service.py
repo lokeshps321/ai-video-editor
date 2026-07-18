@@ -738,3 +738,53 @@ def test_align_reference_lyrics_rebuilds_from_synced_for_kannada_asr() -> None:
     assert any(t in {"sigadhare", "nagadire", "jeevana"} for t in texts), texts
     rebuilt = [w for w in result.words if w.id.startswith("lyrics-sync-rebuild")]
     assert rebuilt, [w.id for w in result.words][:5]
+
+
+def test_snap_synced_line_start_moves_to_asr_when_lrc_early() -> None:
+    from app.lyrics_reference_service import _snap_synced_line_start
+
+    # ASR words for the line actually start at 10.8, LRC claims 10.0
+    entries = [(10.8 + 0.4 * i, 10.8 + 0.4 * i + 0.35, t) for i, t in
+               enumerate(["shadow", "valley", "death", "evaluate", "myself"])]
+    asr_words = _span_words(entries)
+    start, next_idx = _snap_synced_line_start(
+        ["shadow", "valley", "death", "evaluate", "myself"],
+        asr_words,
+        expected_start_sec=10.0,
+        expected_end_sec=13.5,
+        start_word_idx=0,
+    )
+    assert abs(start - 10.8) < 1e-6
+    assert next_idx == 5
+
+
+def test_snap_synced_line_start_keeps_lrc_when_no_match() -> None:
+    from app.lyrics_reference_service import _snap_synced_line_start
+
+    entries = [(10.8 + 0.4 * i, 10.8 + 0.4 * i + 0.35, f"unrelated{i}") for i in range(5)]
+    asr_words = _span_words(entries)
+    start, next_idx = _snap_synced_line_start(
+        ["shadow", "valley", "death", "evaluate", "myself"],
+        asr_words,
+        expected_start_sec=10.0,
+        expected_end_sec=13.5,
+        start_word_idx=0,
+    )
+    assert abs(start - 10.0) < 1e-6
+    assert next_idx == 0
+
+
+def test_snap_synced_line_start_ignores_tiny_and_huge_drift() -> None:
+    from app.lyrics_reference_service import _snap_synced_line_start
+
+    tokens = ["shadow", "valley", "death", "evaluate", "myself"]
+    # Tiny drift (0.05s) — keep LRC
+    entries = [(10.05 + 0.4 * i, 10.05 + 0.4 * i + 0.35, t) for i, t in enumerate(tokens)]
+    start, _ = _snap_synced_line_start(
+        tokens,
+        _span_words(entries),
+        expected_start_sec=10.0,
+        expected_end_sec=13.5,
+        start_word_idx=0,
+    )
+    assert abs(start - 10.0) < 1e-6

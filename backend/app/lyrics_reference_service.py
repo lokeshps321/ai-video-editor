@@ -1118,6 +1118,43 @@ def _collect_synced_anchor_scores(
     return [score for _offset_sec, score in _sample_synced_anchor_matches(asr_words, synced_lines, duration_sec=max(float(asr_words[-1].end_sec), 1.0))]
 
 
+def _snap_synced_line_start(
+    tokens: list[str],
+    asr_words: list[TranscriptWordPayload],
+    *,
+    expected_start_sec: float,
+    expected_end_sec: float,
+    start_word_idx: int,
+) -> tuple[float, int]:
+    """Correct local LRC drift: if the ASR words matching this line start a
+    bounded amount later than the LRC timestamp, trust the ASR evidence.
+    Returns (line_start_sec, next_search_word_idx)."""
+    min_snap_sec = _env_float("TRANSCRIBE_LYRICS_REFERENCE_SNAP_MIN_SEC", 0.15, 0.0)
+    max_snap_sec = _env_float("TRANSCRIBE_LYRICS_REFERENCE_SNAP_MAX_SEC", 1.5, 0.0)
+    reference_norm = [
+        normalized
+        for normalized in (_normalize_token(token) for token in tokens)
+        if normalized
+    ]
+    if len(reference_norm) < 3 or not asr_words:
+        return expected_start_sec, start_word_idx
+    match = _find_best_synced_line_window(
+        asr_words,
+        reference_norm,
+        expected_start_sec=expected_start_sec,
+        expected_end_sec=expected_end_sec,
+        start_word_idx=start_word_idx,
+    )
+    if match is None:
+        return expected_start_sec, start_word_idx
+    matched_start_sec = float(asr_words[match.start_word_idx].start_sec)
+    next_search_idx = match.end_word_idx
+    delta = matched_start_sec - expected_start_sec
+    if min_snap_sec <= delta <= max_snap_sec:
+        return matched_start_sec, next_search_idx
+    return expected_start_sec, next_search_idx
+
+
 def _rebuild_payload_from_synced_reference(
     payload: TranscriptPayload,
     synced_lines: list[tuple[float, list[str]]],
@@ -1170,6 +1207,7 @@ def _rebuild_payload_from_synced_reference(
         word for word in asr_words if float(word.end_sec) <= first_synced_start
     ]
     corrected.extend(leading_words)
+    snap_search_idx = 0
     for idx, (start_sec, tokens) in enumerate(synced_lines):
         adjusted_start_sec = max(0.0, min(duration_sec, start_sec + time_offset_sec))
         next_start_sec = (
@@ -1178,6 +1216,19 @@ def _rebuild_payload_from_synced_reference(
             else duration_sec
         )
         natural_span = max(0.7, 0.24 * len(tokens))
+        provisional_span = _synced_line_span(
+            tokens,
+            adjusted_start_sec=adjusted_start_sec,
+            next_start_sec=next_start_sec,
+            asr_words=asr_words,
+        )
+        adjusted_start_sec, snap_search_idx = _snap_synced_line_start(
+            tokens,
+            asr_words,
+            expected_start_sec=adjusted_start_sec,
+            expected_end_sec=min(duration_sec, adjusted_start_sec + provisional_span),
+            start_word_idx=snap_search_idx,
+        )
         span = _synced_line_span(
             tokens,
             adjusted_start_sec=adjusted_start_sec,
