@@ -4,8 +4,10 @@ import json
 import os
 import re
 from collections import Counter
+from contextvars import ContextVar
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from functools import lru_cache
 from math import isfinite
 from statistics import median
 from pathlib import Path
@@ -13,6 +15,48 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from .transcription_service import TranscriptPayload, TranscriptWordPayload
+from .transliteration_service import contains_indic_script, romanize_token_for_matching
+
+# When the ASR transcript is in an Indic script, tokens on both sides are
+# romanized and phonetically folded so rule-romanized ASR can match
+# human-romanized LRC lyrics. English matching is unaffected.
+_INDIC_MATCH_MODE: ContextVar[bool] = ContextVar("_INDIC_MATCH_MODE", default=False)
+
+
+def _indic_scaled(value: float) -> float:
+    if not _INDIC_MATCH_MODE.get():
+        return value
+    scale = _env_float("TRANSCRIBE_LYRICS_REFERENCE_INDIC_SCORE_SCALE", 0.92, 0.5)
+    return value * scale
+
+
+_PHONETIC_FOLD_STEPS: tuple[tuple[str, str], ...] = (
+    ("chh", "ch"),
+    ("kh", "k"),
+    ("gh", "g"),
+    ("jh", "j"),
+    ("th", "t"),
+    ("dh", "d"),
+    ("ph", "p"),
+    ("bh", "b"),
+    ("sh", "s"),
+    ("zh", "l"),
+    ("w", "v"),
+    ("aa", "a"),
+    ("ii", "i"),
+    ("ee", "i"),
+    ("uu", "u"),
+    ("oo", "u"),
+)
+_DOUBLED_CONSONANT_RE = re.compile(r"([bcdfghjklmnpqrstvy])\1+")
+
+
+@lru_cache(maxsize=8192)
+def _phonetic_fold(token: str) -> str:
+    folded = token
+    for old, new in _PHONETIC_FOLD_STEPS:
+        folded = folded.replace(old, new)
+    return _DOUBLED_CONSONANT_RE.sub(r"\1", folded)
 
 
 @dataclass
@@ -127,7 +171,10 @@ def _normalize_hint_text(value: str) -> str:
 
 
 def _normalize_match_text(value: str) -> str:
-    text = _normalize_hint_text(value).lower()
+    text = _normalize_hint_text(value)
+    if contains_indic_script(text):
+        text = romanize_token_for_matching(text)
+    text = text.lower()
     text = text.replace("&", " and ")
     text = re.sub(r"\bfeat(?:uring)?\b.*$", "", text)
     text = re.sub(r"\bft\b.*$", "", text)
@@ -409,7 +456,7 @@ def _tokenize_lyrics(lyrics: str) -> list[str]:
     for raw in lyrics.split():
         cleaned = raw.strip()
         token = cleaned.strip('"“”‘’()[]{}')
-        if not _TOKEN_RE.search(token):
+        if not _normalize_token(token):
             continue
         tokens.append(token)
     return _sanitize_reference_tokens(tokens)
@@ -429,10 +476,16 @@ def _sanitize_reference_tokens(ref_tokens: list[str]) -> list[str]:
 
 
 def _normalize_token(value: str) -> str:
-    match = _TOKEN_RE.search(str(value or ""))
+    text = str(value or "")
+    if contains_indic_script(text):
+        text = romanize_token_for_matching(text)
+    match = _TOKEN_RE.search(text)
     if not match:
         return ""
-    return match.group(0).lower()
+    token = match.group(0).lower()
+    if _INDIC_MATCH_MODE.get():
+        return _phonetic_fold(token)
+    return token
 
 
 def _build_interpolated_words(
@@ -450,14 +503,6 @@ def _build_interpolated_words(
         return []
     span = max(float(end_sec) - float(start_sec), 0.05 * len(ref_tokens))
     step = span / max(len(ref_tokens), 1)
-    # #region agent log
-    try:
-        import json as _json, time as _time
-        with open("/home/lokesh/ai_video_editor/.cursor/debug-4d81ec.log", "a") as _df:
-            _df.write(_json.dumps({"sessionId":"4d81ec","hypothesisId":"A","location":"lyrics_reference_service.py:_build_interpolated_words","message":"equal-split word rebuild","data":{"id_prefix":id_prefix,"token_count":len(ref_tokens),"start_sec":round(float(start_sec),3),"end_sec":round(float(end_sec),3),"span":round(span,3),"step_ms":round(step*1000,1),"sample_tokens":ref_tokens[:6]},"timestamp":int(_time.time()*1000)})+"\n")
-    except Exception:
-        pass
-    # #endregion
     words: list[TranscriptWordPayload] = []
     for idx, token in enumerate(ref_tokens):
         word_start = float(start_sec) + (idx * step)
@@ -625,14 +670,6 @@ def _align_reference_lyrics_by_synced_lines(
         synced_lines,
         duration_sec=duration_sec,
     )
-    # #region agent log
-    try:
-        import json as _json, time as _time
-        with open("/home/lokesh/ai_video_editor/.cursor/debug-4d81ec.log", "a") as _df:
-            _df.write(_json.dumps({"sessionId":"4d81ec","hypothesisId":"B","location":"lyrics_reference_service.py:_align_reference_lyrics_by_synced_lines","message":"original LRC vs offset","data":{"synced_line_count":len(synced_lines),"asr_word_count":len(asr_words),"synced_time_offset_sec":round(float(synced_time_offset_sec),3),"first_orig_line_sec":synced_lines[0][0] if synced_lines else None,"first_orig_tokens":(synced_lines[0][1][:8] if synced_lines else []),"track":getattr(reference,"track",None),"artist":getattr(reference,"artist",None)},"timestamp":int(_time.time()*1000)})+"\n")
-    except Exception:
-        pass
-    # #endregion
     synced_anchor_scores = _collect_synced_anchor_scores(
         asr_words,
         synced_lines,
@@ -645,14 +682,6 @@ def _align_reference_lyrics_by_synced_lines(
         anchor_scores=synced_anchor_scores,
     )
     if rebuilt_payload is not None:
-        # #region agent log
-        try:
-            import json as _json, time as _time
-            with open("/home/lokesh/ai_video_editor/.cursor/debug-4d81ec.log", "a") as _df:
-                _df.write(_json.dumps({"sessionId":"4d81ec","hypothesisId":"A","location":"lyrics_reference_service.py:_align_reference_lyrics_by_synced_lines","message":"used full synced rebuild path","data":{"our_word_count":len(rebuilt_payload.words),"source":rebuilt_payload.source},"timestamp":int(_time.time()*1000)})+"\n")
-        except Exception:
-            pass
-        # #endregion
         return rebuilt_payload
 
     min_replace_score = _env_float(
@@ -882,10 +911,12 @@ def _find_best_synced_line_window(
         2.6,
         0.0,
     )
-    min_score = _env_float(
-        "TRANSCRIBE_LYRICS_REFERENCE_MIN_SYNCED_SEARCH_SCORE",
-        0.56,
-        0.0,
+    min_score = _indic_scaled(
+        _env_float(
+            "TRANSCRIBE_LYRICS_REFERENCE_MIN_SYNCED_SEARCH_SCORE",
+            0.56,
+            0.0,
+        )
     )
 
     search_start_sec = max(0.0, expected_start_sec - pre_pad_sec)
@@ -1042,10 +1073,12 @@ def _sample_synced_anchor_matches(
     sample_line_count = int(
         round(_env_float("TRANSCRIBE_LYRICS_REFERENCE_SYNCED_OFFSET_SAMPLE_LINES", 8.0, 2.0))
     )
-    min_anchor_score = _env_float(
-        "TRANSCRIBE_LYRICS_REFERENCE_SYNCED_OFFSET_MIN_SCORE",
-        0.74,
-        0.0,
+    min_anchor_score = _indic_scaled(
+        _env_float(
+            "TRANSCRIBE_LYRICS_REFERENCE_SYNCED_OFFSET_MIN_SCORE",
+            0.74,
+            0.0,
+        )
     )
     max_abs_offset_sec = _env_float(
         "TRANSCRIBE_LYRICS_REFERENCE_SYNCED_MAX_ABS_OFFSET_SEC",
@@ -1096,10 +1129,12 @@ def _rebuild_payload_from_synced_reference(
     min_anchor_count = int(
         round(_env_float("TRANSCRIBE_LYRICS_REFERENCE_SYNCED_REBUILD_MIN_ANCHORS", 2.0, 1.0))
     )
-    min_anchor_average = _env_float(
-        "TRANSCRIBE_LYRICS_REFERENCE_SYNCED_REBUILD_MIN_AVG_SCORE",
-        0.82,
-        0.0,
+    min_anchor_average = _indic_scaled(
+        _env_float(
+            "TRANSCRIBE_LYRICS_REFERENCE_SYNCED_REBUILD_MIN_AVG_SCORE",
+            0.82,
+            0.0,
+        )
     )
     if len(anchor_scores) < min_anchor_count:
         return None
@@ -1634,6 +1669,22 @@ def align_reference_lyrics(
 ) -> TranscriptPayload:
     if not payload.words:
         return payload
+    indic_mode = contains_indic_script(payload.text or "") or contains_indic_script(
+        reference.plain_lyrics or ""
+    )
+    mode_token = _INDIC_MATCH_MODE.set(indic_mode)
+    try:
+        return _align_reference_lyrics_impl(payload, reference, duration_sec=duration_sec)
+    finally:
+        _INDIC_MATCH_MODE.reset(mode_token)
+
+
+def _align_reference_lyrics_impl(
+    payload: TranscriptPayload,
+    reference: LyricsReference,
+    *,
+    duration_sec: float,
+) -> TranscriptPayload:
     ref_tokens = _tokenize_lyrics(reference.plain_lyrics)
     if len(ref_tokens) < 20:
         return payload
@@ -1670,17 +1721,6 @@ def maybe_apply_reference_lyrics(
     duration_sec: float,
 ) -> TranscriptPayload:
     reference = fetch_lyrics_reference(filename, duration_sec)
-    # #region agent log
-    try:
-        import json as _json, time as _time
-        synced_n = 0
-        if reference is not None:
-            synced_n = len(_parse_synced_lyric_lines(reference.synced_lyrics or ""))
-        with open("/home/lokesh/ai_video_editor/.cursor/debug-4d81ec.log", "a") as _df:
-            _df.write(_json.dumps({"sessionId":"4d81ec","hypothesisId":"C","location":"lyrics_reference_service.py:maybe_apply_reference_lyrics","message":"reference lyrics fetch","data":{"filename":filename,"duration_sec":round(float(duration_sec),2),"has_reference":reference is not None,"synced_line_count":synced_n,"asr_words":len(payload.words),"asr_source":payload.source},"timestamp":int(_time.time()*1000)})+"\n")
-    except Exception:
-        pass
-    # #endregion
     if reference is None:
         return payload
     return align_reference_lyrics(payload, reference, duration_sec=duration_sec)

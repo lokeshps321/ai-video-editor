@@ -659,3 +659,82 @@ def test_synced_line_span_falls_back_when_asr_sparse() -> None:
         asr_words=asr_words,
     )
     assert abs(span - 3.84) < 1e-6
+
+
+def _indic_mode():
+    from app.lyrics_reference_service import _INDIC_MATCH_MODE
+
+    return _INDIC_MATCH_MODE
+
+
+def test_normalize_token_romanizes_kannada_script() -> None:
+    from app.lyrics_reference_service import _normalize_token
+
+    token = _indic_mode().set(True)
+    try:
+        assert _normalize_token("ಸಿಗದಾರೆ") != ""
+        assert _normalize_token("ಸಿಗದಾರೆ") == _normalize_token("sigadhare")
+        assert _normalize_token("ನೀ") == _normalize_token("nee")
+    finally:
+        _indic_mode().reset(token)
+
+
+def test_phonetic_fold_collapses_aspirates_and_long_vowels() -> None:
+    from app.lyrics_reference_service import _phonetic_fold
+
+    for left, right in [
+        ("sigadhare", "sigadare"),
+        ("naanu", "nanu"),
+        ("bhoomi", "bumi"),
+        ("kaadhal", "kadal"),
+        ("thalli", "tali"),
+    ]:
+        assert _phonetic_fold(left) == right
+
+
+def test_normalize_token_english_unchanged_outside_indic_mode() -> None:
+    from app.lyrics_reference_service import _normalize_token
+
+    assert _normalize_token("that") == "that"
+    assert _normalize_token("sigadhare") == "sigadhare"
+    assert _normalize_token("that") != _normalize_token("tat")
+
+
+def test_align_reference_lyrics_rebuilds_from_synced_for_kannada_asr() -> None:
+    kannada_words = [
+        "ನೀ", "ಸಿಗದಾರೆ", "ನೀ", "ನಗದಿರೆ", "ಗಾಳಿ", "ಮಾತು",
+        "ಮಳೆ", "ಹನಿ", "ಕನಸು", "ಕಣ್ಣು", "ಪ್ರೀತಿ", "ಜೀವನ",
+    ]
+    romanized_lines = [
+        "nee sigadhare nee nagadire",
+        "gaali maathu male hani",
+        "kanasu kannu preethi jeevana",
+        "nee sigadhare nee nagadire",
+        "gaali maathu male hani",
+        "kanasu kannu preethi jeevana",
+    ]
+    # Sarvam-style flat ~1s word timings, repeated to reach >= 20 words
+    entries = []
+    cursor = 5.0
+    for _ in range(2):
+        for w in kannada_words:
+            entries.append((cursor, cursor + 1.0, w))
+            cursor += 1.0
+    payload = _payload(entries)
+    synced = "\n".join(
+        f"[{int(5 + i * 4) // 60:02d}:{int(5 + i * 4) % 60:02d}.00] {line}"
+        for i, line in enumerate(romanized_lines)
+    )
+    reference = LyricsReference(
+        track_name="Test Song",
+        artist_name="Test Artist",
+        plain_lyrics="\n".join(romanized_lines),
+        duration_sec=40.0,
+        score=0.95,
+        synced_lyrics=synced,
+    )
+    result = align_reference_lyrics(payload, reference, duration_sec=40.0)
+    texts = [word.text for word in result.words]
+    assert any(t in {"sigadhare", "nagadire", "jeevana"} for t in texts), texts
+    rebuilt = [w for w in result.words if w.id.startswith("lyrics-sync-rebuild")]
+    assert rebuilt, [w.id for w in result.words][:5]

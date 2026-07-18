@@ -19,6 +19,7 @@ import os
 import re
 import hashlib
 import logging
+import unicodedata
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -537,6 +538,25 @@ def _transliterate_with_library(text: str, script: str) -> str:
     except Exception as e:
         logger.warning("Library transliteration failed for %s: %s", script, e)
         return text
+
+
+@lru_cache(maxsize=8192)
+def romanize_token_for_matching(token: str) -> str:
+    """Deterministic, LLM-free romanization for fuzzy lyric matching.
+
+    Returns lowercase ASCII text; returns the input unchanged when it
+    contains no Indic script. Never calls the LLM tiers, so it is safe
+    in matching hot paths.
+    """
+    text = str(token or "")
+    if not text or not contains_indic_script(text):
+        return text
+    script = detect_indic_script(text)
+    if script is not None:
+        text = _transliterate_with_library(text, script)
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
 
 
 def transliterate_text(text: str, script: str | None = None) -> str:
