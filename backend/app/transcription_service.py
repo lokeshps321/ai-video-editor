@@ -16,7 +16,7 @@ import subprocess
 import sys
 import threading
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from math import isfinite
 from pathlib import Path
@@ -666,6 +666,65 @@ def _should_fallback_to_text_words(
     if len(tokens) >= 8 and (len(words) * 4) < len(tokens):
         return True
     return False
+
+
+def _word_durations_look_flat(words: list[TranscriptWordPayload]) -> bool:
+    """Detect Sarvam-style synthetic timings: many words with near-identical
+    durations (e.g. a flat ~1s grid) that cannot reflect real sung pacing."""
+    min_words = int(_env_float("TRANSCRIBE_SARVAM_FLAT_MIN_WORDS", 12.0, 4.0))
+    cv_threshold = _env_float("TRANSCRIBE_SARVAM_FLAT_CV_THRESHOLD", 0.15, 0.0)
+    if len(words) < min_words:
+        return False
+    durations = [
+        max(0.0, float(word.end_sec) - float(word.start_sec)) for word in words
+    ]
+    mean_duration = sum(durations) / len(durations)
+    if mean_duration <= 0.5:
+        return False
+    variance = sum((value - mean_duration) ** 2 for value in durations) / len(durations)
+    coefficient_of_variation = (variance**0.5) / mean_duration
+    return coefficient_of_variation < cv_threshold
+
+
+def _redistribute_flat_word_timings(
+    words: list[TranscriptWordPayload],
+    duration_sec: float,
+) -> list[TranscriptWordPayload]:
+    """Reallocate flat word timings proportional to token length within
+    contiguous runs, and mark the words low-trust so downstream consumers
+    do not treat each span as exact."""
+    if not words:
+        return words
+    run_gap_sec = _env_float("TRANSCRIBE_SARVAM_FLAT_RUN_GAP_SEC", 0.75, 0.0)
+    runs: list[list[TranscriptWordPayload]] = [[words[0]]]
+    for prev, word in zip(words, words[1:]):
+        if float(word.start_sec) - float(prev.end_sec) >= run_gap_sec:
+            runs.append([word])
+        else:
+            runs[-1].append(word)
+
+    redistributed: list[TranscriptWordPayload] = []
+    for run in runs:
+        run_start = float(run[0].start_sec)
+        run_end = min(float(duration_sec), float(run[-1].end_sec))
+        span = max(run_end - run_start, 0.05 * len(run))
+        weights = [max(len(word.text.strip()), 2) for word in run]
+        total_weight = sum(weights)
+        cursor = run_start
+        for word, weight in zip(run, weights):
+            word_span = span * (weight / total_weight)
+            word_end = min(run_end, cursor + word_span)
+            redistributed.append(
+                replace(
+                    word,
+                    start_sec=round(cursor, 3),
+                    end_sec=round(max(word_end, cursor + 0.05), 3),
+                    quality_score=0.4,
+                    quality_label="weak",
+                )
+            )
+            cursor += word_span
+    return redistributed
 
 
 def _extract_sarvam_word_timestamps(
@@ -2538,6 +2597,20 @@ def _extract_audio_for_cloud(
     return str(output_path), output_path
 
 
+def _sarvam_timestamp_offset_sec() -> float:
+    """
+    Small provider-specific nudge for Sarvam word times.
+
+    Negative values make captions appear earlier ("faster"). Songs often need a
+    slightly larger advance than speech. Does not use TRANSCRIBE_TIMESTAMP_OFFSET_SEC
+    (Whisper/Groq path).
+    """
+    profile = (_runtime_profile() or "").strip().lower()
+    if profile in {"music", "mixed", "song"}:
+        return _env_float("TRANSCRIBE_SARVAM_SONG_TIMESTAMP_OFFSET_SEC", -0.10, -2.0)
+    return _env_float("TRANSCRIBE_SARVAM_TIMESTAMP_OFFSET_SEC", -0.06, -2.0)
+
+
 def _call_sarvam_rest(
     audio_path: str,
     duration_sec: float,
@@ -2608,12 +2681,19 @@ def _call_sarvam_rest(
         str(payload.get("transcript") or payload.get("text") or "")
     )
     words = _extract_sarvam_word_timestamps(payload, duration_sec)
+    if _word_durations_look_flat(words):
+        words = _redistribute_flat_word_timings(words, duration_sec)
     if _should_fallback_to_text_words(words, transcript_text):
         words = _fallback_words_from_text(transcript_text, duration_sec)
-    # Sarvam timestamps are already accurate (no Whisper drift),
-    # so we must NOT apply the global TRANSCRIBE_TIMESTAMP_OFFSET_SEC offset.
+    # Do NOT apply Whisper/Groq TRANSCRIBE_TIMESTAMP_OFFSET_SEC.
+    # Use a mild Sarvam-only nudge (often slightly early for song captions).
     words = _apply_word_filters(
-        _normalize_words(words, duration_sec, apply_offset=False),
+        _normalize_words(
+            words,
+            duration_sec,
+            apply_offset=False,
+            offset_sec=_sarvam_timestamp_offset_sec(),
+        ),
         duration_sec,
         audio_path=audio_path,
     )
@@ -2719,9 +2799,17 @@ def _build_from_sarvam(
 
         if not merged_words:
             return None
-        # Sarvam timestamps are already accurate — do NOT apply the Whisper-specific offset.
+        # Do NOT apply Whisper/Groq TRANSCRIBE_TIMESTAMP_OFFSET_SEC.
+        # Use a mild Sarvam-only nudge (often slightly early for song captions).
+        if _word_durations_look_flat(merged_words):
+            merged_words = _redistribute_flat_word_timings(merged_words, duration_sec)
         normalized_words = _apply_word_filters(
-            _normalize_words(merged_words, duration_sec, apply_offset=False),
+            _normalize_words(
+                merged_words,
+                duration_sec,
+                apply_offset=False,
+                offset_sec=_sarvam_timestamp_offset_sec(),
+            ),
             duration_sec,
             audio_path=prepared_path,
         )

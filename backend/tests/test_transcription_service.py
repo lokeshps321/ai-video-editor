@@ -2308,6 +2308,33 @@ def test_normalize_words_clamps_pathological_word_duration(
     assert (normalized[1].end_sec - normalized[1].start_sec) <= 1.2 + 1e-6
 
 
+def test_normalize_words_accepts_explicit_sarvam_style_offset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRANSCRIBE_WORD_MIN_CONFIDENCE", "0")
+    monkeypatch.setenv("TRANSCRIBE_TIMESTAMP_OFFSET_SEC", "0.50")
+    words = [
+        TranscriptWordPayload(id="a", text="hello", start_sec=1.00, end_sec=1.40),
+    ]
+    # Explicit offset wins; global Whisper offset is ignored when apply_offset=False.
+    normalized = ts._normalize_words(
+        words, 5.0, apply_offset=False, offset_sec=-0.10
+    )
+    assert normalized[0].start_sec == pytest.approx(0.90, abs=0.001)
+    assert normalized[0].end_sec == pytest.approx(1.30, abs=0.001)
+
+
+def test_sarvam_timestamp_offset_uses_song_value_for_music_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRANSCRIBE_SARVAM_TIMESTAMP_OFFSET_SEC", "-0.06")
+    monkeypatch.setenv("TRANSCRIBE_SARVAM_SONG_TIMESTAMP_OFFSET_SEC", "-0.10")
+    monkeypatch.setattr(ts, "_runtime_profile", lambda: "music")
+    assert ts._sarvam_timestamp_offset_sec() == pytest.approx(-0.10)
+    monkeypatch.setattr(ts, "_runtime_profile", lambda: "speech")
+    assert ts._sarvam_timestamp_offset_sec() == pytest.approx(-0.06)
+
+
 def test_resolve_device_and_compute_type_auto_cpu(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2848,3 +2875,74 @@ def test_get_precomputed_vocal_path_returns_none_if_not_exists(tmp_path: Path) -
 
     result = ts.get_precomputed_vocal_path(str(source), str(tmp_path))
     assert result is None
+
+
+def _flat_words(count: int = 15, *, start: float = 0.0, duration: float = 1.0):
+    from app.transcription_service import TranscriptWordPayload
+
+    words = []
+    cursor = start
+    for idx in range(count):
+        words.append(
+            TranscriptWordPayload(
+                id=f"f{idx}",
+                text="ಪದ" if idx % 2 else "ಹಾಡುಗಳು",
+                start_sec=round(cursor, 3),
+                end_sec=round(cursor + duration, 3),
+            )
+        )
+        cursor += duration
+    return words
+
+
+def test_flat_sarvam_word_durations_detected() -> None:
+    from app.transcription_service import _word_durations_look_flat
+
+    assert _word_durations_look_flat(_flat_words(15))
+
+
+def test_varied_word_durations_not_flat() -> None:
+    from app.transcription_service import TranscriptWordPayload, _word_durations_look_flat
+
+    words = []
+    cursor = 0.0
+    for idx in range(15):
+        duration = 0.2 + (idx % 5) * 0.35
+        words.append(
+            TranscriptWordPayload(
+                id=f"v{idx}", text="word", start_sec=cursor, end_sec=cursor + duration
+            )
+        )
+        cursor += duration + 0.1
+    assert not _word_durations_look_flat(words)
+
+
+def test_flat_detection_requires_min_words() -> None:
+    from app.transcription_service import _word_durations_look_flat
+
+    assert not _word_durations_look_flat(_flat_words(6))
+
+
+def test_redistribute_flat_timings_proportional_within_runs() -> None:
+    from app.transcription_service import _redistribute_flat_word_timings
+
+    first_run = _flat_words(8, start=0.0)
+    second_run = _flat_words(7, start=11.0)
+    words = first_run + second_run
+    result = _redistribute_flat_word_timings(words, 20.0)
+
+    assert len(result) == 15
+    # Run boundaries preserved
+    assert abs(result[0].start_sec - 0.0) < 1e-6
+    assert abs(result[7].end_sec - 8.0) < 0.06
+    assert abs(result[8].start_sec - 11.0) < 1e-6
+    # Longer text gets longer span than shorter text within a run
+    longer = result[0]
+    shorter = result[1]
+    assert (longer.end_sec - longer.start_sec) > (shorter.end_sec - shorter.start_sec)
+    # Monotonic, non-overlapping
+    for prev, cur in zip(result, result[1:]):
+        assert cur.start_sec >= prev.start_sec
+    # Marked low-trust
+    assert all(word.quality_label == "weak" for word in result)
+    assert all(word.quality_score == 0.4 for word in result)
