@@ -997,6 +997,7 @@ function App() {
   const [showNewProjectForm, setShowNewProjectForm] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [ingestingUrl, setIngestingUrl] = useState(false);
   const [generatingTranscript, setGeneratingTranscript] = useState(false);
   const [transcriptStartedAtMs, setTranscriptStartedAtMs] = useState<
     number | null
@@ -2719,17 +2720,13 @@ function App() {
     }
   }
 
-  async function uploadVideo(file: File) {
-    if (!project) return;
-    setUploading(true);
-    setError(null);
-    setQuickEditSummary(null);
-    setExportCompletion(null);
-    try {
-      const uploaded = await api.uploadMedia(project.id, file);
-      setMedia((prev) => [uploaded, ...prev]);
-      let addedToTimeline = false;
-      if (uploaded.media_type === "video") {
+  async function attachVideoAsset(uploaded: MediaAsset): Promise<boolean> {
+    if (!project) return false;
+    setMedia((prev) =>
+      prev.some((item) => item.id === uploaded.id) ? prev : [uploaded, ...prev],
+    );
+    let addedToTimeline = false;
+    if (uploaded.media_type === "video") {
         setSelectedAssetId(uploaded.id);
         setPreviewUrl(resolveMediaPath(uploaded.storage_path));
         const durationSec = uploaded.duration_sec ?? 0;
@@ -2771,6 +2768,18 @@ function App() {
           }
         }
       }
+    return addedToTimeline;
+  }
+
+  async function uploadVideo(file: File) {
+    if (!project) return;
+    setUploading(true);
+    setError(null);
+    setQuickEditSummary(null);
+    setExportCompletion(null);
+    try {
+      const uploaded = await api.uploadMedia(project.id, file);
+      const addedToTimeline = await attachVideoAsset(uploaded);
       setNotice(
         addedToTimeline ? "Video uploaded. Timeline ready." : "Video uploaded.",
       );
@@ -2779,6 +2788,46 @@ function App() {
       setNotice(null);
     } finally {
       setUploading(false);
+    }
+  }
+
+  async function ingestVideoFromUrl(url: string) {
+    if (!project || ingestingUrl) return;
+    setIngestingUrl(true);
+    setError(null);
+    setQuickEditSummary(null);
+    setExportCompletion(null);
+    const knownAssetIds = new Set(media.map((item) => item.id));
+    try {
+      setNotice("Fetching video from URL...");
+      let job = await api.ingestUrl(project.id, url.trim());
+      while (job.status === "queued" || job.status === "running") {
+        await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        job = await api.getJob(job.id);
+        setNotice(`Fetching video from URL... ${job.progress ?? 0}%`);
+      }
+      if (job.status !== "completed") {
+        throw new Error(job.error ?? "URL ingestion failed.");
+      }
+      const assets = await api.listMedia(project.id);
+      const ingested =
+        assets.find(
+          (item) => !knownAssetIds.has(item.id) && item.media_type === "video",
+        ) ?? assets.find((item) => item.media_type === "video");
+      if (!ingested) {
+        throw new Error("Ingestion finished but no video was found.");
+      }
+      const addedToTimeline = await attachVideoAsset(ingested);
+      setNotice(
+        addedToTimeline
+          ? "Video added from URL. Timeline ready."
+          : "Video added from URL.",
+      );
+    } catch (err) {
+      setError((err as Error).message);
+      setNotice(null);
+    } finally {
+      setIngestingUrl(false);
     }
   }
 
@@ -5961,7 +6010,9 @@ function App() {
               previewUpdateQueued={previewUpdateQueued}
               queueingPreview={queueingPreview}
               canRenderPreview={!!project}
+              ingestingUrl={ingestingUrl}
               onUploadVideo={(file) => void uploadVideo(file)}
+              onIngestUrl={(url) => void ingestVideoFromUrl(url)}
               onLoadedMetadata={() => setCurrentTimeSec(0)}
               onPlay={startPlaybackSync}
               onPause={() => {

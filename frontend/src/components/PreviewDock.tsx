@@ -1,5 +1,5 @@
 import { Fragment, useState, type CSSProperties, type RefObject } from "react";
-import { FileVideo, UploadCloud, Zap } from "lucide-react";
+import { FileVideo, Link2, UploadCloud, Zap } from "lucide-react";
 import type { ExportAspectRatio, Job } from "../types";
 import "./PreviewDock.css";
 
@@ -39,7 +39,9 @@ type PreviewDockProps = {
   previewUpdateQueued: boolean;
   queueingPreview: boolean;
   canRenderPreview: boolean;
+  ingestingUrl: boolean;
   onUploadVideo: (file: File) => void;
+  onIngestUrl: (url: string) => void;
   onLoadedMetadata: () => void;
   onPlay: () => void;
   onPause: () => void;
@@ -79,7 +81,9 @@ export function PreviewDock({
   previewUpdateQueued,
   queueingPreview,
   canRenderPreview,
+  ingestingUrl,
   onUploadVideo,
+  onIngestUrl,
   onLoadedMetadata,
   onPlay,
   onPause,
@@ -91,6 +95,14 @@ export function PreviewDock({
   formatPreciseSeconds,
 }: PreviewDockProps) {
   const [videoDragOver, setVideoDragOver] = useState(false);
+  const [ingestUrlValue, setIngestUrlValue] = useState("");
+
+  const submitIngestUrl = () => {
+    const url = ingestUrlValue.trim();
+    if (!url || ingestingUrl || uploading) return;
+    onIngestUrl(url);
+    setIngestUrlValue("");
+  };
 
   return (
     <section className="panel card editorPreviewDock">
@@ -143,6 +155,28 @@ export function PreviewDock({
               <UploadCloud size={16} />
               {uploading ? "Uploading..." : "Choose Video"}
             </label>
+            <div className="onboardingUrlRow">
+              <input
+                type="url"
+                className="onboardingUrlInput"
+                placeholder="or paste a video link (YouTube, .mp4 ...)"
+                value={ingestUrlValue}
+                disabled={ingestingUrl || uploading}
+                onChange={(event) => setIngestUrlValue(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") submitIngestUrl();
+                }}
+              />
+              <button
+                type="button"
+                className="onboardingUrlBtn"
+                disabled={!ingestUrlValue.trim() || ingestingUrl || uploading}
+                onClick={submitIngestUrl}
+              >
+                <Link2 size={14} />
+                {ingestingUrl ? "Fetching..." : "Add from URL"}
+              </button>
+            </div>
             <p className="muted onboardingHint">
               Or press{" "}
               <span className="inlineIconLabel">
