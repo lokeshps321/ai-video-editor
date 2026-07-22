@@ -36,6 +36,12 @@ def download_video_with_ytdlp(url: str, project_id: str) -> tuple[str, str]:
         "--restrict-filenames",
         "--merge-output-format",
         "mp4",
+    ]
+    # YouTube extraction needs a JS runtime; yt-dlp only auto-detects deno,
+    # so point it at node when that's what the host has.
+    if shutil.which("deno") is None and shutil.which("node") is not None:
+        cmd += ["--js-runtimes", "node"]
+    cmd += [
         "-o",
         str(output_template),
         normalized_url,
