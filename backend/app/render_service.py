@@ -228,6 +228,7 @@ def _ass_style_motion_tags(
             "hormozi_bold",
             "hormozi_green",
             "shorts_viral",
+            "orange_fire",
             "pop_color",
             "street_impact",
             "neon_gamer",
@@ -247,7 +248,13 @@ def _ass_style_motion_tags(
             return _fad(120, 100)
         return ""
 
-    if normalized in {"pop", "hormozi_bold", "pop_color", "street_impact"}:
+    if normalized in {
+        "pop",
+        "hormozi_bold",
+        "pop_color",
+        "street_impact",
+        "orange_fire",
+    }:
         snap_in = 70 if normalized == "street_impact" else 90
         return _fad(snap_in, 80)
 
@@ -534,11 +541,14 @@ _CAPTION_STYLE_ALIASES = {
     "street": "street_impact",
     "impact": "street_impact",
     "urban": "street_impact",
+    "fire": "orange_fire",
+    "orange": "orange_fire",
 }
 _INDIC_HIGHLIGHT_TO_PRIMARY_STYLES = {
     "hormozi_bold",
     "hormozi_green",
     "shorts_viral",
+    "orange_fire",
     "neon_gamer",
     "retro_vhs",
     "pop_color",
@@ -974,10 +984,18 @@ def _style_drawtext_options(
                 f"alpha='{_escape_drawtext_expr(alpha)}'",
             ]
         )
-    if normalized in {"pop", "hormozi_bold"}:
-        pop_end = start + (0.12 if normalized == "hormozi_bold" else 0.3)
-        start_scale = 1.22 if normalized == "hormozi_bold" else 1.35
-        duration = 0.12 if normalized == "hormozi_bold" else 0.30
+    if normalized in {"pop", "hormozi_bold", "orange_fire"}:
+        pop_end = start + (
+            0.12 if normalized in {"hormozi_bold", "orange_fire"} else 0.3
+        )
+        start_scale = (
+            1.24
+            if normalized == "orange_fire"
+            else 1.22 if normalized == "hormozi_bold" else 1.35
+        )
+        duration = (
+            0.12 if normalized in {"hormozi_bold", "orange_fire"} else 0.30
+        )
         size_expr = (
             f"if(lt(t,{pop_end:.3f}),"
             f"{font_size}*({start_scale:.2f}-{(start_scale - 1.0):.2f}*((t-{start:.3f})/{duration:.2f})),{font_size})"
@@ -987,8 +1005,10 @@ def _style_drawtext_options(
                 f"x={x}",
                 f"y={y}",
                 f"fontsize='{_escape_drawtext_expr(size_expr)}'",
-                f"fontcolor={primary}",
-            ]
+                f"fontcolor={highlight if normalized == 'orange_fire' else primary}",
+            ],
+            border_width=max(stroke_width, 2 if normalized == "orange_fire" else stroke_width),
+            shadow_px=max(shadow_size, 2 if normalized == "orange_fire" else shadow_size),
         )
     if normalized == "bounce":
         y_expr = f"{y}+18*sin((t-{start:.3f})*12)"

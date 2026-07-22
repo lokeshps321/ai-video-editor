@@ -248,6 +248,47 @@
   animation: captionPreviewFlash 0.95s ease-in-out infinite;
 }
 
+.captionPreviewScene.fire {
+  background:
+    radial-gradient(
+      circle at 50% 100%,
+      rgba(255, 106, 0, 0.28),
+      transparent 60%
+    ),
+    linear-gradient(180deg, rgba(40, 12, 0, 0.35), rgba(0, 0, 0, 0));
+}
+
+.captionPreviewScene.fire .captionPreviewText {
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.captionPreviewScene.fire .captionPreviewHighlight {
+  background: linear-gradient(135deg, #ff9a1a, #ff4500);
+  color: #1a0800;
+  box-shadow: 0 0 18px rgba(255, 106, 0, 0.55);
+  transform: scale(1.08);
+}
+
+.captionStyleCard:is(:hover, .active)
+  .captionPreviewScene.fire
+  .captionPreviewHighlight {
+  animation: captionPreviewFire 1.05s ease-in-out infinite;
+}
+
+@keyframes captionPreviewFire {
+  0%,
+  100% {
+    transform: scale(1.08);
+    box-shadow: 0 0 14px rgba(255, 106, 0, 0.4);
+  }
+  50% {
+    transform: scale(1.16);
+    box-shadow: 0 0 24px rgba(255, 69, 0, 0.7);
+  }
+}
+
 .captionPreviewScene.neon {
   background:
     radial-gradient(

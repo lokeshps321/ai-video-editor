@@ -42,6 +42,8 @@ _CAPTION_STYLE_ALIASES = {
     "street": "street_impact",
     "impact": "street_impact",
     "urban": "street_impact",
+    "fire": "orange_fire",
+    "orange": "orange_fire",
 }
 _CAPTION_STYLE_PRESETS: dict[str, dict[str, Any]] = {
     "hormozi_bold": {
@@ -185,6 +187,24 @@ _CAPTION_STYLE_PRESETS: dict[str, dict[str, Any]] = {
         "max_gap_sec": 0.16,
         "max_caption_duration_sec": 0.90,
         "max_caption_display_sec": 1.0,
+        "caption_guard_sec": 0.002,
+        "min_duration_sec": 0.06,
+    },
+    "orange_fire": {
+        "render_style": "orange_fire",
+        "font_name": "Arial-Black",
+        "font_size": 28,
+        "primary_color": "&H00FFFFFF",
+        "highlight_color": "&H00006AFF",
+        "outline_color": "&H00000000",
+        "outline_width": 3,
+        "shadow": 2,
+        "alignment": 2,
+        "margin_v": 50,
+        "max_words_per_caption": 1,
+        "max_gap_sec": 0.18,
+        "max_caption_duration_sec": 0.95,
+        "max_caption_display_sec": 1.05,
         "caption_guard_sec": 0.002,
         "min_duration_sec": 0.06,
     },
