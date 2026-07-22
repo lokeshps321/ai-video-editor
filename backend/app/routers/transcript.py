@@ -448,7 +448,23 @@ def _related_media_assets(session: Session, asset: MediaAsset) -> list[MediaAsse
     return list(candidates_by_id.values())
 
 
+def _ingested_source_title(asset: MediaAsset) -> str | None:
+    """Return the title yt-dlp reported for a URL-ingested media asset."""
+    try:
+        metadata = json.loads(asset.metadata_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    title = metadata.get("source_title")
+    return str(title).strip() if isinstance(title, str) and title.strip() else None
+
+
 def _lyrics_reference_filename_hint(session: Session, asset: MediaAsset) -> str:
+    source_title = _ingested_source_title(asset)
+    if source_title:
+        return source_title
+
     filename = str(asset.filename or "").strip()
     if not filename or not _looks_opaque_media_filename(filename):
         return filename
@@ -1570,8 +1586,9 @@ def _refresh_reference_lyrics_on_reused_transcript(
 ) -> Transcript:
     if row.is_mock:
         return row
-    song_like = looks_like_song_media(asset.filename)
-    if not song_like and transcript_mode != "song":
+    lyrics_filename = _lyrics_reference_filename_hint(session, asset)
+    song_like = looks_like_song_media(lyrics_filename)
+    if not song_like and not _ingested_source_title(asset) and transcript_mode != "song":
         return row
 
     payload = _transcript_row_to_payload(row)
@@ -1583,9 +1600,8 @@ def _refresh_reference_lyrics_on_reused_transcript(
     _t_lyrics_start = time.monotonic()
     updated = maybe_apply_reference_lyrics(
         payload,
-        filename=_lyrics_reference_filename_hint(session, asset),
+        filename=lyrics_filename,
         duration_sec=duration_sec,
-        transcript_mode=transcript_mode,
     )
     logger.info(
         "⏱️ TIMING: Reused transcript lyrics matching took %.1fs",
@@ -2268,10 +2284,12 @@ def _generate_transcript_response(
             ),
         )
 
+    lyrics_filename = _lyrics_reference_filename_hint(session, asset)
+    has_source_title = _ingested_source_title(asset) is not None
     requested_language = _normalize_requested_language(payload.language)
     transcript_mode = _resolve_requested_transcript_mode(
         payload.mode,
-        filename=asset.filename,
+        filename=lyrics_filename,
     )
     row: Transcript | None = None
     reused_transcript = False
@@ -2295,7 +2313,7 @@ def _generate_transcript_response(
                         _transcript_reuse_score(
                             existing,
                             items=existing_items,
-                            filename=asset.filename,
+                            filename=lyrics_filename,
                         )
                         is not None
                     ):
@@ -2355,7 +2373,7 @@ def _generate_transcript_response(
 
     if row is None:
         _t_total_start = time.monotonic()
-        song_like_media = looks_like_song_media(asset.filename)
+        song_like_media = looks_like_song_media(lyrics_filename)
         strategy = _resolve_transcript_generation_strategy(
             duration_sec, transcript_mode, song_like_media=song_like_media
         )
@@ -2397,7 +2415,7 @@ def _generate_transcript_response(
                         chunk_duration_sec_override=strategy.chunk_duration_sec,
                         chunk_overlap_sec_override=strategy.chunk_overlap_sec,
                         chunk_parallelism_override=strategy.chunk_parallelism,
-                        filename=asset.filename,
+                        filename=lyrics_filename,
                     )
                     _t_chunked_elapsed = time.monotonic() - _t_chunked_start
                     logger.info(
@@ -2426,7 +2444,7 @@ def _generate_transcript_response(
         if (
             transcript_payload.words
             and not transcript_payload.is_mock
-            and looks_like_duet_media(asset.filename)
+            and looks_like_duet_media(lyrics_filename)
         ):
             if progress_callback:
                 progress_callback(72, "Detecting speakers in multi-voice song")
@@ -2434,7 +2452,7 @@ def _generate_transcript_response(
                 transcript_payload,
                 audio_path=source_path,
                 duration_sec=duration_sec,
-                filename=asset.filename,
+                filename=lyrics_filename,
                 language_hint=payload.language or transcript_payload.language,
                 progress_callback=progress_callback,
             )
@@ -2443,13 +2461,13 @@ def _generate_transcript_response(
         if (
             transcript_payload.words
             and not transcript_payload.is_mock
-            and (song_like_media or strategy.mode == "song")
+            and (song_like_media or has_source_title or strategy.mode == "song")
         ):
             if progress_callback:
                 progress_callback(78, "Matching reference lyrics")
             transcript_payload = maybe_apply_reference_lyrics(
                 transcript_payload,
-                filename=_lyrics_reference_filename_hint(session, asset),
+                filename=lyrics_filename,
                 duration_sec=duration_sec,
             )
         _t_lyrics_elapsed = time.monotonic() - _t_lyrics_start

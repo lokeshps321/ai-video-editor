@@ -881,6 +881,70 @@ def test_lyrics_reference_filename_hint_recovers_descriptive_alias_for_opaque_up
         assert resolved == "Coolio - Gangsta's Paradise (Official Music Video).mp4"
 
 
+def test_transcript_uses_ingested_source_title_for_lyrics_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.routers.media.probe_duration_seconds", lambda _: 8.0)
+    monkeypatch.setattr(
+        "app.routers.media.probe_stream_flags",
+        lambda _: {"has_video": True, "has_audio": True},
+    )
+    monkeypatch.setenv("TRANSCRIBE_REUSE_EXISTING_ON_GENERATE", "false")
+    monkeypatch.setenv("TRANSCRIBE_TIMESTAMP_REFINEMENT_ENABLED", "false")
+    monkeypatch.setenv("TRANSCRIPT_WEAK_REGION_RETRY_ENABLED", "false")
+
+    def fake_chunked(*_args, **_kwargs) -> TranscriptPayload:
+        return TranscriptPayload(
+            source="test_provider",
+            language="en",
+            text="kesariya tera ishq hai piya",
+            words=[
+                TranscriptWordPayload(
+                    id="w1", text="kesariya", start_sec=0.0, end_sec=0.4
+                ),
+                TranscriptWordPayload(
+                    id="w2", text="tera", start_sec=0.4, end_sec=0.8
+                ),
+            ],
+            is_mock=False,
+        )
+
+    lyrics_hints: list[str] = []
+
+    def fake_lyrics_lookup(
+        transcript: TranscriptPayload, *, filename: str, duration_sec: float
+    ) -> TranscriptPayload:
+        del duration_sec
+        lyrics_hints.append(filename)
+        return transcript
+
+    monkeypatch.setattr(
+        "app.routers.transcript._generate_transcript_payload_chunked", fake_chunked
+    )
+    monkeypatch.setattr(
+        "app.routers.transcript.maybe_apply_reference_lyrics", fake_lyrics_lookup
+    )
+
+    with TestClient(app) as client:
+        project_id = _create_project(client, name="URL Ingest Lyrics Title")
+        asset_id = _upload_video(client, project_id)
+        with Session(engine) as session:
+            asset = session.get(MediaAsset, asset_id)
+            assert asset is not None
+            asset.filename = "1a2b3c4d5e6f.mp4"
+            asset.metadata_json = '{"source_title": "Kesariya"}'
+            session.add(asset)
+            session.commit()
+
+        response = client.post(
+            f"/api/v1/transcript/generate?project_id={project_id}",
+            json={"asset_id": asset_id, "mode": "auto"},
+        )
+
+    assert response.status_code == 200
+    assert lyrics_hints == ["Kesariya"]
+
+
 def test_related_library_transcript_prefers_lyrics_ref_match_for_opaque_upload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> (

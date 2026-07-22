@@ -91,6 +91,11 @@ def render_preview(
         resolution="720p",
         fps=preview_fps,
         quality="low",
+        auto_frame=(
+            payload.auto_frame
+            if payload is not None and payload.aspect_ratio == "9:16"
+            else False
+        ),
     )
     enqueue_render_job(job.id, request)
     return _to_job_response(session, job)

@@ -128,6 +128,9 @@ class ExportSettings(BaseModel):
     fps: Literal[24, 30, 60] = 30
     quality: Literal["low", "medium", "high", "max"] = "high"
     bitrate: Optional[str] = None
+    # Framing is opt-in. A 9:16 export can otherwise retain the entire source
+    # image with padding instead of cropping it to fill the canvas.
+    auto_frame: bool = False
 
 
 class TimelineState(BaseModel):
@@ -566,6 +569,7 @@ class RenderRequest(BaseModel):
     fps: Literal[24, 30, 60] = 30
     quality: Literal["low", "medium", "high", "max"] = "high"
     bitrate: Optional[str] = None
+    auto_frame: bool = False
 
 
 class VibeActionRequest(BaseModel):

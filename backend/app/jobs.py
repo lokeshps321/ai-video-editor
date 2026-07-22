@@ -14,7 +14,7 @@ from sqlmodel import Session, select
 
 from .config import get_settings
 from .database import engine
-from .ingest_service import download_video_with_ytdlp
+from .ingest_service import download_video_with_ytdlp, source_title_to_filename
 from .media_utils import probe_duration_seconds, probe_stream_flags
 from .models import Job, JobEvent, MediaAsset
 from .render_service import build_ffmpeg_command, ensure_parent_dir, run_ffmpeg
@@ -361,8 +361,15 @@ def process_ingest_url_job(job_id: str, url: str) -> None:
                 stage="download",
                 message="Downloading source video",
             )
-            absolute_path, relative_path = download_video_with_ytdlp(
-                url, job.project_id
+            download_result = download_video_with_ytdlp(url, job.project_id)
+            # Accept the older two-item return shape too. It keeps existing
+            # deployment extensions/mocks working while URL ingestion rolls
+            # out the title-aware result.
+            absolute_path, relative_path = download_result[:2]
+            source_title = (
+                str(download_result[2]).strip()
+                if len(download_result) > 2 and download_result[2]
+                else None
             )
 
             _set_job_status(
@@ -386,10 +393,11 @@ def process_ingest_url_job(job_id: str, url: str) -> None:
                 stage="register",
                 message="Registering media in project",
             )
-            file_name = Path(absolute_path).name
-            mime_type = mimetypes.guess_type(file_name)[0] or "video/mp4"
+            file_name = source_title_to_filename(source_title, absolute_path)
+            mime_type = mimetypes.guess_type(absolute_path)[0] or "video/mp4"
             metadata = {
                 "source_url": url,
+                "source_title": source_title,
                 **stream_flags,
             }
             asset = MediaAsset(

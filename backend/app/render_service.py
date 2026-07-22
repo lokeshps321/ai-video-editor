@@ -777,10 +777,32 @@ def _crop_x_expression(crop_width: int, keyframes: list[tuple[float, int]]) -> s
     return f"max(0,min(iw-{crop_width},{expr}))"
 
 
-def _video_filters_for_clip(clip: Clip, out_w: int, out_h: int, fps: int, *, cover_output: bool = False) -> str:
+def _is_auto_frame_crop(crop: object) -> bool:
+    """Identify the 9:16 crop shape produced by the prior Smart Reframe tool."""
+
+    try:
+        width = float(getattr(crop, "width"))
+        height = float(getattr(crop, "height"))
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return width > 0 and height > 0 and abs((width / height) - (9 / 16)) < 0.01
+
+
+def _video_filters_for_clip(
+    clip: Clip,
+    out_w: int,
+    out_h: int,
+    fps: int,
+    *,
+    cover_output: bool = False,
+    apply_auto_frame_crop: bool = True,
+) -> str:
     chain: list[str] = []
-    if clip.transform.crop:
-        crop = clip.transform.crop
+    crop = clip.transform.crop
+    # Smart Reframe stored its subject crop on the clip. Treat those 9:16
+    # crops as auto-framing: keep them only while Auto Frame is active, which
+    # also makes previously saved reframes disappear in 16:9 renders.
+    if crop and (apply_auto_frame_crop or not _is_auto_frame_crop(crop)):
         if clip.transform.crop_keyframes:
             keyframes = [
                 (max(0.0, float(item.time_sec)), int(item.x))
@@ -1264,15 +1286,22 @@ def build_ffmpeg_command(
         )
 
     filter_parts: list[str] = []
-    # Reels and Shorts must fill the vertical canvas.  Using the legacy
-    # fit-and-pad path here produces black side bars for a normal 16:9 source.
-    # The cover path preserves aspect ratio, then centre-crops the excess width
-    # (or height), matching the full-screen behaviour already used for B-roll.
-    # Landscape exports retain fit-and-pad so an intentionally vertical source
-    # is not unexpectedly cropped in a normal 16:9 edit.
-    main_cover_output = export_settings.aspect_ratio == "9:16"
+    # Auto framing is deliberately opt-in. The cover path preserves aspect
+    # ratio, then centre-crops the excess width (or height); without it, clips
+    # retain their full image inside the requested canvas. It is never used for
+    # a landscape render, even if a client sends auto_frame=true.
+    main_cover_output = (
+        export_settings.aspect_ratio == "9:16" and export_settings.auto_frame
+    )
     for idx, (clip, _src) in enumerate(clip_inputs):
-        vf = _video_filters_for_clip(clip, out_w, out_h, fps, cover_output=main_cover_output)
+        vf = _video_filters_for_clip(
+            clip,
+            out_w,
+            out_h,
+            fps,
+            cover_output=main_cover_output,
+            apply_auto_frame_crop=main_cover_output,
+        )
         filter_parts.append(f"[{idx}:v]{vf}[v{idx}]")
         duration = max(_clip_duration(clip), 0.1)
         if clip_has_audio_flags[idx]:
@@ -1332,7 +1361,13 @@ def build_ffmpeg_command(
                 continue
             source_stream_index = overlay_base_index + idx
             overlay_stream = f"ov{idx}"
-            vf = _video_filters_for_clip(clip, out_w, out_h, fps, cover_output=True)
+            vf = _video_filters_for_clip(
+                clip,
+                out_w,
+                out_h,
+                fps,
+                cover_output=True,
+            )
             filter_parts.append(f"[{source_stream_index}:v]{vf}[{overlay_stream}]")
 
             opacity = _float(clip.broll_opacity, 0.0, 1.0)

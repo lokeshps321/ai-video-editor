@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from app.render_service import _build_ass_subtitle_file, _resolve_h264_video_encoder, build_ffmpeg_command, run_ffmpeg
-from app.schemas import Clip, ExportSettings, TextOverlay, TimelineState, Track, Transition
+from app.schemas import Crop, Clip, ExportSettings, TextOverlay, TimelineState, Track, Transition
 
 
 def _timeline() -> TimelineState:
@@ -93,7 +93,7 @@ def test_build_ffmpeg_command_uses_landscape_resolution_by_default() -> None:
     assert "pad=1280:720:(ow-iw)/2:(oh-ih)/2" in joined
 
 
-def test_build_ffmpeg_command_uses_full_screen_crop_for_portrait_reels() -> None:
+def test_build_ffmpeg_command_preserves_wide_clips_in_portrait_by_default() -> None:
     state = _timeline()
     command = build_ffmpeg_command(
         timeline=state,
@@ -106,9 +106,85 @@ def test_build_ffmpeg_command_uses_full_screen_crop_for_portrait_reels() -> None
     )
     joined = " ".join(command)
     assert "scale=720:1280" in joined
+    assert "force_original_aspect_ratio=decrease" in joined
+    assert "pad=720:1280:(ow-iw)/2:(oh-ih)/2" in joined
+    assert "crop=720:1280:(iw-ow)/2:(ih-oh)/2" not in joined
+
+
+def test_build_ffmpeg_command_auto_frames_portrait_reels_when_requested() -> None:
+    state = _timeline()
+    command = build_ffmpeg_command(
+        timeline=state,
+        clip_inputs=[(state.tracks[0].clips[0], "/tmp/video.mp4")],
+        clip_has_audio_flags=[False],
+        bg_audio_inputs=[],
+        bg_has_audio_flags=[],
+        output_path="/tmp/out.mp4",
+        export_settings=ExportSettings(
+            format="mp4",
+            aspect_ratio="9:16",
+            resolution="720p",
+            fps=30,
+            quality="medium",
+            auto_frame=True,
+        ),
+    )
+    joined = " ".join(command)
     assert "force_original_aspect_ratio=increase" in joined
     assert "crop=720:1280:(iw-ow)/2:(ih-oh)/2" in joined
     assert "pad=720:1280:(ow-iw)/2:(oh-ih)/2" not in joined
+
+
+def test_build_ffmpeg_command_never_auto_frames_landscape() -> None:
+    state = _timeline()
+    command = build_ffmpeg_command(
+        timeline=state,
+        clip_inputs=[(state.tracks[0].clips[0], "/tmp/video.mp4")],
+        clip_has_audio_flags=[False],
+        bg_audio_inputs=[],
+        bg_has_audio_flags=[],
+        output_path="/tmp/out.mp4",
+        export_settings=ExportSettings(
+            format="mp4",
+            aspect_ratio="16:9",
+            resolution="720p",
+            fps=30,
+            quality="medium",
+            auto_frame=True,
+        ),
+    )
+    joined = " ".join(command)
+    assert "force_original_aspect_ratio=decrease" in joined
+    assert "pad=1280:720:(ow-iw)/2:(oh-ih)/2" in joined
+    assert "crop=1280:720:(iw-ow)/2:(ih-oh)/2" not in joined
+
+
+def test_build_ffmpeg_command_hides_saved_auto_frame_crops_when_disabled() -> None:
+    state = _timeline()
+    state.tracks[0].clips[0].transform.crop = Crop(
+        x=656,
+        y=0,
+        width=608,
+        height=1080,
+    )
+    command = build_ffmpeg_command(
+        timeline=state,
+        clip_inputs=[(state.tracks[0].clips[0], "/tmp/video.mp4")],
+        clip_has_audio_flags=[False],
+        bg_audio_inputs=[],
+        bg_has_audio_flags=[],
+        output_path="/tmp/out.mp4",
+        export_settings=ExportSettings(
+            format="mp4",
+            aspect_ratio="16:9",
+            resolution="720p",
+            fps=30,
+            quality="medium",
+            auto_frame=True,
+        ),
+    )
+    joined = " ".join(command)
+    assert "crop=608:1080:656:0" not in joined
 
 
 def test_build_ass_subtitle_file_keeps_portrait_captions_in_lower_third() -> None:

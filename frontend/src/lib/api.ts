@@ -255,6 +255,7 @@ export const api = {
     settings?: {
       aspect_ratio?: ExportAspectRatio;
       fps?: 24 | 30 | 60;
+      auto_frame?: boolean;
     },
   ): Promise<Job> =>
     request<Job>(
@@ -268,6 +269,7 @@ export const api = {
           resolution: "720p",
           fps: settings?.fps ?? 30,
           quality: "low",
+          auto_frame: settings?.auto_frame ?? false,
         }),
       },
     ),
@@ -291,6 +293,7 @@ export const api = {
       fps: 24 | 30 | 60;
       quality: "low" | "medium" | "high" | "max";
       bitrate?: string;
+      auto_frame?: boolean;
     },
   ): Promise<Job> =>
     request<Job>(

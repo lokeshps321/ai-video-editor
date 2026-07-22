@@ -174,12 +174,18 @@ def test_render_export_accepts_aspect_ratio(monkeypatch: pytest.MonkeyPatch) -> 
 def test_ingest_url_creates_media_asset_and_events(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_download_video_with_ytdlp(url: str, project_id: str) -> tuple[str, str]:
+    def fake_download_video_with_ytdlp(
+        url: str, project_id: str
+    ) -> tuple[str, str, str]:
         project_dir = Path(os.environ["UPLOAD_DIR"]) / project_id
         project_dir.mkdir(parents=True, exist_ok=True)
         file_path = project_dir / "ingested-sample.mp4"
         file_path.write_bytes(b"fake-media")
-        return str(file_path), f"{project_id}/{file_path.name}"
+        return (
+            str(file_path),
+            f"{project_id}/{file_path.name}",
+            "Coolio - Gangsta's Paradise (Official Music Video)",
+        )
 
     monkeypatch.setattr(
         "app.jobs.download_video_with_ytdlp", fake_download_video_with_ytdlp
@@ -224,7 +230,10 @@ def test_ingest_url_creates_media_asset_and_events(
         media_res = client.get(f"/api/v1/media?project_id={project_id}")
         assert media_res.status_code == 200
         media_items = media_res.json()
-        assert any(item["filename"] == "ingested-sample.mp4" for item in media_items)
+        assert any(
+            item["filename"] == "Coolio - Gangsta's Paradise (Official Music Video).mp4"
+            for item in media_items
+        )
 
         events_res = client.get(f"/api/v1/jobs/{job_id}/events")
         assert events_res.status_code == 200

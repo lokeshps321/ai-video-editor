@@ -139,6 +139,7 @@ type ExportSettingsSnapshot = {
   resolution: "720p" | "1080p" | "4k";
   fps: 24 | 30 | 60;
   quality: "low" | "medium" | "high" | "max";
+  autoFrame: boolean;
 };
 
 type ExportCompletionSummary = ExportSettingsSnapshot & {
@@ -1103,6 +1104,7 @@ function App() {
   const [previewFrameAspectRatio, setPreviewFrameAspectRatio] =
     useState<ExportAspectRatio>("16:9");
   const [showExportFrameGuide, setShowExportFrameGuide] = useState(false);
+  const [autoFraming, setAutoFraming] = useState(false);
   const [smartReframing, setSmartReframing] = useState(false);
   const [exportingVideo, setExportingVideo] = useState(false);
   const [exportJob, setExportJob] = useState<Job | null>(null);
@@ -2180,6 +2182,7 @@ function App() {
       overrides?: {
         aspectRatio?: ExportAspectRatio;
         fps?: 24 | 30 | 60;
+        autoFrame?: boolean;
       },
     ) => {
       if (!project || queueingPreview) return;
@@ -2196,9 +2199,17 @@ function App() {
       setQueueingPreview(true);
       setError(null);
       try {
+        const previewAspectRatio =
+          overrides?.aspectRatio ?? previewFrameAspectRatio;
         const job = await api.renderPreview(project.id, force, {
-          aspect_ratio: overrides?.aspectRatio ?? exportAspectRatio,
+          // The preview frame is independent from the export preset. This
+          // prevents a portrait export crop from appearing in a 16:9 editor
+          // preview.
+          aspect_ratio: previewAspectRatio,
           fps: overrides?.fps ?? exportFps,
+          auto_frame:
+            previewAspectRatio === "9:16" &&
+            (overrides?.autoFrame ?? autoFraming),
         });
         setPreviewJob(job);
         setPreviewUpdateQueued(false);
@@ -2211,7 +2222,23 @@ function App() {
         setQueueingPreview(false);
       }
     },
-    [project, queueingPreview, previewJob, exportAspectRatio, exportFps],
+    [
+      project,
+      queueingPreview,
+      previewJob,
+      previewFrameAspectRatio,
+      exportFps,
+      autoFraming,
+    ],
+  );
+
+  const changePreviewFrameAspectRatio = useCallback(
+    (ratio: ExportAspectRatio) => {
+      if (ratio === previewFrameAspectRatio) return;
+      setPreviewFrameAspectRatio(ratio);
+      void queuePreview(false, { aspectRatio: ratio });
+    },
+    [previewFrameAspectRatio, queuePreview],
   );
 
   const undo = useCallback(async () => {
@@ -2442,8 +2469,15 @@ function App() {
     }
   }
 
-  async function smartReframeForReel() {
+  async function toggleAutoFraming() {
+    const nextAutoFraming = !autoFraming;
+    if (!nextAutoFraming) {
+      setAutoFraming(false);
+      await queuePreview(false, { autoFrame: false });
+      return;
+    }
     if (!project) return;
+
     setSmartReframing(true);
     setError(null);
     try {
@@ -2461,23 +2495,18 @@ function App() {
       );
       setTimelineCanUndo(response.timeline_can_undo);
       setTimelineCanRedo(response.timeline_can_redo);
-      setExportAspectRatio("9:16");
-      setPreviewFrameAspectRatio("9:16");
+      setAutoFraming(true);
 
-      if (response.reframed_clip_count > 0) {
-        const trackedDetail =
-          response.tracked_clip_count > 0
-            ? ` ${response.tracked_clip_count} clip${response.tracked_clip_count === 1 ? "" : "s"} follow${response.tracked_clip_count === 1 ? "s" : ""} the detected subject.`
-            : " Centre crop was used where no subject track was available.";
-        setNotice(
-          `Smart Reframe applied to ${response.reframed_clip_count} wide clip${response.reframed_clip_count === 1 ? "" : "s"} for a full-screen 9:16 Reel.${trackedDetail}`,
-        );
-        await queuePreview(true, { aspectRatio: "9:16" });
-      } else {
-        setNotice(
-          "No wide main-video clips needed reframing. Reel export will still fill the 9:16 frame.",
-        );
-      }
+      const detail =
+        response.tracked_clip_count > 0
+          ? ` ${response.tracked_clip_count} clip${response.tracked_clip_count === 1 ? "" : "s"} follow${response.tracked_clip_count === 1 ? "s" : ""} the detected subject.`
+          : " Centre framing will be used where no subject track is available.";
+      setNotice(
+        response.reframed_clip_count > 0
+          ? `Auto Frame is on for ${response.reframed_clip_count} wide clip${response.reframed_clip_count === 1 ? "" : "s"}.${detail}`
+          : "Auto Frame is on. No wide main-video clips needed a subject crop.",
+      );
+      await queuePreview(true, { autoFrame: true });
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -3018,9 +3047,11 @@ function App() {
       resolution: exportResolution,
       fps: exportFps,
       quality: exportQuality,
+      autoFrame: autoFraming,
     }),
     [
       exportAspectRatio,
+      autoFraming,
       exportFormat,
       exportFps,
       exportQuality,
@@ -3119,6 +3150,7 @@ function App() {
         resolution: settings.resolution,
         fps: settings.fps,
         quality: settings.quality,
+        auto_frame: settings.aspectRatio === "9:16" && settings.autoFrame,
       });
       setExportJob(job);
       setNotice(
@@ -6025,7 +6057,7 @@ function App() {
                 syncVideoTimeOnce();
               }}
               onTimeUpdate={syncVideoTimeIfPlaying}
-              onFrameAspectRatioChange={setPreviewFrameAspectRatio}
+              onFrameAspectRatioChange={changePreviewFrameAspectRatio}
               onQueuePreview={() => void queuePreview()}
               formatPreciseSeconds={formatPreciseSeconds}
             />
@@ -7256,10 +7288,6 @@ function App() {
                                   className={`exportOption ${exportAspectRatio === ratio ? "active" : ""}`}
                                   onClick={() => {
                                     setExportAspectRatio(ratio);
-                                    setPreviewFrameAspectRatio(ratio);
-                                    void queuePreview(false, {
-                                      aspectRatio: ratio,
-                                    });
                                   }}
                                 >
                                   {ratio}
@@ -7270,22 +7298,24 @@ function App() {
                           {exportAspectRatio === "9:16" && (
                             <div className="smartReframeCard">
                               <div>
-                                <strong>Smart Reframe</strong>
+                                <strong>Auto Frame</strong>
                                 <p>
-                                  Keep the main subject inside a full-screen
-                                  Reel crop. Falls back to a centre crop when
-                                  no subject is detected.
+                                  Fill a 9:16 Reel by cropping wide clips. It
+                                  never crops a 16:9 preview or export.
                                 </p>
                               </div>
                               <button
                                 type="button"
-                                className="smartReframeBtn"
-                                onClick={() => void smartReframeForReel()}
+                                className={`smartReframeBtn ${autoFraming ? "active" : ""}`}
+                                aria-pressed={autoFraming}
+                                onClick={() => void toggleAutoFraming()}
                                 disabled={!project || smartReframing || exportingVideo}
                               >
                                 {smartReframing
                                   ? "Analysing framing..."
-                                  : "Smart Reframe"}
+                                  : autoFraming
+                                    ? "Auto Frame: On"
+                                    : "Auto Frame: Off"}
                               </button>
                             </div>
                           )}

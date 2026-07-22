@@ -39,6 +39,7 @@ def _normalize_words(
     duration_sec: float,
     *,
     apply_offset: bool = True,
+    offset_sec: float | None = None,
 ) -> list[TranscriptWordPayload]:
     min_confidence = _env_float("TRANSCRIBE_WORD_MIN_CONFIDENCE", 0.15, 0.0)
     min_word_duration_sec = _env_float("TRANSCRIBE_MIN_WORD_DURATION_SEC", 0.05, 0.01)
@@ -48,11 +49,19 @@ def _normalize_words(
     next_word_guard_sec = _env_float("TRANSCRIBE_WORD_NEXT_GUARD_SEC", 0.01, 0.0)
     # Global timestamp offset: only applied during initial generation (apply_offset=True)
     # NOT during storage/reading to avoid triple-application
-    timestamp_offset_sec = (
-        _env_float("TRANSCRIBE_TIMESTAMP_OFFSET_SEC", 0.0, -5.0)
-        if apply_offset
-        else 0.0
-    )
+    if offset_sec is not None:
+        # Providers such as Sarvam supply a calibrated adjustment. It must
+        # take precedence over the generic Whisper/Groq environment offset.
+        try:
+            timestamp_offset_sec = max(-5.0, min(5.0, float(offset_sec)))
+        except (TypeError, ValueError):
+            timestamp_offset_sec = 0.0
+    elif apply_offset:
+        timestamp_offset_sec = _env_float(
+            "TRANSCRIBE_TIMESTAMP_OFFSET_SEC", 0.0, -5.0
+        )
+    else:
+        timestamp_offset_sec = 0.0
 
     prelim: list[TranscriptWordPayload] = []
     for item in sorted(words, key=lambda entry: entry.start_sec):

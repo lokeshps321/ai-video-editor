@@ -99,6 +99,12 @@
   opacity: 0.55;
 }
 
+.smartReframeBtn.active {
+  border-color: color-mix(in srgb, var(--accent-secondary) 70%, white 12%);
+  background: color-mix(in srgb, var(--accent-secondary) 24%, rgba(15, 23, 42, 0.75));
+  color: #e6f7ff;
+}
+
 @media (max-width: 520px) {
   .smartReframeCard {
     align-items: flex-start;
