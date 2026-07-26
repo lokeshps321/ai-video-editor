@@ -1094,6 +1094,8 @@ body {
   box-shadow:
     0 24px 60px rgba(0, 0, 0, 0.45),
     inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  /* Promote a layer without clipping toolbar/glow shadows. */
+  transform: translateZ(0);
 }
 
 .demo-editor-toolbar {
@@ -1128,11 +1130,23 @@ body {
 }
 
 .demo-toolbar-btn-quick {
+  position: relative;
   background: linear-gradient(135deg, #ffd700, #ff8c00);
   color: #1a1a1a;
   border-color: transparent;
   font-weight: 800;
   letter-spacing: 0.02em;
+  isolation: isolate;
+}
+
+.demo-toolbar-btn-quick-glow {
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  box-shadow: 0 0 24px rgba(255, 215, 0, 0.35);
+  pointer-events: none;
+  z-index: -1;
+  will-change: opacity;
 }
 
 .demo-toolbar-check {
@@ -1198,6 +1212,8 @@ body {
   border-radius: 6px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid transparent;
+  will-change: transform, opacity;
+  backface-visibility: hidden;
 }
 
 .demo-word-filler {
@@ -1234,6 +1250,8 @@ body {
 
 .demo-story-shell {
   position: relative;
+  /* Keep scroll-linked demo paints on their own layer in Chrome. */
+  contain: layout paint;
 }
 
 .demo-story-rail {
@@ -1252,10 +1270,14 @@ body {
 
 .demo-story-rail-fill {
   display: block;
+  width: 100%;
   height: 100%;
   border-radius: inherit;
   background: linear-gradient(90deg, var(--cyan), var(--violet), var(--amber));
   box-shadow: 0 0 18px rgba(94, 234, 212, 0.35);
+  transform-origin: left center;
+  will-change: transform;
+  backface-visibility: hidden;
 }
 
 .demo-story-steps {
@@ -1286,10 +1308,20 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.18);
   background: rgba(255, 255, 255, 0.05);
   color: var(--landing-ink);
+  /* Interpolate border via CSS var to avoid per-frame color style writes. */
+  border-color: color-mix(
+    in srgb,
+    rgba(255, 255, 255, 0.18) calc((1 - var(--demo-step-active, 0)) * 100%),
+    rgba(94, 234, 212, 0.85) calc(var(--demo-step-active, 0) * 100%)
+  );
+  will-change: transform;
+  backface-visibility: hidden;
 }
 
 .demo-column-panel {
   will-change: transform, opacity;
+  backface-visibility: hidden;
+  transform: translateZ(0);
 }
 
 .demo-output {
@@ -1350,9 +1382,13 @@ body {
 
 .command-progress span {
   display: block;
+  width: 100%;
   height: 100%;
   border-radius: inherit;
   background: linear-gradient(90deg, var(--cyan), var(--amber), var(--rose));
+  transform-origin: left center;
+  will-change: transform;
+  backface-visibility: hidden;
 }
 
 .demo-columns {
@@ -2224,7 +2260,7 @@ body {
   }
 
   .demo-story-complete .demo-story-rail-fill {
-    width: 100% !important;
+    transform: scaleX(1) !important;
   }
 
   .demo-story-complete .demo-column-panel,
@@ -2237,7 +2273,11 @@ body {
   }
 
   .demo-story-complete .command-progress span {
-    width: 100% !important;
+    transform: scaleX(1) !important;
+  }
+
+  .demo-story-complete .demo-toolbar-btn-quick-glow {
+    opacity: 1 !important;
   }
 
   .demo-story-complete .edit-chip {

@@ -3,6 +3,7 @@ import {
     motion,
     useReducedMotion,
     useScroll,
+    useSpring,
     useTransform,
     type MotionValue,
 } from "framer-motion";
@@ -38,6 +39,13 @@ const aiActions = [
     { icon: Smartphone, text: "1080×1920 render", at: 0.72 },
 ];
 
+const springConfig = {
+    stiffness: 120,
+    damping: 28,
+    mass: 0.35,
+    restDelta: 0.001,
+} as const;
+
 function StoryStep({
     label,
     icon: Icon,
@@ -51,14 +59,18 @@ function StoryStep({
 }) {
     const opacity = useTransform(progress, [at - 0.02, at + 0.12], [0.45, 1]);
     const scale = useTransform(progress, [at - 0.02, at + 0.12], [0.85, 1.05]);
-    const borderColor = useTransform(progress, [at, at + 0.08], [
-        "rgba(255,255,255,0.18)",
-        "rgba(94, 234, 212, 0.85)",
-    ]);
+    const active = useTransform(progress, [at, at + 0.08], [0, 1]);
 
     return (
         <motion.div className="demo-story-step" style={{ opacity }}>
-            <motion.span className="demo-story-step-dot" style={{ scale, borderColor }}>
+            <motion.span
+                className="demo-story-step-dot"
+                style={{
+                    scale,
+                    // MotionValue CSS var for GPU-friendly border intensity.
+                    ["--demo-step-active" as string]: active,
+                }}
+            >
                 <Icon size={14} />
             </motion.span>
             <span>{label}</span>
@@ -139,34 +151,34 @@ export default function DemoStorySection() {
         offset: ["start 0.85", "end 0.25"],
     });
 
-    const progressWidth = useTransform(
-        scrollYProgress,
+    // Smooth scroll scrubbing so Chrome doesn't update transforms 1:1 with
+    // every wheel tick (feels stuttery). Look stays the same.
+    const progress = useSpring(scrollYProgress, springConfig);
+    const drivenProgress = reduceMotion ? scrollYProgress : progress;
+
+    const progressScale = useTransform(
+        drivenProgress,
         [0, 0.28, 0.52, 0.72, 1],
-        ["6%", "34%", "62%", "88%", "100%"]
+        [0.06, 0.34, 0.62, 0.88, 1],
     );
 
-    const toolbarScale = useTransform(scrollYProgress, [0, 0.15], [0.97, 1]);
-    const checkOpacity = useTransform(scrollYProgress, [0.75, 0.92], [0, 1]);
-    const checkScale = useTransform(scrollYProgress, [0.75, 0.92], [0.6, 1]);
-    const quickEditGlow = useTransform(scrollYProgress, [0.28, 0.55], [0, 1]);
-    const quickEditShadow = useTransform(
-        quickEditGlow,
-        [0, 1],
-        ["0 0 0 rgba(255,215,0,0)", "0 0 24px rgba(255,215,0,0.35)"]
-    );
+    const toolbarScale = useTransform(drivenProgress, [0, 0.15], [0.97, 1]);
+    const checkOpacity = useTransform(drivenProgress, [0.75, 0.92], [0, 1]);
+    const checkScale = useTransform(drivenProgress, [0.75, 0.92], [0.6, 1]);
+    const quickEditGlow = useTransform(drivenProgress, [0.28, 0.55], [0, 1]);
 
-    const transcriptOpacity = useTransform(scrollYProgress, [0.12, 0.34], [0.25, 1]);
-    const transcriptY = useTransform(scrollYProgress, [0.12, 0.34], [36, 0]);
+    const transcriptOpacity = useTransform(drivenProgress, [0.12, 0.34], [0.25, 1]);
+    const transcriptY = useTransform(drivenProgress, [0.12, 0.34], [36, 0]);
 
-    const editsOpacity = useTransform(scrollYProgress, [0.32, 0.54], [0.25, 1]);
-    const editsY = useTransform(scrollYProgress, [0.32, 0.54], [36, 0]);
+    const editsOpacity = useTransform(drivenProgress, [0.32, 0.54], [0.25, 1]);
+    const editsY = useTransform(drivenProgress, [0.32, 0.54], [36, 0]);
 
-    const outputOpacity = useTransform(scrollYProgress, [0.58, 0.82], [0.2, 1]);
-    const outputY = useTransform(scrollYProgress, [0.58, 0.82], [48, 0]);
-    const outputScale = useTransform(scrollYProgress, [0.62, 0.88], [0.88, 1]);
-    const outputGlow = useTransform(scrollYProgress, [0.72, 0.95], [0, 1]);
+    const outputOpacity = useTransform(drivenProgress, [0.58, 0.82], [0.2, 1]);
+    const outputY = useTransform(drivenProgress, [0.58, 0.82], [48, 0]);
+    const outputScale = useTransform(drivenProgress, [0.62, 0.88], [0.88, 1]);
+    const outputGlow = useTransform(drivenProgress, [0.72, 0.95], [0, 1]);
 
-    const railFill = useTransform(scrollYProgress, [0, 1], ["0%", "100%"]);
+    const railScale = useTransform(drivenProgress, [0, 1], [0, 1]);
 
     return (
         <section id="demo" className="story-section">
@@ -194,7 +206,10 @@ export default function DemoStorySection() {
             >
                 <div className="demo-story-rail" aria-hidden="true">
                     <div className="demo-story-rail-track">
-                        <motion.span className="demo-story-rail-fill" style={{ width: railFill }} />
+                        <motion.span
+                            className="demo-story-rail-fill"
+                            style={{ scaleX: railScale }}
+                        />
                     </div>
                     <div className="demo-story-steps">
                         {storySteps.map((step) => (
@@ -203,7 +218,7 @@ export default function DemoStorySection() {
                                 label={step.label}
                                 icon={step.icon}
                                 at={step.at}
-                                progress={scrollYProgress}
+                                progress={drivenProgress}
                             />
                         ))}
                     </div>
@@ -215,10 +230,12 @@ export default function DemoStorySection() {
                             <UploadCloud size={15} />
                             Upload Video
                         </span>
-                        <motion.span
-                            className="demo-toolbar-btn demo-toolbar-btn-quick"
-                            style={{ boxShadow: quickEditShadow }}
-                        >
+                        <span className="demo-toolbar-btn demo-toolbar-btn-quick">
+                            <motion.span
+                                className="demo-toolbar-btn-quick-glow"
+                                style={{ opacity: quickEditGlow }}
+                                aria-hidden="true"
+                            />
                             <Zap size={15} />
                             Quick Edit
                             <motion.span
@@ -227,7 +244,7 @@ export default function DemoStorySection() {
                             >
                                 <BadgeCheck size={16} />
                             </motion.span>
-                        </motion.span>
+                        </span>
                         <span className="demo-toolbar-btn demo-toolbar-btn-muted">
                             <Download size={15} />
                             Export
@@ -245,12 +262,12 @@ export default function DemoStorySection() {
                                     key={stage.label}
                                     label={stage.label}
                                     at={stage.at}
-                                    progress={scrollYProgress}
+                                    progress={drivenProgress}
                                 />
                             ))}
                         </div>
                         <div className="command-progress demo-pipeline-progress">
-                            <motion.span style={{ width: progressWidth }} />
+                            <motion.span style={{ scaleX: progressScale }} />
                         </div>
                     </div>
 
@@ -264,32 +281,32 @@ export default function DemoStorySection() {
                         >
                             <span className="panel-label">Transcript Panel</span>
                             <p className="demo-transcript-line">
-                                <TranscriptWord progress={scrollYProgress} at={0.18} variant="filler">
+                                <TranscriptWord progress={drivenProgress} at={0.18} variant="filler">
                                     uh
                                 </TranscriptWord>{" "}
-                                <TranscriptWord progress={scrollYProgress} at={0.2}>
+                                <TranscriptWord progress={drivenProgress} at={0.2}>
                                     so basically
                                 </TranscriptWord>{" "}
-                                <TranscriptWord progress={scrollYProgress} at={0.24} variant="selected">
+                                <TranscriptWord progress={drivenProgress} at={0.24} variant="selected">
                                     the real reason creators lose retention
                                 </TranscriptWord>{" "}
-                                <TranscriptWord progress={scrollYProgress} at={0.28}>
+                                <TranscriptWord progress={drivenProgress} at={0.28}>
                                     is the first five seconds.
                                 </TranscriptWord>
                             </p>
                             <p className="demo-transcript-line">
-                                <TranscriptWord progress={scrollYProgress} at={0.3} variant="active">
+                                <TranscriptWord progress={drivenProgress} at={0.3} variant="active">
                                     Show the payoff first,
                                 </TranscriptWord>{" "}
-                                <TranscriptWord progress={scrollYProgress} at={0.32}>
+                                <TranscriptWord progress={drivenProgress} at={0.32}>
                                     then explain the setup.
                                 </TranscriptWord>
                             </p>
                             <p className="demo-transcript-line">
-                                <TranscriptWord progress={scrollYProgress} at={0.34} variant="filler">
+                                <TranscriptWord progress={drivenProgress} at={0.34} variant="filler">
                                     you know like
                                 </TranscriptWord>{" "}
-                                <TranscriptWord progress={scrollYProgress} at={0.36}>
+                                <TranscriptWord progress={drivenProgress} at={0.36}>
                                     captions should move with the beat.
                                 </TranscriptWord>
                             </p>
@@ -309,7 +326,7 @@ export default function DemoStorySection() {
                                     icon={item.icon}
                                     text={item.text}
                                     at={item.at}
-                                    progress={scrollYProgress}
+                                    progress={drivenProgress}
                                 />
                             ))}
                             <span className="demo-transcript-hint">
