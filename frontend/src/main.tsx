@@ -29,9 +29,9 @@ function AuthTokenSync() {
   // Otherwise the first project-list request can reach FastAPI without a
   // bearer token while Clerk is still hydrating its session.
   useLayoutEffect(() => {
-    setTokenGetter(async () => {
+    setTokenGetter(async (forceRefresh = false) => {
       if (!isLoaded || !isSignedIn) return null;
-      return getToken();
+      return getToken(forceRefresh ? { skipCache: true } : undefined);
     });
     return () => setTokenGetter(null);
   }, [getToken, isLoaded, isSignedIn]);

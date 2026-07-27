@@ -50,7 +50,7 @@ const TRANSCRIPT_TIMEOUT_MS = 30 * 60 * 1000;
 const ACTION_TIMEOUT_MS = 30 * 60 * 1000;
 const WAVEFORM_TIMEOUT_MS = 5 * 60 * 1000;
 
-type TokenGetter = () => Promise<string | null>;
+type TokenGetter = (forceRefresh?: boolean) => Promise<string | null>;
 
 let _getToken: TokenGetter | null = null;
 export function setTokenGetter(getter: TokenGetter | null): void {
@@ -90,6 +90,16 @@ function parseContentDispositionFilename(
   return basicMatch?.[1]?.trim() || null;
 }
 
+function isExpiredAuthError(message: string): boolean {
+  const lowered = message.toLowerCase();
+  return (
+    lowered.includes("signature has expired") ||
+    lowered.includes("token has expired") ||
+    lowered.includes("invalid token") ||
+    lowered.includes("authorization header")
+  );
+}
+
 async function request<T>(
   path: string,
   init?: RequestInit,
@@ -98,8 +108,9 @@ async function request<T>(
 ): Promise<T> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const token = _getToken ? await _getToken() : null;
+
+  const performRequest = async (forceRefresh = false): Promise<Response> => {
+    const token = _getToken ? await _getToken(forceRefresh) : null;
     if (options?.requiresAuth !== false && !token) {
       throw new Error(
         "Your sign-in session is not ready. Please wait a moment and try again.",
@@ -108,7 +119,7 @@ async function request<T>(
     const authHeader: Record<string, string> = token
       ? { Authorization: `Bearer ${token}` }
       : {};
-    const res = await fetch(`${API_BASE}${path}`, {
+    return fetch(`${API_BASE}${path}`, {
       ...init,
       signal: controller.signal,
       headers: {
@@ -116,20 +127,41 @@ async function request<T>(
         ...authHeader,
       },
     });
+  };
+
+  const readErrorMessage = async (res: Response): Promise<string> => {
+    let message = "";
+    const contentType = res.headers.get("content-type") ?? "";
+    if (contentType.includes("application/json")) {
+      try {
+        message = extractErrorMessage(await res.json());
+      } catch {
+        // Ignore JSON parse issues and fall back to text payload below.
+      }
+    }
+    if (!message) {
+      const text = await res.text();
+      message = text.trim();
+    }
+    return message;
+  };
+
+  try {
+    let res = await performRequest(false);
+    if (
+      options?.requiresAuth !== false &&
+      res.status === 401 &&
+      _getToken !== null
+    ) {
+      const firstMessage = await readErrorMessage(res);
+      if (isExpiredAuthError(firstMessage)) {
+        res = await performRequest(true);
+      } else {
+        throw new Error(firstMessage || `Request failed with ${res.status}`);
+      }
+    }
     if (!res.ok) {
-      let message = "";
-      const contentType = res.headers.get("content-type") ?? "";
-      if (contentType.includes("application/json")) {
-        try {
-          message = extractErrorMessage(await res.json());
-        } catch {
-          // Ignore JSON parse issues and fall back to text payload below.
-        }
-      }
-      if (!message) {
-        const text = await res.text();
-        message = text.trim();
-      }
+      const message = await readErrorMessage(res);
       throw new Error(message || `Request failed with ${res.status}`);
     }
     return (await res.json()) as T;
