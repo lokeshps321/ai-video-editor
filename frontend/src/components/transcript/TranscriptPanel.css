@@ -462,6 +462,32 @@
   color: var(--muted) !important;
 }
 
+.brollSelectionProgress {
+  display: grid;
+  gap: 7px;
+  margin: -2px 0 12px;
+  padding: 9px 10px;
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  border-radius: 9px;
+  background: rgba(139, 92, 246, 0.08);
+}
+
+.brollSelectionProgressTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #ddd6fe;
+  font-size: 0.76rem;
+}
+
+.brollSelectionProgressTop strong {
+  flex: 0 0 auto;
+  color: var(--ink);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+}
+
 .badge {
   font-family: "JetBrains Mono", monospace;
   background: var(--accent);
@@ -931,4 +957,3 @@
       min-width: 90px;
     }
 }
-

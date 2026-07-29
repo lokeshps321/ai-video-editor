@@ -53,6 +53,32 @@
   margin-top: 4px;
 }
 
+.brollGenerationProgress {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(126, 220, 255, 0.3);
+  border-radius: 10px;
+  background: rgba(59, 130, 246, 0.09);
+}
+
+.brollGenerationProgressTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ink);
+  font-size: 0.82rem;
+}
+
+.brollGenerationProgressTop strong {
+  flex: 0 0 auto;
+  color: #9ee8ff;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.78rem;
+}
+
 .brollMeta {
   margin: 8px 0 12px;
   font-family: "JetBrains Mono", monospace;

@@ -108,6 +108,7 @@ type TextBlock = {
 
 type BrollIntensity = "low" | "medium" | "high";
 type BrollAutoMode = "fast" | "balanced" | "creative";
+type BrollSuggestionSource = "full" | "selection";
 
 type BrollGenerationPlan = {
   mode: BrollAutoMode;
@@ -1047,6 +1048,9 @@ function App() {
   const [brollIntensity, setBrollIntensity] =
     useState<BrollIntensity>("medium");
   const [brollSuggestJob, setBrollSuggestJob] = useState<Job | null>(null);
+  const [brollSuggestionSource, setBrollSuggestionSource] =
+    useState<BrollSuggestionSource | null>(null);
+  const [brollSelectionLabel, setBrollSelectionLabel] = useState("");
   const [expandedBrollSlots, setExpandedBrollSlots] = useState<
     Record<string, boolean>
   >({});
@@ -1569,6 +1573,35 @@ function App() {
     () => Math.max(0, Math.min(100, Math.round(exportJob?.progress ?? 0))),
     [exportJob?.progress],
   );
+
+  const brollGenerationActive =
+    suggestingBroll ||
+    suggestingBrollSelection ||
+    brollSuggestJob?.status === "queued" ||
+    brollSuggestJob?.status === "running";
+
+  const brollSuggestionProgress = useMemo(
+    () =>
+      Math.max(
+        0,
+        Math.min(
+          100,
+          Math.max(
+            brollGenerationActive ? 5 : 0,
+            Math.round(brollSuggestJob?.progress ?? 0),
+          ),
+        ),
+      ),
+    [brollGenerationActive, brollSuggestJob?.progress],
+  );
+
+  const brollSuggestionMessage = useMemo(() => {
+    if (brollSuggestJob?.message?.trim()) return brollSuggestJob.message;
+    if (brollSuggestJob?.status === "queued") return "B-roll generation queued...";
+    return brollSuggestionSource === "selection"
+      ? "Finding B-roll candidates for your selection..."
+      : "Finding B-roll moments and visual candidates...";
+  }, [brollSuggestJob?.message, brollSuggestJob?.status, brollSuggestionSource]);
 
   const transcriptActualProgress = useMemo(
     () => Math.max(0, Math.min(100, Math.round(transcriptJob?.progress ?? 0))),
@@ -2120,6 +2153,8 @@ function App() {
       setBrollSlots([]);
       setLastBrollAutoApplySkips([]);
       setBrollSuggestJob(null);
+      setBrollSuggestionSource(null);
+      setBrollSelectionLabel("");
       setBrollActionKey(null);
       setBrollTimelineActionKey(null);
       setBrollDraftStartById({});
@@ -4725,6 +4760,9 @@ function App() {
       setBrollSlots([]);
       setBrollSuggestJob(null);
       setSuggestingBroll(false);
+      setSuggestingBrollSelection(false);
+      setBrollSuggestionSource(null);
+      setBrollSelectionLabel("");
       return;
     }
     void refreshBrollSlots(project.id, transcript.id);
@@ -5244,17 +5282,44 @@ function App() {
             project.id,
             refreshed.id,
           );
-          setBrollSlots(result.slots);
+          const wasSelectionRequest = brollSuggestionSource === "selection";
+          if (wasSelectionRequest) {
+            setBrollSlots((prev) => {
+              const existingIds = new Set(prev.map((slot) => slot.id));
+              const newSlots = result.slots.filter(
+                (slot) => !existingIds.has(slot.id),
+              );
+              return [...prev, ...newSlots];
+            });
+            const firstSlot = result.slots[0];
+            if (firstSlot) {
+              setExpandedBrollSlots((prev) => ({
+                ...prev,
+                [firstSlot.id]: true,
+              }));
+              setActiveFeatureTab("broll_studio");
+              setFeatureDrawerOpen(true);
+            }
+          } else {
+            setBrollSlots(result.slots);
+          }
           setSuggestingBroll(false);
+          setSuggestingBrollSelection(false);
           const reviewCount = result.slots.filter(
             (slot) => slot.review_status === "needs_review",
           ).length;
-          setNotice(
-            `Generated ${result.created_slots} B-roll slot${result.created_slots === 1 ? "" : "s"}. ` +
-              `${reviewCount} need review before sync.`,
-          );
+          const completionNotice =
+            wasSelectionRequest && result.slots.length === 0
+              ? "No B-roll candidates found for the selected words."
+              : `${wasSelectionRequest && brollSelectionLabel ? `B-roll suggestions ready for \"${brollSelectionLabel}\". ` : "Generated "}${result.created_slots} B-roll slot${result.created_slots === 1 ? "" : "s"}. ${reviewCount} need review before sync.`;
+          setNotice(completionNotice);
+          setBrollSuggestionSource(null);
+          setBrollSelectionLabel("");
         } else if (refreshed.status === "failed") {
           setSuggestingBroll(false);
+          setSuggestingBrollSelection(false);
+          setBrollSuggestionSource(null);
+          setBrollSelectionLabel("");
           setError(refreshed.error ?? "B-roll generation failed.");
         }
       } catch {
@@ -5262,7 +5327,12 @@ function App() {
       }
     }, 2500);
     return () => window.clearInterval(interval);
-  }, [project?.id, brollSuggestJob]);
+  }, [
+    project?.id,
+    brollSelectionLabel,
+    brollSuggestJob,
+    brollSuggestionSource,
+  ]);
 
   // Export polling
   const exportJobId = exportJob?.id;
@@ -5501,8 +5571,12 @@ function App() {
   }, []);
 
   async function suggestBroll() {
-    if (!project || !transcript || suggestingBroll) return;
+    if (!project || !transcript || suggestingBroll || suggestingBrollSelection)
+      return;
     setSuggestingBroll(true);
+    setBrollSuggestionSource("full");
+    setBrollSelectionLabel("");
+    setBrollSuggestJob(null);
     setError(null);
     try {
       const plan = resolveBrollGenerationPlan(
@@ -5530,6 +5604,7 @@ function App() {
     } catch (err) {
       setError((err as Error).message);
       setSuggestingBroll(false);
+      setBrollSuggestionSource(null);
     }
   }
 
@@ -5538,14 +5613,20 @@ function App() {
       !project ||
       !transcript ||
       !selectedTranscriptRange ||
-      suggestingBrollSelection
+      suggestingBrollSelection ||
+      suggestingBroll
     )
       return;
+    const selectionText = selectedTranscriptRange.text;
+    const selectionLabel = `${selectionText.slice(0, 40)}${selectionText.length > 40 ? "…" : ""}`;
     setSuggestingBrollSelection(true);
+    setBrollSuggestionSource("selection");
+    setBrollSelectionLabel(selectionLabel);
+    setBrollSuggestJob(null);
     setError(null);
     try {
       const wordIds = Array.from(selectedWordIds);
-      const result = await api.suggestBroll(project.id, {
+      const queued = await api.suggestBrollAsync(project.id, {
         transcript_id: transcript.id,
         candidates_per_slot: 4,
         replace_existing: false,
@@ -5554,31 +5635,25 @@ function App() {
         ai_rerank: true,
         anchor_word_ids: wordIds,
       });
-      if (result.slots.length > 0) {
-        setBrollSlots((prev) => {
-          const existingIds = new Set(prev.map((s) => s.id));
-          const newSlots = result.slots.filter((s) => !existingIds.has(s.id));
-          return [...prev, ...newSlots];
-        });
-        const newSlotId = result.slots[0].id;
-        setExpandedBrollSlots((prev) => ({ ...prev, [newSlotId]: true }));
-        setActiveFeatureTab("broll_studio");
-        setFeatureDrawerOpen(true);
-        setNotice(
-          `B-roll suggestions ready for "${selectedTranscriptRange.text.slice(0, 40)}${selectedTranscriptRange.text.length > 40 ? "…" : ""}" — review in B-roll Studio.`,
-        );
-      } else {
-        setNotice("No B-roll candidates found for the selected words.");
-      }
+      setBrollSuggestJob(queued);
+      setNotice(`Finding B-roll candidates for "${selectionLabel}"...`);
     } catch (err) {
       setError((err as Error).message);
-    } finally {
       setSuggestingBrollSelection(false);
+      setBrollSuggestionSource(null);
+      setBrollSelectionLabel("");
     }
   }
 
   async function autoApplyBroll() {
-    if (!project || !transcript || autoApplyingBroll) return;
+    if (
+      !project ||
+      !transcript ||
+      autoApplyingBroll ||
+      suggestingBroll ||
+      suggestingBrollSelection
+    )
+      return;
     setAutoApplyingBroll(true);
     setError(null);
     const plan = resolveBrollGenerationPlan(
@@ -6726,6 +6801,7 @@ function App() {
                         disabled={
                           !selectedWordIds.size ||
                           suggestingBrollSelection ||
+                          suggestingBroll ||
                           !transcript
                         }
                         title="Get AI B-roll suggestions for the selected transcript words"
@@ -6799,6 +6875,32 @@ function App() {
                         )}
                       </button>
                     </div>
+
+                    {suggestingBrollSelection && (
+                      <div
+                        className="brollSelectionProgress"
+                        role="status"
+                        aria-live="polite"
+                      >
+                        <div className="brollSelectionProgressTop">
+                          <span>{brollSuggestionMessage}</span>
+                          <strong>{brollSuggestionProgress}%</strong>
+                        </div>
+                        <div
+                          className="jobProgressBar"
+                          role="progressbar"
+                          aria-label="Get B-roll progress"
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                          aria-valuenow={brollSuggestionProgress}
+                        >
+                          <span
+                            className="jobProgressFill"
+                            style={{ width: `${brollSuggestionProgress}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
 
                     {/* ── Interactive word grid ─────────────────────── */}
                     <div
@@ -7723,6 +7825,7 @@ function App() {
                               autoApplyingBroll ||
                               loadingBrollSlots ||
                               suggestingBroll ||
+                              suggestingBrollSelection ||
                               syncingBroll ||
                               undoingBroll
                             }
@@ -7747,6 +7850,7 @@ function App() {
                               !project ||
                               !transcript ||
                               suggestingBroll ||
+                              suggestingBrollSelection ||
                               loadingBrollSlots ||
                               autoApplyingBroll
                             }
@@ -7838,6 +7942,33 @@ function App() {
                             )}
                           </button>
                         </div>
+                        {brollGenerationActive && (
+                          <div
+                            className="brollGenerationProgress"
+                            role="status"
+                            aria-live="polite"
+                          >
+                            <div className="brollGenerationProgressTop">
+                              <span>{brollSuggestionMessage}</span>
+                              <strong>{brollSuggestionProgress}%</strong>
+                            </div>
+                            <div
+                              className="jobProgressBar"
+                              role="progressbar"
+                              aria-label="B-roll generation progress"
+                              aria-valuemin={0}
+                              aria-valuemax={100}
+                              aria-valuenow={brollSuggestionProgress}
+                            >
+                              <span
+                                className="jobProgressFill"
+                                style={{
+                                  width: `${brollSuggestionProgress}%`,
+                                }}
+                              />
+                            </div>
+                          </div>
+                        )}
                         <div className="brollControlsRow">
                           <div className="brollIntensity">
                             <span className="brollSyncLabel">Auto mode:</span>
@@ -7848,7 +7979,11 @@ function App() {
                                   event.target.value as BrollAutoMode,
                                 )
                               }
-                              disabled={autoApplyingBroll || suggestingBroll}
+                              disabled={
+                                autoApplyingBroll ||
+                                suggestingBroll ||
+                                suggestingBrollSelection
+                              }
                             >
                               <option value="fast">
                                 Fast (&lt;1 min target)
@@ -7916,7 +8051,11 @@ function App() {
                                   event.target.value as BrollIntensity,
                                 )
                               }
-                              disabled={autoApplyingBroll || suggestingBroll}
+                              disabled={
+                                autoApplyingBroll ||
+                                suggestingBroll ||
+                                suggestingBrollSelection
+                              }
                             >
                               <option value="low">Light</option>
                               <option value="medium">Balanced</option>

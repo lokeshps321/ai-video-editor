@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -1938,13 +1938,18 @@ def _local_visual_intent_from_text(text: str) -> str:
     return best_intent
 
 
-@router.post("/suggest", response_model=BrollSuggestResponse)
-def suggest_broll(
+def _suggest_broll(
     payload: BrollSuggestRequest,
+    *,
     project_id: str,
-    session: Session = Depends(get_session),
-    current_user: dict[str, Any] = Depends(get_current_user),
+    session: Session,
+    progress_callback: Callable[[int, str, str], None] | None = None,
 ) -> BrollSuggestResponse:
+    def report_progress(progress: int, stage: str, message: str) -> None:
+        if progress_callback:
+            progress_callback(progress, stage, message)
+
+    report_progress(12, "analyzing", "Analyzing transcript for B-roll moments")
     project = _require_project(session, project_id)
     transcript = _resolve_broll_transcript(
         session, project_id=project_id, transcript_id=payload.transcript_id
@@ -1952,12 +1957,14 @@ def suggest_broll(
 
     # ── Single-slot selection mode ────────────────────────────────────
     if payload.anchor_word_ids:
-        return _suggest_broll_for_selection(
+        response = _suggest_broll_for_selection(
             session=session,
             project=project,
             transcript=transcript,
             payload=payload,
         )
+        report_progress(92, "finalizing", "Saving B-roll candidates")
+        return response
 
     # ── Full-transcript mode (existing behaviour) ─────────────────────
     plan_response = _build_broll_plan(
@@ -1975,6 +1982,11 @@ def suggest_broll(
         raise HTTPException(
             status_code=400, detail="Planner produced no eligible B-roll beats"
         )
+    report_progress(
+        25,
+        "planning",
+        f"Found {len(beats)} B-roll moment{'s' if len(beats) != 1 else ''}",
+    )
 
     assets = list(
         session.exec(
@@ -2023,6 +2035,7 @@ def suggest_broll(
     now = _utcnow()
     created_slot_ids: list[str] = []
     beat_metas: list[dict[str, object]] = []
+    report_progress(32, "preparing", "Preparing visual search queries")
     for idx, beat in enumerate(beats):
         beat_text = beat.segment_text.strip() or beat.concept_text.strip()
         concept_text = beat.concept_text.strip() or _extract_concepts(beat_text)[0]
@@ -2164,18 +2177,28 @@ def suggest_broll(
 
     external_results: list[list[ExternalBrollCandidate]] = [[] for _ in beat_metas]
     if payload.include_external_sources and beat_metas:
+        report_progress(38, "searching", "Searching visual sources")
         max_workers = min(8, len(beat_metas))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_idx = {
                 executor.submit(_fetch_external_for_slot, meta): i
                 for i, meta in enumerate(beat_metas)
             }
+            completed_searches = 0
             for future in as_completed(future_to_idx):
                 slot_idx = future_to_idx[future]
                 try:
                     external_results[slot_idx] = future.result()
                 except Exception:
                     external_results[slot_idx] = []
+                completed_searches += 1
+                report_progress(
+                    38 + round(42 * completed_searches / len(beat_metas)),
+                    "searching",
+                    f"Searched visual sources for {completed_searches} of {len(beat_metas)} moments",
+                )
+
+    report_progress(84, "ranking", "Ranking the best B-roll candidates")
 
     # ── Phase 3: Mix, rerank, and store results (serial, fast) ────────
     sequence_state = _empty_sequence_state()
@@ -2315,6 +2338,7 @@ def suggest_broll(
         )
 
     session.commit()
+    report_progress(94, "finalizing", "Saving B-roll suggestions")
 
     responses = _load_slots_with_candidates(
         session,
@@ -2328,6 +2352,16 @@ def suggest_broll(
         created_slots=len(created_slot_ids),
         slots=responses,
     )
+
+
+@router.post("/suggest", response_model=BrollSuggestResponse)
+def suggest_broll(
+    payload: BrollSuggestRequest,
+    project_id: str,
+    session: Session = Depends(get_session),
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> BrollSuggestResponse:
+    return _suggest_broll(payload, project_id=project_id, session=session)
 
 
 def _process_suggest_broll_job(
@@ -2345,12 +2379,36 @@ def _process_suggest_broll_job(
                 session,
                 job,
                 status="running",
-                progress=10,
-                stage="running",
-                message="Generating B-roll slots and candidates",
+                progress=5,
+                stage="starting",
+                message="Starting B-roll generation",
             )
+
+            def report_progress(progress: int, stage: str, message: str) -> None:
+                # The generation session can have pending slot writes. Update
+                # the visible job state in a separate transaction so progress
+                # reporting never commits partial B-roll results.
+                with Session(engine) as progress_session:
+                    current_job = progress_session.exec(
+                        select(Job).where(Job.id == job_id)
+                    ).first()
+                    if current_job:
+                        set_job_status(
+                            progress_session,
+                            current_job,
+                            status="running",
+                            progress=progress,
+                            stage=stage,
+                            message=message,
+                        )
+
             payload = BrollSuggestRequest.model_validate(payload_json)
-            response = suggest_broll(payload, project_id=project_id, session=session)
+            response = _suggest_broll(
+                payload,
+                project_id=project_id,
+                session=session,
+                progress_callback=report_progress,
+            )
 
             result_path = _broll_suggest_result_path(job_id)
             result_path.write_text(
