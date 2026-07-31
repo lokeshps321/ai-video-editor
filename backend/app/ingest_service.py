@@ -55,9 +55,12 @@ def validate_ingest_url(url: str) -> str:
 def download_video_with_ytdlp(url: str, project_id: str) -> tuple[str, str, str | None]:
     normalized_url = validate_ingest_url(url)
 
-    # Handle M3U8/HLS streams with ffmpeg (no bot detection)
-    if normalized_url.endswith(".m3u8") or ".m3u8" in normalized_url:
-        return _download_hls_stream(normalized_url, project_id)
+    # Security: Disable URL-based ingestion due to SSRF/parser-differential complexity
+    # Users should download locally and upload files instead (more secure and reliable)
+    raise RuntimeError(
+        "URL-based video ingestion is disabled for security. "
+        "Please download the video locally and upload the MP4/MOV file instead."
+    )
 
     if shutil.which(settings.yt_dlp_bin) is None:
         raise RuntimeError(f"{settings.yt_dlp_bin} not found in PATH")
@@ -104,59 +107,3 @@ def download_video_with_ytdlp(url: str, project_id: str) -> tuple[str, str, str 
     return str(file_path.resolve()), relative, source_title
 
 
-def _download_hls_stream(hls_url: str, project_id: str) -> tuple[str, str, str | None]:
-    """Download HLS/M3U8 stream using ffmpeg with strict SSRF/LFI protection."""
-    import ipaddress
-    from urllib.parse import urlparse
-
-    if shutil.which("ffmpeg") is None:
-        raise RuntimeError("ffmpeg not found in PATH")
-
-    parsed = urlparse(hls_url)
-    if parsed.scheme not in {"http", "https"}:
-        raise ValueError("Only HTTP(S) URLs are allowed")
-
-    hostname = parsed.hostname or ""
-    if not hostname:
-        raise ValueError("Invalid URL: no hostname")
-
-    # Block local/private addresses
-    blocked_hosts = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"}
-    if hostname in blocked_hosts or hostname.startswith("127.") or hostname.startswith("192.168."):
-        raise ValueError("Local/private addresses not allowed")
-
-    try:
-        ip = ipaddress.ip_address(hostname)
-        if ip.is_private or ip.is_loopback or ip.is_link_local:
-            raise ValueError("Private/loopback addresses not allowed")
-    except ValueError:
-        pass
-
-    project_dir = storage.upload_root / project_id
-    project_dir.mkdir(parents=True, exist_ok=True)
-
-    file_prefix = uuid4().hex
-    output_file = project_dir / f"{file_prefix}.mp4"
-
-    cmd = [
-        "ffmpeg",
-        "-i", hls_url,
-        "-c", "copy",
-        "-bsf:a", "aac_adtstoasc",
-        str(output_file),
-        "-y",
-    ]
-
-    try:
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=3600)
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(f"HLS download failed: {exc.stderr or 'unknown error'}") from exc
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("HLS download timeout (>1 hour)")
-
-    if not output_file.exists():
-        raise RuntimeError("ffmpeg did not produce an output file")
-
-    relative = str(output_file.resolve().relative_to(storage.upload_root))
-    source_title = hls_url.split("/")[-1].split("?")[0] or None
-    return str(output_file.resolve()), relative, source_title
