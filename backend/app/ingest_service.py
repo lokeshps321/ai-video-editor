@@ -105,9 +105,17 @@ def download_video_with_ytdlp(url: str, project_id: str) -> tuple[str, str, str 
 
 
 def _download_hls_stream(hls_url: str, project_id: str) -> tuple[str, str, str | None]:
-    """Download HLS/M3U8 stream using ffmpeg (no bot detection, works on Azure)."""
+    """Download HLS/M3U8 stream using ffmpeg with SSRF/LFI protection."""
+    from urllib.parse import urlparse
+
     if shutil.which("ffmpeg") is None:
         raise RuntimeError("ffmpeg not found in PATH")
+
+    parsed = urlparse(hls_url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("Only HTTP(S) URLs are allowed")
+    if parsed.hostname in {"localhost", "127.0.0.1", "0.0.0.0"}:
+        raise ValueError("Local addresses not allowed")
 
     project_dir = storage.upload_root / project_id
     project_dir.mkdir(parents=True, exist_ok=True)
