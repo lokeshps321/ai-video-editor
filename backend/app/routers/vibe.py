@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from ..database import get_session
-from ..deps import get_current_user
+from ..deps import get_current_user, require_project_owner
 from ..jobs import create_job, enqueue_render_job
 from ..media_utils import detect_silence_ranges, probe_duration_seconds
 from ..models import Job, MediaAsset, Project, Transcript
@@ -190,6 +190,7 @@ def _to_job_response(job: Job) -> JobResponse:
         id=job.id,
         project_id=job.project_id,
         kind=job.kind,
+        timeline_version=job.timeline_version,
         status=job.status,
         progress=job.progress,
         output_path=job.output_path,
@@ -471,7 +472,13 @@ def _queue_preview(session: Session, *, project_id: str) -> Job:
     # Always queue a fresh preview for vibe actions because timeline state has
     # just changed (e.g., subtitles). Reusing an older in-flight preview can
     # return a render built from stale pre-action timeline data.
-    job = create_job(session, project_id, kind="preview")
+    timeline = get_timeline_row(session, project_id)
+    job = create_job(
+        session,
+        project_id,
+        kind="preview",
+        timeline_version=timeline.version,
+    )
     request = ExportSettings(
         format="mp4", aspect_ratio="16:9", resolution="720p", fps=24, quality="low"
     )
@@ -525,9 +532,7 @@ def apply_vibe_action(
     session: Session = Depends(get_session),
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> VibeActionResponse:
-    project = session.exec(select(Project).where(Project.id == project_id)).first()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    require_project_owner(session, project_id, current_user)
 
     asset = _pick_video_asset(session, project_id=project_id, asset_id=payload.asset_id)
     source_path = storage.resolve_upload_asset(asset.storage_path)

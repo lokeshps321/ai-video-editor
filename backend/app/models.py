@@ -156,6 +156,9 @@ class Job(SQLModel, table=True):
     id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
     project_id: str = Field(index=True)
     kind: str
+    # A render belongs to the timeline revision that existed when it was
+    # queued. This prevents an older preview being restored for a newer edit.
+    timeline_version: Optional[int] = Field(default=None, index=True)
     status: str = "queued"
     progress: int = 0
     output_path: Optional[str] = None

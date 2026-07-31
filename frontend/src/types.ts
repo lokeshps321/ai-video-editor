@@ -141,6 +141,7 @@ export type Job = {
   id: string;
   project_id: string;
   kind: string;
+  timeline_version?: number | null;
   status: "queued" | "running" | "completed" | "failed";
   progress: number;
   stage?: string | null;

@@ -79,6 +79,12 @@ def test_vibe_add_subtitles_action(monkeypatch: pytest.MonkeyPatch) -> None:
         assert payload["action"] == "add_subtitles"
         assert payload["transcript_id"] is not None
         assert payload["preview_job"]["kind"] == "preview"
+        saved_project = client.get(f"/api/v1/projects/{project_id}")
+        assert saved_project.status_code == 200
+        assert (
+            payload["preview_job"]["timeline_version"]
+            == saved_project.json()["timeline_version"]
+        )
         video_track = next(
             track for track in payload["timeline"]["tracks"] if track["kind"] == "video"
         )

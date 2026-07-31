@@ -16,9 +16,9 @@ from .config import get_settings
 from .database import engine
 from .ingest_service import download_video_with_ytdlp, source_title_to_filename
 from .media_utils import probe_duration_seconds, probe_stream_flags
-from .models import Job, JobEvent, MediaAsset
+from .models import Job, JobEvent, MediaAsset, TimelineVersion
 from .render_service import build_ffmpeg_command, ensure_parent_dir, run_ffmpeg
-from .schemas import Clip, ExportSettings
+from .schemas import Clip, ExportSettings, TimelineState
 from .storage import storage
 from .timeline_service import get_timeline_row, load_timeline_state
 from .transcription_service import precompute_vocal_isolation
@@ -34,8 +34,20 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def create_job(session: Session, project_id: str, kind: str) -> Job:
-    job = Job(project_id=project_id, kind=kind, status="queued", progress=0)
+def create_job(
+    session: Session,
+    project_id: str,
+    kind: str,
+    *,
+    timeline_version: int | None = None,
+) -> Job:
+    job = Job(
+        project_id=project_id,
+        kind=kind,
+        timeline_version=timeline_version,
+        status="queued",
+        progress=0,
+    )
     session.add(job)
     session.add(
         JobEvent(
@@ -177,7 +189,21 @@ def process_render_job(job_id: str, export_settings: ExportSettings) -> None:
                 message="Preparing timeline and media inputs",
             )
             timeline_row = get_timeline_row(session, job.project_id)
-            state = load_timeline_state(timeline_row)
+            if job.timeline_version is None:
+                state = load_timeline_state(timeline_row)
+            else:
+                timeline_snapshot = session.exec(
+                    select(TimelineVersion).where(
+                        TimelineVersion.project_id == job.project_id,
+                        TimelineVersion.version == job.timeline_version,
+                    )
+                ).first()
+                if timeline_snapshot is None:
+                    raise RuntimeError(
+                        "The timeline revision queued for this render no longer exists. "
+                        "Queue a new render."
+                    )
+                state = TimelineState.model_validate_json(timeline_snapshot.state_json)
 
             video_track = next(
                 (track for track in state.tracks if track.kind == "video"), None

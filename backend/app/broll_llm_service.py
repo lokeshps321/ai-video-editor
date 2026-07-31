@@ -550,10 +550,10 @@ def _gemini_model() -> str:
 
 
 def _gemini_timeout_sec() -> float:
-    # Gemini 3.5 Flash may use more time for structured, multilingual visual
-    # planning than the legacy Groq retrieval call.
+    # Keep Gemini short so a slow/unavailable response falls back to
+    # Groq/OpenAI quickly instead of blocking the B-roll job for a minute.
     return max(
-        10.0, float(os.getenv("BROLL_GEMINI_TIMEOUT_SEC", "60") or "60")
+        3.0, float(os.getenv("BROLL_GEMINI_TIMEOUT_SEC", "8") or "8")
     )
 
 
@@ -842,7 +842,15 @@ def _gemini_chat_json(prompt: dict[str, Any]) -> dict[str, Any] | None:
         },
     }
     try:
-        with httpx.Client(timeout=httpx.Timeout(_gemini_timeout_sec())) as client:
+        # Fail connect/read quickly so the OpenAI-compatible fallback can run
+        # while the user is still waiting on the same B-roll job.
+        timeout = httpx.Timeout(
+            connect=3.0,
+            read=_gemini_timeout_sec(),
+            write=5.0,
+            pool=3.0,
+        )
+        with httpx.Client(timeout=timeout) as client:
             response = client.post(
                 (
                     "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -867,6 +875,12 @@ def _gemini_chat_json(prompt: dict[str, Any]) -> dict[str, Any] | None:
         )
         parsed = json.loads(str(text or ""))
         return parsed if isinstance(parsed, dict) else None
+    except httpx.TimeoutException:
+        logger.warning(
+            "Gemini B-roll chat completion timed out after %.1fs; falling back",
+            _gemini_timeout_sec(),
+        )
+        return None
     except httpx.HTTPStatusError as exc:
         # Do not log exc itself: Gemini request URLs include the API key query
         # parameter and must never be written to application logs.

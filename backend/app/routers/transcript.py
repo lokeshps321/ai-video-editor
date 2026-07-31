@@ -39,7 +39,7 @@ _transcript_semaphore = threading.BoundedSemaphore(_MAX_CONCURRENT_TRANSCRIPTS)
 
 from ..config import get_settings
 from ..database import engine, get_session
-from ..deps import get_current_user
+from ..deps import get_current_user, require_project_owner
 from ..diarization_service import maybe_enhance_duet_transcript
 from ..jobs import (
     create_job,
@@ -2665,6 +2665,7 @@ def generate(
     session: Session = Depends(get_session),
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> TranscriptGenerateResponse:
+    require_project_owner(session, project_id, current_user)
     return _generate_transcript_response(
         session,
         project_id=project_id,
@@ -2681,9 +2682,7 @@ def generate_async(
     session: Session = Depends(get_session),
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> JobResponse:
-    project = session.exec(select(Project).where(Project.id == project_id)).first()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    require_project_owner(session, project_id, current_user)
     if not force:
         active = find_recent_active_job(
             session, project_id, kind="transcript_generate", within_seconds=0
@@ -2713,6 +2712,7 @@ def get_generate_result(
     session: Session = Depends(get_session),
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> TranscriptGenerateResponse:
+    require_project_owner(session, project_id, current_user)
     job = session.exec(
         select(Job).where(
             Job.id == job_id,
@@ -2771,9 +2771,7 @@ def get_latest(
     session: Session = Depends(get_session),
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> TranscriptResponse:
-    project = session.exec(select(Project).where(Project.id == project_id)).first()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    require_project_owner(session, project_id, current_user)
 
     if transcript_id:
         row = session.exec(
@@ -2812,6 +2810,7 @@ def get_words_page(
     session: Session = Depends(get_session),
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> TranscriptWordPageResponse:
+    require_project_owner(session, project_id, current_user)
     row = session.exec(
         select(Transcript).where(
             Transcript.id == transcript_id, Transcript.project_id == project_id
@@ -2839,9 +2838,7 @@ def apply_text_cut(
     session: Session = Depends(get_session),
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> TranscriptCutResponse:
-    project = session.exec(select(Project).where(Project.id == project_id)).first()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    require_project_owner(session, project_id, current_user)
 
     row = session.exec(
         select(Transcript).where(
@@ -2923,6 +2920,7 @@ def update_word_text(
     session: Session = Depends(get_session),
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> TranscriptEditResponse:
+    require_project_owner(session, project_id, current_user)
     new_text = str(payload.get("text") or "").strip()
     if not new_text:
         raise HTTPException(status_code=400, detail="Word text cannot be empty")
@@ -2967,6 +2965,7 @@ def update_transcript_range(
     session: Session = Depends(get_session),
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> TranscriptEditResponse:
+    require_project_owner(session, project_id, current_user)
     _project, row = _get_project_and_transcript(
         session, project_id=project_id, transcript_id=transcript_id
     )
@@ -3035,6 +3034,7 @@ def restore_transcript_snapshot(
     session: Session = Depends(get_session),
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> TranscriptEditResponse:
+    require_project_owner(session, project_id, current_user)
     _project, row = _get_project_and_transcript(
         session, project_id=project_id, transcript_id=transcript_id
     )

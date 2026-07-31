@@ -38,7 +38,7 @@ from ..config import get_settings
 
 logger = logging.getLogger(__name__)
 from ..database import engine, get_session
-from ..deps import get_current_user
+from ..deps import get_current_user, require_project_owner
 from ..jobs import create_job, find_recent_active_job, set_job_status
 from ..media_utils import probe_duration_seconds, probe_stream_flags
 from ..models import (
@@ -84,7 +84,21 @@ from ..timeline_service import (
     save_timeline_state,
 )
 
-router = APIRouter(prefix="/api/v1/broll", tags=["broll"])
+def _authorize_project_request(
+    project_id: str | None = None,
+    session: Session = Depends(get_session),
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> None:
+    """Apply ownership checks to every project-scoped B-roll route."""
+    if project_id:
+        require_project_owner(session, project_id, current_user)
+
+
+router = APIRouter(
+    prefix="/api/v1/broll",
+    tags=["broll"],
+    dependencies=[Depends(_authorize_project_request)],
+)
 settings = get_settings()
 
 # --- split-out helper modules (re-exported for a stable surface) ---

@@ -116,7 +116,7 @@ def get_project(
     project = session.exec(select(Project).where(Project.id == project_id)).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    if project.owner_id and project.owner_id != current_user["sub"]:
+    if project.owner_id != current_user["sub"]:
         raise HTTPException(status_code=403, detail="Access denied")
     return build_project_response(session, project)
 
@@ -132,7 +132,7 @@ def rename_project(
     project = session.exec(select(Project).where(Project.id == project_id)).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    if project.owner_id and project.owner_id != current_user["sub"]:
+    if project.owner_id != current_user["sub"]:
         raise HTTPException(status_code=403, detail="Access denied")
     new_name = payload.name.strip()
     if not new_name:
@@ -154,7 +154,7 @@ def delete_project(
     project = session.exec(select(Project).where(Project.id == project_id)).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    if project.owner_id and project.owner_id != current_user["sub"]:
+    if project.owner_id != current_user["sub"]:
         raise HTTPException(status_code=403, detail="Access denied")
 
     # Cascade-delete all related rows in dependency order.
@@ -202,7 +202,7 @@ def undo(
     project = session.exec(select(Project).where(Project.id == project_id)).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    if project.owner_id and project.owner_id != current_user["sub"]:
+    if project.owner_id != current_user["sub"]:
         raise HTTPException(status_code=403, detail="Access denied")
     undo_timeline(session, project_id)
     return build_project_response(session, project)
@@ -217,7 +217,7 @@ def redo(
     project = session.exec(select(Project).where(Project.id == project_id)).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    if project.owner_id and project.owner_id != current_user["sub"]:
+    if project.owner_id != current_user["sub"]:
         raise HTTPException(status_code=403, detail="Access denied")
     redo_timeline(session, project_id)
     return build_project_response(session, project)

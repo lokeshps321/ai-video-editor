@@ -2703,6 +2703,42 @@ function App() {
     }
   }
 
+  async function restoreProjectPreview(
+    projectId: string,
+    nextProject: Project,
+    hasVideoSource: boolean,
+  ) {
+    try {
+      const savedPreview = await api.getLatestProjectPreview(projectId);
+      if (savedPreview?.output_path) {
+        setPreviewJob(savedPreview);
+        setPreviewUrl(resolveMediaPath(savedPreview.output_path));
+        return;
+      }
+
+      const hasRenderableTimeline = nextProject.timeline.tracks.some(
+        (track) => track.kind === "video" && track.clips.length > 0,
+      );
+      if (!hasVideoSource || !hasRenderableTimeline) return;
+
+      // There is no current render on disk (for example after a deployment),
+      // so rebuild it from the persisted timeline rather than showing the
+      // unedited source as if it were the saved edit.
+      const job = await api.renderPreview(projectId, false, {
+        aspect_ratio: previewFrameAspectRatio,
+        fps: exportFps,
+        auto_frame: autoFraming,
+      });
+      setPreviewJob(job);
+      if (job.status === "completed" && job.output_path) {
+        setPreviewUrl(resolveMediaPath(job.output_path));
+      }
+    } catch {
+      // The source-video fallback remains visible. The polling/render UI will
+      // surface an actionable error if a newly queued preview later fails.
+    }
+  }
+
   async function openProject(projectId: string) {
     if (!projectId || openingProjectId) return;
     setOpeningProjectId(projectId);
@@ -2741,11 +2777,18 @@ function App() {
 
       const items = await api.listMedia(projectId);
       setMedia(items);
-      const firstVideo =
-        items.find((asset) => asset.media_type === "video") ?? null;
-      setSelectedAssetId(firstVideo?.id ?? null);
+      const primaryTimelineAssetId = nextProject.timeline.tracks
+        .filter((track) => track.kind === "video")
+        .flatMap((track) => track.clips)
+        .sort((left, right) => left.timeline_start_sec - right.timeline_start_sec)[0]
+        ?.asset_id;
+      const activeVideo =
+        items.find((asset) => asset.id === primaryTimelineAssetId) ??
+        items.find((asset) => asset.media_type === "video") ??
+        null;
+      setSelectedAssetId(activeVideo?.id ?? null);
       setPreviewUrl(
-        firstVideo ? resolveMediaPath(firstVideo.storage_path) : null,
+        activeVideo ? resolveMediaPath(activeVideo.storage_path) : null,
       );
 
       try {
@@ -2757,6 +2800,7 @@ function App() {
         setBrollSlots([]);
       }
 
+      await restoreProjectPreview(projectId, nextProject, !!activeVideo);
       setProjectsPanelOpen(false);
       setNotice(`Opened ${nextProject.name || "project"}.`);
       await refreshProjectList();

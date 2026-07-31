@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from ..database import get_session
-from ..deps import get_current_user
+from ..deps import get_current_user, require_project_owner
 from ..models import MediaAsset, OperationRecord, Project
 from ..project_response import build_project_response
 from ..schemas import (
@@ -39,9 +39,7 @@ def apply_operations(
     session: Session = Depends(get_session),
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> OperationApplyResponse:
-    project = session.exec(select(Project).where(Project.id == project_id)).first()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    require_project_owner(session, project_id, current_user)
 
     timeline = get_timeline_row(session, project_id)
     state = load_timeline_state(timeline)
@@ -80,9 +78,7 @@ def smart_reframe_main_video(
 ) -> SmartReframeResponse:
     """Apply a non-destructive subject-aware 9:16 crop to main video clips."""
 
-    project = session.exec(select(Project).where(Project.id == project_id)).first()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    require_project_owner(session, project_id, current_user)
 
     timeline = get_timeline_row(session, project_id)
     state = load_timeline_state(timeline)
@@ -194,9 +190,7 @@ def get_operation_history(
     session: Session = Depends(get_session),
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> list[OperationHistoryItem]:
-    project = session.exec(select(Project).where(Project.id == project_id)).first()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    require_project_owner(session, project_id, current_user)
 
     rows = session.exec(
         select(OperationRecord)

@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from sqlmodel import Session, select
 
 from ..database import get_session
-from ..deps import get_current_user
+from ..deps import get_current_user, require_project_owner
 from ..jobs import (
     create_job,
     enqueue_vocal_isolation_job,
@@ -36,9 +36,7 @@ async def upload_media(
     session: Session = Depends(get_session),
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> MediaUploadResponse:
-    project = session.exec(select(Project).where(Project.id == project_id)).first()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    require_project_owner(session, project_id, current_user)
 
     if not file.filename:
         raise HTTPException(status_code=400, detail="Invalid file")
@@ -91,6 +89,7 @@ def list_media(
     session: Session = Depends(get_session),
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> list[MediaUploadResponse]:
+    require_project_owner(session, project_id, current_user)
     items = session.exec(
         select(MediaAsset)
         .where(MediaAsset.project_id == project_id)
@@ -165,6 +164,7 @@ def get_waveform(
     asset = session.exec(select(MediaAsset).where(MediaAsset.id == asset_id)).first()
     if not asset:
         raise HTTPException(status_code=404, detail="Media asset not found")
+    require_project_owner(session, asset.project_id, current_user)
 
     absolute_path = storage.resolve_upload_asset(asset.storage_path)
     peaks = extract_waveform_peaks(

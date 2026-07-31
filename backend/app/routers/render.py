@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from sqlmodel import Session, select
 
 from ..database import get_session
-from ..deps import get_current_user
+from ..deps import get_current_user, require_project_owner
 from ..jobs import (
     create_job,
     enqueue_render_job,
@@ -16,7 +16,7 @@ from ..jobs import (
     get_latest_job_event,
     list_job_events,
 )
-from ..models import Job, Project
+from ..models import Job
 from ..schemas import ExportSettings, JobEventResponse, JobResponse, RenderRequest
 from ..storage import storage
 from ..timeline_service import get_timeline_row, load_timeline_state
@@ -30,6 +30,7 @@ def _to_job_response(session: Session, job: Job) -> JobResponse:
         id=job.id,
         project_id=job.project_id,
         kind=job.kind,
+        timeline_version=job.timeline_version,
         status=job.status,
         progress=job.progress,
         stage=latest_event.stage if latest_event else None,
@@ -59,21 +60,17 @@ def render_preview(
     session: Session = Depends(get_session),
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> JobResponse:
-    project = session.exec(select(Project).where(Project.id == project_id)).first()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    require_project_owner(session, project_id, current_user)
 
+    timeline = get_timeline_row(session, project_id)
     active = find_recent_active_job(
         session, project_id, kind="preview", within_seconds=180
     )
-    if active and not force:
-        # Never start parallel preview renders for the same project.
-        # Concurrent ffmpeg jobs are the primary source of SIGKILL/OOM failures.
-        # When force=True (e.g. after a transcript cut), allow a new render so
-        # the preview reflects the latest timeline state.
+    if active and not force and active.timeline_version == timeline.version:
+        # Never start parallel previews for the same saved timeline revision.
+        # A job for an older revision must not block a new edit from rendering.
         return _to_job_response(session, active)
 
-    timeline = get_timeline_row(session, project_id)
     state = load_timeline_state(timeline)
     inferred_aspect_ratio = (
         "9:16" if state.resolution.height >= state.resolution.width else "16:9"
@@ -82,7 +79,12 @@ def render_preview(
     preview_fps = _normalize_preview_fps(
         requested_fps, float(state.duration_sec or 0.0)
     )
-    job = create_job(session, project_id, kind="preview")
+    job = create_job(
+        session,
+        project_id,
+        kind="preview",
+        timeline_version=timeline.version,
+    )
     request = ExportSettings(
         format="mp4",
         aspect_ratio=payload.aspect_ratio
@@ -108,20 +110,55 @@ def render_export(
     session: Session = Depends(get_session),
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> JobResponse:
-    project = session.exec(select(Project).where(Project.id == project_id)).first()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    require_project_owner(session, project_id, current_user)
 
+    timeline = get_timeline_row(session, project_id)
     active = find_recent_active_job(
         session, project_id, kind="export", within_seconds=180
     )
-    if active:
+    if active and active.timeline_version == timeline.version:
         return _to_job_response(session, active)
 
-    job = create_job(session, project_id, kind="export")
+    job = create_job(
+        session,
+        project_id,
+        kind="export",
+        timeline_version=timeline.version,
+    )
     export_settings = ExportSettings.model_validate(payload.model_dump())
     enqueue_render_job(job.id, export_settings)
     return _to_job_response(session, job)
+
+
+@router.get("/projects/{project_id}/preview", response_model=JobResponse | None)
+def get_latest_project_preview(
+    project_id: str,
+    session: Session = Depends(get_session),
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> JobResponse | None:
+    """Return the saved preview for the current timeline revision, if present.
+
+    A completed render from an older revision is intentionally ignored: opening
+    a project must never show a video that predates its saved transcript or
+    timeline edits.
+    """
+    require_project_owner(session, project_id, current_user)
+
+    timeline = get_timeline_row(session, project_id)
+    jobs = session.exec(
+        select(Job)
+        .where(
+            Job.project_id == project_id,
+            Job.kind == "preview",
+            Job.status == "completed",
+            Job.timeline_version == timeline.version,
+        )
+        .order_by(Job.updated_at.desc())
+    ).all()
+    for job in jobs:
+        if job.output_path and os.path.exists(storage.resolve_render_asset(job.output_path)):
+            return _to_job_response(session, job)
+    return None
 
 
 @router.get("/jobs/{job_id}", response_model=JobResponse)
@@ -133,6 +170,7 @@ def get_job(
     job = session.exec(select(Job).where(Job.id == job_id)).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    require_project_owner(session, job.project_id, current_user)
     return _to_job_response(session, job)
 
 
@@ -145,6 +183,7 @@ def get_job_events(
     job = session.exec(select(Job).where(Job.id == job_id)).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    require_project_owner(session, job.project_id, current_user)
 
     rows = list_job_events(session, job_id)
     return [
@@ -171,6 +210,7 @@ def download_job_output(
     job = session.exec(select(Job).where(Job.id == job_id)).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    require_project_owner(session, job.project_id, current_user)
     if job.status != "completed" or not job.output_path:
         raise HTTPException(
             status_code=400, detail="Job not completed or has no output"

@@ -281,6 +281,11 @@ export const api = {
   redo: (projectId: string): Promise<Project> =>
     request<Project>(`/api/v1/projects/${projectId}/redo`, { method: "POST" }),
 
+  getLatestProjectPreview: (projectId: string): Promise<Job | null> =>
+    request<Job | null>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/preview`,
+    ),
+
   renderPreview: (
     projectId: string,
     force = false,

@@ -6,13 +6,26 @@ services:
     plan: standard
     buildCommand: pip install -r backend/requirements.txt
     startCommand: cd backend && python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    # Render's normal filesystem is erased on deploy/restart. Keep the
+    # database, uploaded source videos, render previews, and async job payloads
+    # under one persistent mount so a user's project can be reopened intact.
+    disk:
+      name: clipmind-data
+      mountPath: /var/data
+      sizeGB: 20
     envVars:
       - key: PYTHONUNBUFFERED
         value: "1"
       - key: DATABASE_URL
-        value: sqlite:///./app.db
-      - key: DISABLE_BACKGROUND_WORKERS
-        value: "true"
+        value: sqlite:////var/data/app.db
+      - key: UPLOAD_DIR
+        value: /var/data/uploads
+      - key: RENDER_DIR
+        value: /var/data/renders
+      - key: TMP_DIR
+        value: /var/data/tmp
+      - key: STORAGE_BACKEND
+        value: local
       - key: PORT
         value: "8000"
       - key: ALLOWED_ORIGIN_REGEX

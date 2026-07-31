@@ -40,6 +40,7 @@ def _set_sqlite_pragmas(dbapi_connection: object, _connection_record: object) ->
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)
     _migrate_add_owner_id()
+    _migrate_add_job_timeline_version()
     _migrate_add_broll_slot_meaning_json()
 
 
@@ -54,6 +55,22 @@ def _migrate_add_owner_id() -> None:
             conn.execute(text("ALTER TABLE project ADD COLUMN owner_id TEXT"))
             conn.commit()
             logger.info("Migration: added owner_id column to project table")
+
+
+def _migrate_add_job_timeline_version() -> None:
+    """Link persisted render jobs to the timeline revision they rendered."""
+    from sqlalchemy import inspect, text
+
+    from .models import Job
+
+    table_name = Job.__table__.name
+    with engine.connect() as conn:
+        inspector = inspect(engine)
+        columns = [col["name"] for col in inspector.get_columns(table_name)]
+        if "timeline_version" not in columns:
+            conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN timeline_version INTEGER"))
+            conn.commit()
+            logger.info("Migration: added timeline_version column to %s", table_name)
 
 
 def _migrate_add_broll_slot_meaning_json() -> None:

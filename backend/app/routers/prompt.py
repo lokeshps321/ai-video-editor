@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from ..database import get_session
-from ..deps import get_current_user
+from ..deps import get_current_user, require_project_owner
 from ..models import Project
 from ..prompt_parser import parse_prompt
 from ..schemas import (
@@ -40,9 +40,7 @@ def apply_prompt(
     session: Session = Depends(get_session),
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> OperationApplyResponse:
-    project = session.exec(select(Project).where(Project.id == project_id)).first()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+    require_project_owner(session, project_id, current_user)
 
     parsed = parse_prompt(payload.prompt)
     if parsed.errors:

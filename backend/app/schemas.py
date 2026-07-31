@@ -543,6 +543,7 @@ class JobResponse(BaseModel):
     id: str
     project_id: str
     kind: str
+    timeline_version: Optional[int] = None
     status: str
     progress: int
     stage: Optional[str] = None

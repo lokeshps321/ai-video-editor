@@ -24,6 +24,7 @@ Working implementation of the milestone:
 - Docker deployment files live in `backend/Dockerfile`, `frontend/Dockerfile`, `frontend/nginx.conf`, and `docker-compose.yml`.
 - CI lives in `.github/workflows/ci.yml`.
 - Full deployment instructions are in `docs/deployment.md`.
+- Render deployments must use the persistent `/var/data` disk declared in `render.yaml`; Render's default filesystem is ephemeral, so keeping SQLite, uploads, previews, and job payloads outside that disk loses reopened-project media after a restart or deploy.
 
 ## Implemented Basic Features (15)
 
