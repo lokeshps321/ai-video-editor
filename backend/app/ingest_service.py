@@ -76,9 +76,9 @@ def download_video_with_apify(url: str, project_id: str) -> tuple[str, str, str 
     output_file = project_dir / f"{file_prefix}.mp4"
 
     # Call Apify YouTube Video Downloader actor
-    # Actor: streamers/youtube-video-downloader (free tier: 100 runs/month)
-    actor_id = "streamers/youtube-video-downloader"
-    api_url = f"https://api.apify.com/v2/acts/{actor_id}/runs"
+    # Actor: apify/youtube-video-downloader (free tier: 100 runs/month)
+    actor_id = "apify/youtube-video-downloader"
+    api_url = f"https://api.apify.com/v2/acts/{actor_id}/run"
 
     headers = {
         "Authorization": f"Bearer {apify_token}",
@@ -106,7 +106,7 @@ def download_video_with_apify(url: str, project_id: str) -> tuple[str, str, str 
         start_time = time.time()
 
         while time.time() - start_time < max_wait:
-            status_url = f"https://api.apify.com/v2/acts/{actor_id}/runs/{run_id}"
+            status_url = f"https://api.apify.com/v2/actor-runs/{run_id}"
             status_resp = requests.get(status_url, headers=headers, timeout=30)
             status_resp.raise_for_status()
             run_status = status_resp.json()
@@ -122,7 +122,7 @@ def download_video_with_apify(url: str, project_id: str) -> tuple[str, str, str 
             raise RuntimeError("Apify download timeout (>5 minutes)")
 
         # Get the output dataset
-        dataset_url = f"https://api.apify.com/v2/acts/{actor_id}/runs/{run_id}/dataset/items"
+        dataset_url = f"https://api.apify.com/v2/actor-runs/{run_id}/dataset/items"
         dataset_resp = requests.get(dataset_url, headers=headers, timeout=30)
         dataset_resp.raise_for_status()
         dataset_items = dataset_resp.json()
