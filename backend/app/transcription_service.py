@@ -2105,17 +2105,54 @@ def _prepare_vocal_stem_with_command(
         _cleanup_temp_path(work_dir)
         return path, None
     cmd = _apply_vocal_isolation_priority(cmd)
+    output_hint_template = _backend_env(
+        "TRANSCRIBE_VOCAL_ISOLATION_COMMAND_OUTPUT", backend
+    )
 
-    try:
-        process = subprocess.run(
+    def _run_separator(env_overrides: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+        run_env = os.environ.copy()
+        if env_overrides:
+            run_env.update(env_overrides)
+        return subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             check=False,
             timeout=timeout_sec,
             cwd=str(work_dir),
+            env=run_env,
         )
-    except (OSError, subprocess.TimeoutExpired):
+
+    def _resolve_stem_output() -> Path | None:
+        hinted_path = _resolve_command_output_hint(
+            output_hint_template, output_dir=output_dir, mapping=mapping
+        )
+        if (
+            hinted_path is not None
+            and hinted_path.exists()
+            and hinted_path.stat().st_size > 0
+        ):
+            return hinted_path
+        return _find_isolated_stem(output_dir, stem_name) or _find_isolated_stem(
+            work_dir, stem_name
+        )
+
+    def _looks_like_gpu_separator_failure(stderr: str) -> bool:
+        text = stderr.lower()
+        markers = (
+            "cublas",
+            "cuda",
+            "onnxruntime",
+            "gpu=",
+            "cudnn",
+            "failed to process file",
+        )
+        return any(marker in text for marker in markers)
+
+    try:
+        process = _run_separator()
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        _perf_logger.warning("[transcribe] command vocal isolation aborted: %s", exc)
         _cleanup_temp_path(work_dir)
         return path, None
 
@@ -2123,29 +2160,58 @@ def _prepare_vocal_stem_with_command(
         stderr_tail = (process.stderr or "").strip()[-240:]
         _perf_logger.warning(
             "[transcribe] command vocal isolation failed (rc=%d): %s",
-            process.returncode, stderr_tail,
+            process.returncode,
+            stderr_tail,
         )
-        _cleanup_temp_path(work_dir)
-        return path, None
+        # Fall through to optional CPU retry when GPU providers crash.
+    stem_path = _resolve_stem_output() if process.returncode == 0 else None
 
-    output_hint_template = _backend_env(
-        "TRANSCRIBE_VOCAL_ISOLATION_COMMAND_OUTPUT", backend
+    should_retry_cpu = stem_path is None and device == "cuda" and _env_bool(
+        "TRANSCRIBE_VOCAL_ISOLATION_CPU_FALLBACK", True
     )
-    hinted_path = _resolve_command_output_hint(
-        output_hint_template, output_dir=output_dir, mapping=mapping
-    )
-    if (
-        hinted_path is not None
-        and hinted_path.exists()
-        and hinted_path.stat().st_size > 0
+    if should_retry_cpu and (
+        process.returncode != 0
+        or _looks_like_gpu_separator_failure(process.stderr or "")
+        or not (process.stderr or "").strip()
+        or "output file(s):" in (process.stderr or "").lower()
     ):
-        return str(hinted_path), work_dir
+        stderr_tail = (process.stderr or "").strip()[-240:]
+        _perf_logger.warning(
+            "[transcribe] GPU vocal isolation produced no stem; retrying on CPU: %s",
+            stderr_tail or f"rc={process.returncode}",
+        )
+        # Clear previous empty outputs before retry.
+        for leftover in output_dir.glob("*"):
+            try:
+                if leftover.is_file():
+                    leftover.unlink()
+            except OSError:
+                pass
+        try:
+            process = _run_separator({"CUDA_VISIBLE_DEVICES": ""})
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            _perf_logger.warning(
+                "[transcribe] CPU vocal isolation retry aborted: %s", exc
+            )
+            _cleanup_temp_path(work_dir)
+            return path, None
+        if process.returncode != 0:
+            stderr_tail = (process.stderr or "").strip()[-240:]
+            _perf_logger.warning(
+                "[transcribe] CPU vocal isolation retry failed (rc=%d): %s",
+                process.returncode,
+                stderr_tail,
+            )
+            _cleanup_temp_path(work_dir)
+            return path, None
+        stem_path = _resolve_stem_output()
 
-    stem_path = _find_isolated_stem(output_dir, stem_name) or _find_isolated_stem(
-        work_dir, stem_name
-    )
     if stem_path is None:
-        _perf_logger.warning("[transcribe] command vocal isolation produced no usable stem")
+        stderr_tail = (process.stderr or "").strip()[-240:]
+        _perf_logger.warning(
+            "[transcribe] command vocal isolation produced no usable stem: %s",
+            stderr_tail or f"rc={process.returncode}",
+        )
         _cleanup_temp_path(work_dir)
         return path, None
     return str(stem_path), work_dir

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
+from sqlalchemy import update
 from sqlmodel import Session, delete, select
 
 from .models import OperationRecord, Project, Timeline, TimelineVersion
@@ -431,6 +433,10 @@ def _json_dumps(payload: Any) -> str:
     return json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
 
 
+class StaleTimelineError(RuntimeError):
+    """Raised when a timeline changed after a caller loaded its base version."""
+
+
 def make_default_timeline(project: Project) -> TimelineState:
     return TimelineState(
         fps=project.fps,
@@ -481,37 +487,65 @@ def save_timeline_state(
     *,
     source: str,
     operation: OperationPayload | None = None,
+    operations: list[OperationPayload] | None = None,
+    expected_version: int | None = None,
 ) -> Timeline:
-    # If user edited after undo, drop forward history and start a new linear version chain.
+    base_version = int(timeline.version) if expected_version is None else int(expected_version)
+    next_version = base_version + 1
+    state_json = state.model_dump_json()
+    update_result = session.exec(
+        update(Timeline)
+        .where(
+            Timeline.id == timeline.id,
+            Timeline.version == base_version,
+        )
+        .values(
+            version=next_version,
+            state_json=state_json,
+            updated_at=_utcnow(),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if update_result.rowcount != 1:
+        session.rollback()
+        raise StaleTimelineError(
+            f"stale timeline version: expected {base_version}"
+        )
+
+    # A successful edit after undo replaces forward history. This runs only
+    # after the conditional update has acquired the database write lock.
     session.exec(
         delete(TimelineVersion).where(
             TimelineVersion.project_id == timeline.project_id,
-            TimelineVersion.version > timeline.version,
+            TimelineVersion.version > base_version,
         )
     )
-    timeline.version += 1
-    timeline.state_json = state.model_dump_json()
-    timeline.updated_at = _utcnow()
-    session.add(timeline)
     session.add(
         TimelineVersion(
             project_id=timeline.project_id,
-            version=timeline.version,
-            state_json=timeline.state_json,
+            version=next_version,
+            state_json=state_json,
         )
     )
-    if operation is not None:
+    recorded_operations = operations if operations is not None else ([operation] if operation is not None else [])
+    for recorded_operation in recorded_operations:
         session.add(
             OperationRecord(
                 project_id=timeline.project_id,
-                op_type=operation.op_type,
-                source=source,
-                payload_json=_json_dumps(operation.model_dump()),
+                op_type=recorded_operation.op_type,
+                source=recorded_operation.source or source,
+                payload_json=_json_dumps(recorded_operation.model_dump()),
             )
         )
-    session.commit()
-    session.refresh(timeline)
-    return timeline
+    try:
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    session.expire_all()
+    saved_timeline = get_timeline_row(session, timeline.project_id)
+    session.refresh(saved_timeline)
+    return saved_timeline
 
 
 def _primary_track(state: TimelineState, kind: str = "video") -> Track:
@@ -545,7 +579,7 @@ def _recalculate_duration(state: TimelineState) -> None:
     for track in state.tracks:
         for clip in track.clips:
             max_t = max(max_t, clip.timeline_start_sec + _clip_duration_on_timeline(clip))
-    state.duration_sec = round(max_t, 3)
+    state.duration_sec = round(max_t, 9)
 
 
 def _ripple_track(track: Track, *, sort_by_timeline: bool = True) -> None:
@@ -553,7 +587,7 @@ def _ripple_track(track: Track, *, sort_by_timeline: bool = True) -> None:
     if sort_by_timeline:
         track.clips = sorted(track.clips, key=lambda c: c.timeline_start_sec)
     for clip in track.clips:
-        clip.timeline_start_sec = round(cursor, 3)
+        clip.timeline_start_sec = round(cursor, 9)
         cursor += _clip_duration_on_timeline(clip)
 
 
@@ -620,17 +654,80 @@ def _normalize_clip_ref(value: Any) -> str | int:
 def _ensure_time_window(start_sec: float, end_sec: float) -> tuple[float, float]:
     if end_sec <= start_sec:
         raise ValueError("end_sec must be greater than start_sec")
-    return (round(start_sec, 3), round(end_sec, 3))
+    return (round(start_sec, 9), round(end_sec, 9))
+
+
+def _fps(state: TimelineState) -> int:
+    fps = int(state.fps)
+    if fps <= 0:
+        raise ValueError("timeline fps must be greater than zero")
+    return fps
+
+
+def _frame_seconds(frame: int, fps: int, *, speed: float = 1.0) -> float:
+    return round((frame * speed) / fps, 9)
+
+
+def _nearest_frame(value_sec: float, fps: int) -> int:
+    if value_sec < 0:
+        raise ValueError("time coordinate must be non-negative")
+    return int(math.floor((value_sec * fps) + 0.5 + 1e-9))
+
+
+def _source_frame_ceil(value_sec: float, fps: int, speed: float) -> int:
+    if value_sec < 0:
+        raise ValueError("source time coordinate must be non-negative")
+    return int(math.ceil(((value_sec * fps) / speed) - 1e-9))
+
+
+def _source_frame_floor(value_sec: float, fps: int, speed: float) -> int:
+    if value_sec < 0:
+        raise ValueError("source time coordinate must be non-negative")
+    return int(math.floor(((value_sec * fps) / speed) + 1e-9))
 
 
 def _clamp_unit_interval(value: float) -> float:
     return max(0.0, min(1.0, value))
 
 
+def _validate_finite_numbers(value: Any, path: str = "params") -> None:
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(f"{path} must contain only finite numbers")
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _validate_finite_numbers(item, f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_finite_numbers(item, f"{path}[{index}]")
+
+
 def _apply_trim(state: TimelineState, params: dict[str, Any]) -> None:
     track, idx = _clip_index_by_ref(state, _normalize_clip_ref(params["clip"]))
     clip = track.clips[idx]
-    start_sec, end_sec = _ensure_time_window(float(params["start_sec"]), float(params["end_sec"]))
+    fps = _fps(state)
+    speed = max(float(clip.speed), 0.01)
+    start_frame = (
+        int(params["start_frame"])
+        if "start_frame" in params
+        else _source_frame_ceil(float(params["start_sec"]), fps, speed)
+    )
+    end_frame = (
+        int(params["end_frame"])
+        if "end_frame" in params
+        else _source_frame_floor(float(params["end_sec"]), fps, speed)
+    )
+    start_sec, end_sec = _ensure_time_window(
+        _frame_seconds(
+            start_frame,
+            fps,
+            speed=1.0 if "start_frame" in params else speed,
+        ),
+        _frame_seconds(
+            end_frame,
+            fps,
+            speed=1.0 if "end_frame" in params else speed,
+        ),
+    )
     clip.start_sec = start_sec
     clip.end_sec = end_sec
 
@@ -638,25 +735,36 @@ def _apply_trim(state: TimelineState, params: dict[str, Any]) -> None:
 def _apply_split(state: TimelineState, params: dict[str, Any]) -> None:
     track, idx = _clip_index_by_ref(state, _normalize_clip_ref(params["clip"]))
     clip = track.clips[idx]
-    at_sec = float(params["at_sec"])
-    # Accept split in source-time or timeline-time.
-    if clip.start_sec < at_sec < clip.end_sec:
-        split_source_sec = at_sec
+    fps = _fps(state)
+    speed = max(float(clip.speed), 0.01)
+    if "at_frame" in params:
+        split_timeline_sec = _frame_seconds(int(params["at_frame"]), fps)
+        rel = split_timeline_sec - clip.timeline_start_sec
+        split_source_sec = clip.start_sec + (rel * speed)
     else:
-        rel = at_sec - clip.timeline_start_sec
-        split_source_sec = clip.start_sec + (rel * clip.speed)
+        at_sec = float(params["at_sec"])
+        # Preserve the legacy source-time interpretation when the coordinate
+        # falls inside the clip; otherwise treat it as timeline time.
+        if clip.start_sec < at_sec < clip.end_sec:
+            source_frame = _nearest_frame(at_sec / speed, fps)
+            split_source_sec = _frame_seconds(source_frame, fps, speed=speed)
+        else:
+            timeline_frame = _nearest_frame(at_sec, fps)
+            split_timeline_sec = _frame_seconds(timeline_frame, fps)
+            rel = split_timeline_sec - clip.timeline_start_sec
+            split_source_sec = clip.start_sec + (rel * speed)
     if split_source_sec <= clip.start_sec or split_source_sec >= clip.end_sec:
         raise ValueError("split point outside clip window")
 
     left = clip.model_copy()
-    left.end_sec = round(split_source_sec, 3)
+    left.end_sec = round(split_source_sec, 9)
 
     right = clip.model_copy()
     right.id = str(uuid4())
-    right.start_sec = round(split_source_sec, 3)
+    right.start_sec = round(split_source_sec, 9)
     right.timeline_start_sec = round(
         clip.timeline_start_sec + _clip_duration_on_timeline(left),
-        3,
+        9,
     )
     track.clips[idx] = left
     track.clips.insert(idx + 1, right)
@@ -903,15 +1011,40 @@ def _apply_add_broll_clip(state: TimelineState, params: dict[str, Any]) -> None:
 def _apply_move_broll_clip(state: TimelineState, params: dict[str, Any]) -> None:
     track, idx = _clip_index_by_ref(state, _normalize_clip_ref(params["clip"]), "overlay")
     clip = track.clips[idx]
-    clip.timeline_start_sec = round(float(params.get("timeline_start_sec", clip.timeline_start_sec)), 3)
+    if "timeline_start_frame" in params:
+        timeline_start = _frame_seconds(int(params["timeline_start_frame"]), _fps(state))
+    else:
+        requested_start = float(params.get("timeline_start_sec", clip.timeline_start_sec))
+        timeline_start = _frame_seconds(_nearest_frame(requested_start, _fps(state)), _fps(state))
+    clip.timeline_start_sec = timeline_start
     track.clips = sorted(track.clips, key=lambda item: item.timeline_start_sec)
 
 
 def _apply_trim_broll_clip(state: TimelineState, params: dict[str, Any]) -> None:
     track, idx = _clip_index_by_ref(state, _normalize_clip_ref(params["clip"]), "overlay")
     clip = track.clips[idx]
-    start_sec = float(params.get("start_sec", clip.start_sec))
-    end_sec = float(params.get("end_sec", clip.end_sec))
+    fps = _fps(state)
+    speed = max(float(clip.speed), 0.01)
+    start_frame = (
+        int(params["start_frame"])
+        if "start_frame" in params
+        else _source_frame_ceil(float(params.get("start_sec", clip.start_sec)), fps, speed)
+    )
+    end_frame = (
+        int(params["end_frame"])
+        if "end_frame" in params
+        else _source_frame_floor(float(params.get("end_sec", clip.end_sec)), fps, speed)
+    )
+    start_sec = _frame_seconds(
+        start_frame,
+        fps,
+        speed=1.0 if "start_frame" in params else speed,
+    )
+    end_sec = _frame_seconds(
+        end_frame,
+        fps,
+        speed=1.0 if "end_frame" in params else speed,
+    )
     start_sec, end_sec = _ensure_time_window(start_sec, end_sec)
     clip.start_sec = start_sec
     clip.end_sec = end_sec
@@ -1070,7 +1203,13 @@ def _apply_move_clip(state: TimelineState, params: dict[str, Any]) -> None:
     clip = source_track.clips.pop(idx)
     destination_kind = str(params.get("track_kind", source_track.kind))
     destination_track = _track_by_ref(state, params.get("track_id"), destination_kind)
-    clip.timeline_start_sec = round(float(params.get("timeline_start_sec", clip.timeline_start_sec)), 3)
+    fps = _fps(state)
+    if "timeline_start_frame" in params:
+        timeline_start = _frame_seconds(int(params["timeline_start_frame"]), fps)
+    else:
+        requested_start = float(params.get("timeline_start_sec", clip.timeline_start_sec))
+        timeline_start = _frame_seconds(_nearest_frame(requested_start, fps), fps)
+    clip.timeline_start_sec = timeline_start
     destination_track.clips.append(clip)
     destination_track.clips = sorted(destination_track.clips, key=lambda item: item.timeline_start_sec)
     if bool(params.get("ripple", False)):
@@ -1431,6 +1570,7 @@ def _apply_set_subtitles(state: TimelineState, params: dict[str, Any]) -> None:
 def apply_operation(state: TimelineState, operation: OperationPayload) -> TimelineState:
     params = operation.params
     op_type = operation.op_type
+    _validate_finite_numbers(params)
 
     handlers = {
         "add_clip": _apply_add_clip,

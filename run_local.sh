@@ -27,9 +27,10 @@ if [ ! -d node_modules ]; then
   npm install
 fi
 
-VITE_API_BASE="${API_BASE}" npm run dev -- --host 127.0.0.1 --port "${FRONTEND_PORT}" &
+VITE_API_BASE="${API_BASE}" VITE_TIMELINE_CORE_V2=true npm run dev -- --host 127.0.0.1 --port "${FRONTEND_PORT}" &
 
 echo "Backend: ${API_BASE}"
 echo "Frontend: http://127.0.0.1:${FRONTEND_PORT}"
+echo "Timeline Core V2: enabled (kratos test)"
 
 wait

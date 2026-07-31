@@ -1,6 +1,7 @@
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,6 +17,7 @@ os.environ.setdefault("TRANSCRIBE_VOCAL_ISOLATION_PRECOMPUTE", "false")
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.schemas import OperationPayload
 
 
 def test_project_create_and_prompt_apply() -> None:
@@ -46,6 +48,89 @@ def test_project_create_and_prompt_apply() -> None:
         applied = apply_res.json()
         assert applied["timeline"]["resolution"]["width"] == 1920
         assert applied["timeline"]["resolution"]["height"] == 1080
+
+
+def test_prompt_apply_persists_multiple_operations_as_one_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.routers.prompt.parse_prompt",
+        lambda _prompt: SimpleNamespace(
+            errors=[],
+            suggestions=[],
+            operations=[
+                OperationPayload(
+                    op_type="set_aspect_ratio",
+                    params={"ratio": "16:9"},
+                    source="prompt",
+                ),
+                OperationPayload(
+                    op_type="set_export_settings",
+                    params={"fps": 60},
+                    source="prompt",
+                ),
+            ],
+        ),
+    )
+    with TestClient(app) as client:
+        project_id = client.post(
+            "/api/v1/projects",
+            json={"name": "Atomic prompt", "fps": 30, "width": 1080, "height": 1920},
+        ).json()["id"]
+
+        response = client.post(
+            f"/api/v1/prompt/apply?project_id={project_id}",
+            json={"prompt": "two valid operations", "expected_version": 0},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["version"] == 1
+        assert response.json()["applied_ops"] == [
+            "set_aspect_ratio",
+            "set_export_settings",
+        ]
+        undo = client.post(f"/api/v1/projects/{project_id}/undo").json()
+        assert undo["timeline_version"] == 0
+        assert undo["timeline"]["resolution"] == {"width": 1080, "height": 1920}
+
+
+def test_prompt_apply_rolls_back_when_later_operation_is_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.routers.prompt.parse_prompt",
+        lambda _prompt: SimpleNamespace(
+            errors=[],
+            suggestions=[],
+            operations=[
+                OperationPayload(
+                    op_type="set_aspect_ratio",
+                    params={"ratio": "16:9"},
+                    source="prompt",
+                ),
+                OperationPayload(
+                    op_type="trim_clip",
+                    params={"clip": "missing", "start_sec": 0, "end_sec": 1},
+                    source="prompt",
+                ),
+            ],
+        ),
+    )
+    with TestClient(app) as client:
+        project_id = client.post(
+            "/api/v1/projects",
+            json={"name": "Prompt rollback", "fps": 30, "width": 1080, "height": 1920},
+        ).json()["id"]
+
+        response = client.post(
+            f"/api/v1/prompt/apply?project_id={project_id}",
+            json={"prompt": "valid then invalid", "expected_version": 0},
+        )
+
+        assert response.status_code == 400
+        project = client.get(f"/api/v1/projects/{project_id}").json()
+        assert project["timeline_version"] == 0
+        assert project["timeline"]["resolution"] == {"width": 1080, "height": 1920}
 
 
 def test_render_preview_records_job_events() -> None:

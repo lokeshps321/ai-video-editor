@@ -2,9 +2,19 @@ import pytest
 
 pytest.importorskip("sqlmodel")
 
+from sqlmodel import Session
+
+from app.database import engine
 from app.models import Project
 from app.schemas import Clip, OperationPayload, TextOverlay, TimelineState, Track
-from app.timeline_service import apply_operation, make_default_timeline
+from app.timeline_service import (
+    apply_operation,
+    create_timeline_for_project,
+    get_timeline_row,
+    load_timeline_state,
+    make_default_timeline,
+    save_timeline_state,
+)
 
 
 def make_timeline() -> TimelineState:
@@ -563,7 +573,7 @@ def test_broll_clip_lifecycle_operations() -> None:
             params={"clip": clip_id, "timeline_start_sec": 3.25},
         ),
     )
-    assert overlay_track.clips[0].timeline_start_sec == 3.25
+    assert overlay_track.clips[0].timeline_start_sec == pytest.approx(98 / 30)
 
     apply_operation(
         state,
@@ -678,3 +688,188 @@ def test_move_clip_to_track_id_destination() -> None:
     )
     assert state.tracks[0].clips == []
     assert [clip.id for clip in state.tracks[1].clips] == ["clip-a"]
+
+
+@pytest.mark.parametrize(
+    ("fps", "requested_sec", "expected_sec"),
+    [
+        (24, 0.1, 2 / 24),
+        (30, 0.1, 3 / 30),
+        (60, 0.1, 6 / 60),
+    ],
+)
+def test_move_clip_normalizes_legacy_seconds_to_project_frames(
+    fps: int,
+    requested_sec: float,
+    expected_sec: float,
+) -> None:
+    state = make_timeline()
+    state.fps = fps
+
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="move_clip",
+            params={"clip": "clip-a", "timeline_start_sec": requested_sec},
+        ),
+    )
+
+    assert state.tracks[0].clips[0].timeline_start_sec == pytest.approx(expected_sec)
+
+
+@pytest.mark.parametrize("fps", [24, 30, 60])
+def test_trim_clip_rounds_inward_without_expanding_source_range(fps: int) -> None:
+    state = make_timeline()
+    state.fps = fps
+    frame_sec = 1 / fps
+
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="trim_clip",
+            params={
+                "clip": "clip-a",
+                "start_sec": frame_sec * 1.1,
+                "end_sec": frame_sec * 4.9,
+            },
+        ),
+    )
+
+    clip = state.tracks[0].clips[0]
+    assert clip.start_sec == pytest.approx(frame_sec * 2)
+    assert clip.end_sec == pytest.approx(frame_sec * 4)
+
+
+def test_trim_clip_uses_speed_adjusted_source_frame_boundaries() -> None:
+    state = make_timeline()
+    state.fps = 30
+    state.tracks[0].clips[0].speed = 2.0
+
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="trim_clip",
+            params={"clip": "clip-a", "start_sec": 0.04, "end_sec": 0.19},
+        ),
+    )
+
+    clip = state.tracks[0].clips[0]
+    assert clip.start_sec == pytest.approx(2 / 30)
+    assert clip.end_sec == pytest.approx(4 / 30)
+    assert ((clip.end_sec - clip.start_sec) / clip.speed) * state.fps == pytest.approx(1)
+
+
+def test_typed_trim_frames_are_absolute_source_time_frames_at_non_unit_speed() -> None:
+    state = make_timeline()
+    state.fps = 30
+    state.tracks[0].clips[0].speed = 2.0
+
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="trim_clip",
+            params={
+                "clip": "clip-a",
+                "start_sec": 9,
+                "end_sec": 10,
+                "start_frame": 2,
+                "end_frame": 4,
+            },
+        ),
+    )
+
+    clip = state.tracks[0].clips[0]
+    assert clip.start_sec == pytest.approx(2 / 30)
+    assert clip.end_sec == pytest.approx(4 / 30)
+
+
+@pytest.mark.parametrize("fps", [24, 30, 60])
+def test_split_clip_normalizes_to_project_frame_boundary(fps: int) -> None:
+    state = make_timeline()
+    state.fps = fps
+
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="split_clip",
+            params={"clip": "clip-a", "at_sec": (4.4 / fps)},
+        ),
+    )
+
+    left, right = state.tracks[0].clips
+    assert left.end_sec == pytest.approx(4 / fps)
+    assert right.start_sec == pytest.approx(4 / fps)
+    assert right.timeline_start_sec == pytest.approx(4 / fps)
+
+
+def test_frame_coordinate_takes_precedence_over_legacy_seconds() -> None:
+    state = make_timeline()
+    state.fps = 24
+
+    apply_operation(
+        state,
+        OperationPayload(
+            op_type="move_clip",
+            params={
+                "clip": "clip-a",
+                "timeline_start_sec": 9.0,
+                "timeline_start_frame": 3,
+            },
+        ),
+    )
+
+    assert state.tracks[0].clips[0].timeline_start_sec == pytest.approx(3 / 24)
+
+
+@pytest.mark.parametrize("invalid_frame", [-1, 1.5, True, "3"])
+def test_frame_coordinates_require_non_negative_integers(invalid_frame: object) -> None:
+    with pytest.raises(ValueError):
+        OperationPayload(
+            op_type="move_clip",
+            params={"clip": "clip-a", "timeline_start_frame": invalid_frame},
+        )
+
+
+def test_legacy_save_detects_version_changed_after_timeline_was_loaded() -> None:
+    with Session(engine) as setup_session:
+        project = Project(name="Legacy optimistic save", fps=30, width=1080, height=1920)
+        setup_session.add(project)
+        setup_session.commit()
+        setup_session.refresh(project)
+        project_id = project.id
+        create_timeline_for_project(setup_session, project)
+
+    with Session(engine) as first_session, Session(engine) as stale_session:
+        first_timeline = get_timeline_row(first_session, project_id)
+        stale_timeline = get_timeline_row(stale_session, project_id)
+        first_state = load_timeline_state(first_timeline)
+        stale_state = load_timeline_state(stale_timeline)
+        apply_operation(
+            first_state,
+            OperationPayload(op_type="set_aspect_ratio", params={"ratio": "16:9"}),
+        )
+        apply_operation(
+            stale_state,
+            OperationPayload(op_type="set_aspect_ratio", params={"ratio": "1:1"}),
+        )
+
+        saved = save_timeline_state(
+            first_session,
+            first_timeline,
+            first_state,
+            source="ui",
+        )
+        assert saved.version == 1
+
+        with pytest.raises(Exception, match="stale"):
+            save_timeline_state(
+                stale_session,
+                stale_timeline,
+                stale_state,
+                source="ui",
+            )
+
+    with Session(engine) as verify_session:
+        timeline = get_timeline_row(verify_session, project_id)
+        assert timeline.version == 1
+        assert load_timeline_state(timeline).resolution.width == 1920

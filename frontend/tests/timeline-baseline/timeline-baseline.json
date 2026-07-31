@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "fixture": {
+    "durationMinutes": 30,
+    "fps": [24, 30, 60]
+  },
+  "gates": {
+    "maxReactCommitsPerAnimationFrame": 1,
+    "maxPreviewUpdatesPerAnimationFrame": 1,
+    "maxCanonicalFrameDrift": 0,
+    "maxLongTasksOver50Ms": 0,
+    "maxCursorAnchorErrorPx": 0.5,
+    "maxNetworkCallsDuringGestures": 0,
+    "maxVisualMismatchRatio": 0.001,
+    "visualPixelThreshold": 0.1
+  }
+}

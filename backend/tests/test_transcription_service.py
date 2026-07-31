@@ -2589,8 +2589,9 @@ def test_prepare_vocal_stem_with_command_uses_template_and_output_hint(
         check: bool = False,
         timeout: int | None = None,
         cwd: str | None = None,
+        env: dict[str, str] | None = None,
     ):
-        del capture_output, text, check, timeout
+        del capture_output, text, check, timeout, env
         seen_cmds.append(cmd)
         assert cwd is not None
         output_path = Path(cwd) / "out" / "vocals.wav"
@@ -2610,6 +2611,69 @@ def test_prepare_vocal_stem_with_command_uses_template_and_output_hint(
     joined = " ".join(seen_cmds[0])
     assert "bs_roformer" in joined
     assert "vocals" in joined
+
+
+def test_prepare_vocal_stem_with_command_retries_on_cpu_after_gpu_cublas_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "source.wav"
+    source.write_bytes(b"audio")
+    monkeypatch.setenv("TMP_DIR", str(tmp_path))
+    monkeypatch.setenv(
+        "TRANSCRIBE_VOCAL_ISOLATION_COMMAND_MDX23C",
+        "separator --in {input} --out {output_dir} --model {model}",
+    )
+    monkeypatch.setenv(
+        "TRANSCRIBE_VOCAL_ISOLATION_COMMAND_OUTPUT_MDX23C",
+        "vocals.wav",
+    )
+    monkeypatch.setenv("TRANSCRIBE_VOCAL_ISOLATION_CPU_FALLBACK", "true")
+    monkeypatch.setattr(ts, "_resolve_vocal_isolation_device", lambda: "cuda")
+
+    seen_envs: list[dict[str, str] | None] = []
+    calls = {"n": 0}
+
+    def fake_run(
+        cmd: list[str],
+        capture_output: bool,
+        text: bool,
+        check: bool = False,
+        timeout: int | None = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+    ):
+        del capture_output, text, check, timeout, cmd
+        calls["n"] += 1
+        seen_envs.append(env)
+        assert cwd is not None
+        output_dir = Path(cwd) / "out"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        if calls["n"] == 1:
+            return type(
+                "Proc",
+                (),
+                {
+                    "returncode": 0,
+                    "stderr": (
+                        "ERROR - Failed to process file: CUBLAS failure 7: "
+                        "CUBLAS_STATUS_INVALID_VALUE ; GPU=0\n"
+                        "Separation complete! Output file(s): \n"
+                    ),
+                },
+            )()
+        (output_dir / "vocals.wav").write_bytes(b"cpu-isolated")
+        return type("Proc", (), {"returncode": 0, "stderr": "ok"})()
+
+    monkeypatch.setattr(ts.subprocess, "run", fake_run)
+
+    isolated_path, cleanup = ts._prepare_vocal_stem_with_command(
+        str(source), backend="mdx23c"
+    )
+    assert cleanup is not None
+    assert Path(isolated_path).read_bytes() == b"cpu-isolated"
+    assert calls["n"] == 2
+    assert seen_envs[1] is not None
+    assert seen_envs[1].get("CUDA_VISIBLE_DEVICES") == ""
 
 
 def test_prepare_vocal_stem_with_command_uses_absolute_paths_for_relative_tmp_dir(
@@ -2638,8 +2702,9 @@ def test_prepare_vocal_stem_with_command_uses_absolute_paths_for_relative_tmp_di
         check: bool = False,
         timeout: int | None = None,
         cwd: str | None = None,
+        env: dict[str, str] | None = None,
     ):
-        del capture_output, text, check, timeout
+        del capture_output, text, check, timeout, env
         seen_cmds.append(cmd)
         assert cwd is not None
         out_flag_index = cmd.index("--out") + 1

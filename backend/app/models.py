@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
 
+from sqlalchemy import UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -31,6 +32,14 @@ class Timeline(SQLModel, table=True):
 
 
 class TimelineVersion(SQLModel, table=True):
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "version",
+            name="uq_timelineversion_project_version",
+        ),
+    )
+
     id: Optional[int] = Field(default=None, primary_key=True)
     project_id: str = Field(index=True)
     version: int = Field(index=True)

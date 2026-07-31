@@ -770,6 +770,7 @@
   z-index: 10;
   pointer-events: none;
   margin-left: var(--timeline-rail-width, 52px);
+  left: var(--timeline-playhead-x, 0);
 }
 
 .timeline-playheadLine {

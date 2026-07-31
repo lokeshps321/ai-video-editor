@@ -120,6 +120,32 @@ export type Project = {
   timeline_can_redo?: boolean;
 };
 
+export type TimelineOperationParams = Record<string, unknown> & {
+  /** Absolute timeline placement frame. */
+  timeline_start_frame?: number;
+  /** Absolute source-time frame; independent of clip playback speed. */
+  start_frame?: number;
+  /** Absolute source-time frame; independent of clip playback speed. */
+  end_frame?: number;
+  /** Absolute timeline frame used for a split gesture. */
+  at_frame?: number;
+};
+
+export type TimelineOperation = {
+  op_type: string;
+  params: TimelineOperationParams;
+  source?: "ui" | "prompt";
+};
+
+export type TimelineOperationResponse = {
+  project_id: string;
+  version: number;
+  timeline: Timeline;
+  applied_ops: string[];
+  timeline_can_undo?: boolean;
+  timeline_can_redo?: boolean;
+};
+
 export type MediaAsset = {
   id: string;
   project_id: string;

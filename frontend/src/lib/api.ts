@@ -13,6 +13,8 @@ import type {
   Project,
   PromptParse,
   SmartReframeResponse,
+  TimelineOperation,
+  TimelineOperationResponse,
   Transcript,
   TranscriptCutResponse,
   TranscriptEditResponse,
@@ -238,35 +240,38 @@ export const api = {
   applyPrompt: (
     projectId: string,
     prompt: string,
-  ): Promise<{ timeline: Project["timeline"] }> =>
+    expectedVersion?: number,
+  ): Promise<TimelineOperationResponse> =>
     request(
       `/api/v1/prompt/apply?project_id=${encodeURIComponent(projectId)}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({
+          prompt,
+          ...(expectedVersion === undefined
+            ? {}
+            : { expected_version: expectedVersion }),
+        }),
       },
     ),
 
   applyOperations: (
     projectId: string,
-    operations: Array<{
-      op_type: string;
-      params: Record<string, unknown>;
-      source?: string;
-    }>,
-  ): Promise<{
-    timeline: Project["timeline"];
-    version: number;
-    timeline_can_undo?: boolean;
-    timeline_can_redo?: boolean;
-  }> =>
+    operations: TimelineOperation[],
+    expectedVersion?: number,
+  ): Promise<TimelineOperationResponse> =>
     request(
       `/api/v1/timeline/operations?project_id=${encodeURIComponent(projectId)}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ operations }),
+        body: JSON.stringify({
+          operations,
+          ...(expectedVersion === undefined
+            ? {}
+            : { expected_version: expectedVersion }),
+        }),
       },
     ),
 

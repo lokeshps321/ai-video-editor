@@ -25,6 +25,7 @@ from ..timeline_service import (
     get_timeline_row,
     load_timeline_state,
     save_timeline_state,
+    StaleTimelineError,
     timeline_version_caps,
 )
 from ._broll_media import _ensure_asset_focus_metadata
@@ -42,21 +43,27 @@ def apply_operations(
     require_project_owner(session, project_id, current_user)
 
     timeline = get_timeline_row(session, project_id)
-    state = load_timeline_state(timeline)
+    state = load_timeline_state(timeline).model_copy(deep=True)
     applied_ops: list[str] = []
-    for operation in payload.operations:
-        try:
+    try:
+        for operation in payload.operations:
             apply_operation(state, operation)
+            applied_ops.append(operation.op_type)
+    except (ValueError, KeyError, TypeError, OverflowError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if payload.operations:
+        try:
             timeline = save_timeline_state(
                 session,
                 timeline,
                 state,
-                source=operation.source,
-                operation=operation,
+                source=payload.operations[0].source,
+                operations=payload.operations,
+                expected_version=payload.expected_version,
             )
-            applied_ops.append(operation.op_type)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except StaleTimelineError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     version, can_undo, can_redo = timeline_version_caps(session, project_id)
     return OperationApplyResponse(

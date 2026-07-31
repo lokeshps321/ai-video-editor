@@ -2,11 +2,14 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
   type RefObject,
 } from "react";
 import {
@@ -29,6 +32,24 @@ import {
 } from "lucide-react";
 import type { Clip, TranscriptWord } from "../types";
 import { api } from "../lib/api";
+import {
+  createTimelineClock,
+  type TimelineClock,
+  type TimelineClockPreview,
+} from "../timeline/clock";
+import { createGestureController } from "../timeline/gestureController";
+import {
+  canClaimGesturePointer,
+  minimumDurationFrames,
+  shouldCommitFrameChange,
+  snapBlockStartFrame,
+  snapEdgeFrame,
+  sourceBoundaryFrame,
+  sourceFrameAfterTimelineDelta,
+} from "../timeline/integration";
+import { frameToSeconds, secondsToFrame } from "../timeline/timebase";
+import type { SnapGuide as FrameSnapGuide } from "../timeline/snapping";
+import { zoomViewportAtCursor } from "../timeline/viewport";
 import "./Timeline.css";
 
 export type TimelineLane = {
@@ -87,6 +108,8 @@ export type TimelineProps = {
   captionBlocks: TimelineCaptionBlock[];
   durationSec: number;
   currentTimeSec: number;
+  fps?: number;
+  timelineClock?: TimelineClock;
   deletedWordIds: Set<string>;
   selectedWordIds: Set<string>;
   activeWordId: string | null;
@@ -159,6 +182,7 @@ const MIN_BROLL_DURATION_SEC = 0.1;
 const MIN_CLIP_SOURCE_DURATION_SEC = 0.05;
 const BROLL_LANE_ID = "__broll__";
 const SNAP_INDICATOR_EPSILON_SEC = 0.002;
+const TIMELINE_CORE_V2 = import.meta.env.VITE_TIMELINE_CORE_V2 !== "false";
 
 type DropLaneRect = {
   laneId: string;
@@ -218,6 +242,64 @@ type CaptionDragState = {
   initialDurationSec: number;
   currentDurationSec: number;
 };
+
+type ActiveV2Gesture = {
+  controller: ReturnType<typeof createGestureController>;
+  clockPreview?: TimelineClockPreview;
+};
+
+const noopSubscribe = () => () => undefined;
+
+const TimelinePlayhead = memo(function TimelinePlayhead({
+  currentTimeSec,
+  pxPerSec,
+  timelineClock,
+  containerRef,
+  autoScrollEnabledRef,
+}: {
+  currentTimeSec: number;
+  pxPerSec: number;
+  timelineClock?: TimelineClock;
+  containerRef: RefObject<HTMLDivElement | null>;
+  autoScrollEnabledRef: RefObject<boolean>;
+}) {
+  const clockTime = useSyncExternalStore(
+    timelineClock?.subscribe ?? noopSubscribe,
+    timelineClock?.getSnapshot ?? (() => currentTimeSec),
+    timelineClock?.getSnapshot ?? (() => currentTimeSec),
+  );
+  const timeSec = timelineClock ? clockTime : currentTimeSec;
+  const playheadX = timeSec * pxPerSec;
+  const lastAutoScrollTimeRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!autoScrollEnabledRef.current) return;
+    if (
+      lastAutoScrollTimeRef.current !== null &&
+      lastAutoScrollTimeRef.current === timeSec
+    ) {
+      return;
+    }
+    lastAutoScrollTimeRef.current = timeSec;
+    const element = containerRef.current;
+    if (!element) return;
+    const viewLeft = element.scrollLeft;
+    const viewRight = viewLeft + element.clientWidth;
+    if (playheadX < viewLeft + 40 || playheadX > viewRight - 40) {
+      element.scrollLeft = playheadX - element.clientWidth / 3;
+    }
+  }, [autoScrollEnabledRef, containerRef, playheadX, timeSec]);
+
+  return (
+    <div
+      className="timeline-playhead"
+      style={{ "--timeline-playhead-x": `${playheadX}px` } as CSSProperties}
+    >
+      <div className="timeline-playheadHead" />
+      <div className="timeline-playheadLine" />
+    </div>
+  );
+});
 
 const LaneClipThumb = memo(function LaneClipThumb({
   assetId,
@@ -313,6 +395,8 @@ function Timeline({
   captionBlocks,
   durationSec,
   currentTimeSec,
+  fps = 30,
+  timelineClock,
   deletedWordIds,
   selectedWordIds,
   activeWordId,
@@ -359,7 +443,13 @@ function Timeline({
   brollEditBusy,
 }: TimelineProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const internalTimelineClockRef = useRef(createTimelineClock(currentTimeSec));
+  const activeTimelineClock = timelineClock ?? internalTimelineClockRef.current;
   const [pxPerSec, setPxPerSec] = useState(DEFAULT_PX_PER_SEC);
+  const pxPerSecRef = useRef(DEFAULT_PX_PER_SEC);
+  const zoomAnimationFrameRef = useRef<number | null>(null);
+  const pendingZoomScrollRef = useRef<number | null>(null);
+  const playheadAutoScrollEnabledRef = useRef(true);
   const [showTranscriptAssist, setShowTranscriptAssist] = useState(
     words.length > 0,
   );
@@ -388,8 +478,32 @@ function Timeline({
     null,
   );
   const dropLaneRectsRef = useRef<DropLaneRect[]>([]);
+  const activeV2GestureRef = useRef<ActiveV2Gesture | null>(null);
+  const suppressClickRef = useRef(false);
 
   const totalWidth = Math.max(durationSec * pxPerSec, 200);
+
+  useEffect(() => {
+    if (TIMELINE_CORE_V2) activeTimelineClock.setTime(currentTimeSec);
+  }, [activeTimelineClock, currentTimeSec]);
+
+  useEffect(() => {
+    pxPerSecRef.current = pxPerSec;
+  }, [pxPerSec]);
+
+  useLayoutEffect(() => {
+    const pendingScroll = pendingZoomScrollRef.current;
+    const container = containerRef.current;
+    if (pendingScroll === null || !container) return;
+    container.scrollLeft = pendingScroll;
+    pendingZoomScrollRef.current = null;
+  }, [pxPerSec]);
+
+  useLayoutEffect(() => {
+    if (import.meta.env.VITE_TIMELINE_TEST_HARNESS === "true") {
+      window.dispatchEvent(new CustomEvent("timeline:v2-react-commit"));
+    }
+  });
 
   useEffect(() => {
     if (!words.length) {
@@ -429,6 +543,20 @@ function Timeline({
       height: peak,
     }));
   }, [waveformPeaks, totalWidth]);
+  const waveformRects = useMemo(
+    () =>
+      waveformBars.map((bar, index) => (
+        <rect
+          key={index}
+          x={bar.x}
+          y={50 - bar.height * 46}
+          width={bar.width}
+          height={bar.height * 46}
+          rx={1}
+        />
+      )),
+    [waveformBars],
+  );
 
   const deletedRegions = useMemo(() => {
     if (!words.length) return [];
@@ -488,12 +616,18 @@ function Timeline({
     });
   }, [words]);
 
+  const legacyPlayheadGuideTime = TIMELINE_CORE_V2 ? null : currentTimeSec;
   const snapGuides = useMemo(() => {
     const guides: SnapGuide[] = [
       { ownerKey: "system:start", timeSec: 0 },
-      { ownerKey: "system:playhead", timeSec: currentTimeSec },
       { ownerKey: "system:end", timeSec: durationSec },
     ];
+    if (legacyPlayheadGuideTime !== null) {
+      guides.splice(1, 0, {
+        ownerKey: "system:playhead",
+        timeSec: legacyPlayheadGuideTime,
+      });
+    }
 
     timelineLanes.forEach((lane) => {
       lane.clips.forEach((clip) => {
@@ -520,7 +654,22 @@ function Timeline({
       });
     });
     return guides;
-  }, [timelineLanes, overlayClips, captionBlocks, currentTimeSec, durationSec]);
+  }, [
+    timelineLanes,
+    overlayClips,
+    captionBlocks,
+    legacyPlayheadGuideTime,
+    durationSec,
+  ]);
+
+  const frameSnapGuides = useMemo<FrameSnapGuide[]>(
+    () =>
+      snapGuides.map((guide) => ({
+        id: guide.ownerKey,
+        frame: secondsToFrame(guide.timeSec, fps),
+      })),
+    [fps, snapGuides],
+  );
 
   const snapThresholdSec = 10 / pxPerSec;
 
@@ -797,8 +946,6 @@ function Timeline({
     };
   }, []);
 
-  const playheadX = currentTimeSec * pxPerSec;
-
   const rangeLeft =
     rangeStart !== null && rangeEnd !== null
       ? Math.min(rangeStart, rangeEnd) * pxPerSec
@@ -813,6 +960,7 @@ function Timeline({
       : null;
 
   useEffect(() => {
+    if (TIMELINE_CORE_V2) return;
     if (
       !containerRef.current ||
       dragMode !== "none" ||
@@ -822,12 +970,20 @@ function Timeline({
     )
       return;
     const element = containerRef.current;
+    const playheadX = currentTimeSec * pxPerSec;
     const viewLeft = element.scrollLeft;
     const viewRight = viewLeft + element.clientWidth;
     if (playheadX < viewLeft + 40 || playheadX > viewRight - 40) {
       element.scrollLeft = playheadX - element.clientWidth / 3;
     }
-  }, [playheadX, dragMode, brollDragState, laneDragState, captionDragState]);
+  }, [
+    currentTimeSec,
+    pxPerSec,
+    dragMode,
+    brollDragState,
+    laneDragState,
+    captionDragState,
+  ]);
 
   const secFromClientX = useCallback(
     (clientX: number) => {
@@ -846,6 +1002,306 @@ function Timeline({
   const secFromEvent = useCallback(
     (event: ReactMouseEvent) => secFromClientX(event.clientX),
     [secFromClientX],
+  );
+
+  const gestureThresholdFrames = Math.max(
+    1,
+    Math.round((10 / pxPerSec) * fps),
+  );
+  const durationFrames = secondsToFrame(durationSec, fps);
+
+  const computeBrollPreview = useCallback(
+    (initial: BrollDragState, deltaX: number): BrollDragState => {
+      const deltaFrames = Math.round((deltaX / pxPerSec) * fps);
+      const initialStartFrame = secondsToFrame(initial.initialStartSec, fps);
+      const initialDurationFrames = Math.max(
+        minimumDurationFrames(MIN_BROLL_DURATION_SEC, fps),
+        secondsToFrame(initial.initialDurationSec, fps),
+      );
+      const minimumFrames = minimumDurationFrames(
+        MIN_BROLL_DURATION_SEC,
+        fps,
+      );
+      const maxFrame = Math.max(
+        durationFrames,
+        initialStartFrame + secondsToFrame(30, fps),
+      );
+      if (initial.mode === "move") {
+        const snapped = snapBlockStartFrame(
+          Math.max(0, initialStartFrame + deltaFrames),
+          initialDurationFrames,
+          frameSnapGuides,
+          gestureThresholdFrames,
+          `broll:${initial.clipId}:`,
+          0,
+          maxFrame,
+        );
+        return {
+          ...initial,
+          currentStartSec: frameToSeconds(snapped.frame, fps),
+        };
+      }
+      const rawEndFrame = initialStartFrame + initialDurationFrames + deltaFrames;
+      const snapped = snapEdgeFrame(
+        rawEndFrame,
+        frameSnapGuides,
+        gestureThresholdFrames,
+        `broll:${initial.clipId}:`,
+        initialStartFrame + minimumFrames,
+        Math.max(maxFrame, rawEndFrame),
+      );
+      return {
+        ...initial,
+        currentDurationSec: frameToSeconds(
+          snapped.frame - initialStartFrame,
+          fps,
+        ),
+      };
+    },
+    [
+      durationFrames,
+      fps,
+      frameSnapGuides,
+      gestureThresholdFrames,
+      pxPerSec,
+    ],
+  );
+
+  const computeLanePreview = useCallback(
+    (initial: LaneDragState, deltaX: number): LaneDragState => {
+      const deltaFrames = Math.round((deltaX / pxPerSec) * fps);
+      const ownerPrefix = `lane:${initial.selection.clipId}:`;
+      const minimumSourceFrames = minimumDurationFrames(
+        MIN_CLIP_SOURCE_DURATION_SEC,
+        fps,
+      );
+      const initialSourceStartFrame = sourceBoundaryFrame(
+        initial.initialStartSec,
+        fps,
+        "start",
+      );
+      const initialSourceEndFrame = Math.max(
+        initialSourceStartFrame + minimumSourceFrames,
+        sourceBoundaryFrame(initial.initialEndSec, fps, "end"),
+      );
+      const startFrame = secondsToFrame(initial.initialTimelineStartSec, fps);
+      const endFrame =
+        startFrame +
+        Math.max(
+          1,
+          Math.round(
+            (initialSourceEndFrame - initialSourceStartFrame) / initial.speed,
+          ),
+        );
+      const maxFrame = Math.max(
+        durationFrames,
+        startFrame + secondsToFrame(30, fps),
+      );
+      if (initial.mode === "move") {
+        const snapped = snapBlockStartFrame(
+          Math.max(0, startFrame + deltaFrames),
+          endFrame - startFrame,
+          frameSnapGuides,
+          gestureThresholdFrames,
+          ownerPrefix,
+          0,
+          maxFrame,
+        );
+        return {
+          ...initial,
+          currentTimelineStartSec: frameToSeconds(snapped.frame, fps),
+        };
+      }
+      if (initial.mode === "trim-start") {
+        const maxStartFrame = Math.max(startFrame, endFrame - 1);
+        const snapped = snapEdgeFrame(
+          startFrame + deltaFrames,
+          frameSnapGuides,
+          gestureThresholdFrames,
+          ownerPrefix,
+          0,
+          maxStartFrame,
+        );
+        const nextStartFrame = clamp(
+          sourceFrameAfterTimelineDelta(
+            initialSourceStartFrame,
+            snapped.frame - startFrame,
+            initial.speed,
+            fps,
+            "start",
+          ),
+          0,
+          initialSourceEndFrame - minimumSourceFrames,
+        );
+        const nextStartSec = frameToSeconds(nextStartFrame, fps);
+        return {
+          ...initial,
+          currentStartSec: nextStartSec,
+          currentEndSec: frameToSeconds(initialSourceEndFrame, fps),
+          currentTimelineStartSec:
+            initial.initialTimelineStartSec +
+            (nextStartFrame - initialSourceStartFrame) / (fps * initial.speed),
+        };
+      }
+      const maxEndFrame = secondsToFrame(
+        initial.initialTimelineStartSec +
+          (initial.sourceMaxEndSec - initial.initialStartSec) / initial.speed,
+        fps,
+      );
+      const snapped = snapEdgeFrame(
+        endFrame + deltaFrames,
+        frameSnapGuides,
+        gestureThresholdFrames,
+        ownerPrefix,
+        startFrame + 1,
+        Math.max(startFrame + 1, maxEndFrame),
+      );
+      const nextEndFrame = clamp(
+        sourceFrameAfterTimelineDelta(
+          initialSourceEndFrame,
+          snapped.frame - endFrame,
+          initial.speed,
+          fps,
+          "end",
+        ),
+        initialSourceStartFrame + minimumSourceFrames,
+        sourceBoundaryFrame(initial.sourceMaxEndSec, fps, "end"),
+      );
+      return {
+        ...initial,
+        currentStartSec: frameToSeconds(initialSourceStartFrame, fps),
+        currentEndSec: frameToSeconds(nextEndFrame, fps),
+      };
+    },
+    [
+      durationFrames,
+      fps,
+      frameSnapGuides,
+      gestureThresholdFrames,
+      pxPerSec,
+    ],
+  );
+
+  const computeCaptionPreview = useCallback(
+    (initial: CaptionDragState, deltaX: number): CaptionDragState => {
+      const deltaFrames = Math.round((deltaX / pxPerSec) * fps);
+      const ownerPrefix = `caption:${initial.selection.overlayId}:`;
+      const minimumSourceFrames = minimumDurationFrames(
+        MIN_CLIP_SOURCE_DURATION_SEC,
+        fps,
+      );
+      const initialSourceStartFrame = sourceBoundaryFrame(
+        initial.initialStartSec,
+        fps,
+        "start",
+      );
+      const initialSourceEndFrame = Math.max(
+        initialSourceStartFrame + minimumSourceFrames,
+        sourceBoundaryFrame(
+          initial.initialStartSec + initial.initialDurationSec,
+          fps,
+          "end",
+        ),
+      );
+      const sourceDurationFrames =
+        initialSourceEndFrame - initialSourceStartFrame;
+      const blockStartSec =
+        initial.clipTimelineStartSec +
+        frameToSeconds(initialSourceStartFrame, fps) / initial.clipSpeed;
+      const startFrame = secondsToFrame(blockStartSec, fps);
+      const durationFrameCount = Math.max(
+        1,
+        Math.ceil(sourceDurationFrames / initial.clipSpeed),
+      );
+      const clipStartFrame = secondsToFrame(initial.clipTimelineStartSec, fps);
+      const clipEndFrame = secondsToFrame(
+        initial.clipTimelineStartSec +
+          initial.clipSourceDurationSec / initial.clipSpeed,
+        fps,
+      );
+      let nextTimelineStartFrame = startFrame;
+      let nextTimelineEndFrame = startFrame + durationFrameCount;
+      let nextSourceStartFrame = initialSourceStartFrame;
+      let nextSourceEndFrame = initialSourceEndFrame;
+      if (initial.mode === "move") {
+        const snapped = snapBlockStartFrame(
+          startFrame + deltaFrames,
+          durationFrameCount,
+          frameSnapGuides,
+          gestureThresholdFrames,
+          ownerPrefix,
+          clipStartFrame,
+          Math.max(clipStartFrame, clipEndFrame - durationFrameCount),
+        );
+        nextTimelineStartFrame = snapped.frame;
+        nextTimelineEndFrame = snapped.frame + durationFrameCount;
+        nextSourceStartFrame = clamp(
+          sourceFrameAfterTimelineDelta(
+            initialSourceStartFrame,
+            nextTimelineStartFrame - startFrame,
+            initial.clipSpeed,
+            fps,
+            "start",
+          ),
+          0,
+          Math.max(
+            0,
+            sourceBoundaryFrame(initial.clipSourceDurationSec, fps, "end") -
+              sourceDurationFrames,
+          ),
+        );
+        nextSourceEndFrame = nextSourceStartFrame + sourceDurationFrames;
+      } else if (initial.mode === "trim-start") {
+        nextTimelineStartFrame = snapEdgeFrame(
+          startFrame + deltaFrames,
+          frameSnapGuides,
+          gestureThresholdFrames,
+          ownerPrefix,
+          clipStartFrame,
+          nextTimelineEndFrame - 1,
+        ).frame;
+        nextSourceStartFrame = clamp(
+          sourceFrameAfterTimelineDelta(
+            initialSourceStartFrame,
+            nextTimelineStartFrame - startFrame,
+            initial.clipSpeed,
+            fps,
+            "start",
+          ),
+          0,
+          initialSourceEndFrame - minimumSourceFrames,
+        );
+      } else {
+        nextTimelineEndFrame = snapEdgeFrame(
+          nextTimelineEndFrame + deltaFrames,
+          frameSnapGuides,
+          gestureThresholdFrames,
+          ownerPrefix,
+          nextTimelineStartFrame + 1,
+          clipEndFrame,
+        ).frame;
+        nextSourceEndFrame = clamp(
+          sourceFrameAfterTimelineDelta(
+            initialSourceEndFrame,
+            nextTimelineEndFrame - (startFrame + durationFrameCount),
+            initial.clipSpeed,
+            fps,
+            "end",
+          ),
+          initialSourceStartFrame + minimumSourceFrames,
+          sourceBoundaryFrame(initial.clipSourceDurationSec, fps, "end"),
+        );
+      }
+      return {
+        ...initial,
+        currentStartSec: frameToSeconds(nextSourceStartFrame, fps),
+        currentDurationSec: frameToSeconds(
+          nextSourceEndFrame - nextSourceStartFrame,
+          fps,
+        ),
+      };
+    },
+    [fps, frameSnapGuides, gestureThresholdFrames, pxPerSec],
   );
 
   function scheduleOpacityCommit(clipId: string, opacity: number) {
@@ -971,6 +1427,499 @@ function Timeline({
     });
   }
 
+  function pointerData(event: ReactPointerEvent) {
+    return {
+      type: event.type as
+        | "pointerdown"
+        | "pointermove"
+        | "pointerup"
+        | "pointercancel",
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      button: event.button,
+      isPrimary: event.isPrimary,
+    };
+  }
+
+  function activateV2Gesture(
+    event: ReactPointerEvent,
+    options: Parameters<typeof createGestureController>[0],
+    clockPreview?: TimelineClockPreview,
+  ): boolean {
+    if (
+      !canClaimGesturePointer(
+        activeV2GestureRef.current !== null,
+        pointerData(event),
+      )
+    ) {
+      return false;
+    }
+    const controller = createGestureController(options);
+    activeV2GestureRef.current = { controller, clockPreview };
+    controller.pointerDown(pointerData(event), event.currentTarget);
+    return controller.isActive();
+  }
+
+  function finishV2Preview() {
+    setLaneDragState(null);
+    setBrollDragState(null);
+    setCaptionDragState(null);
+    setDropTarget(null);
+    activeV2GestureRef.current = null;
+  }
+
+  function publishV2Preview(kind: string, expectedSec: number) {
+    window.dispatchEvent(
+      new CustomEvent("timeline:v2-preview", {
+        detail: { kind, expectedSec },
+      }),
+    );
+  }
+
+  function setDirectDropTarget(target: TimelineDropTarget | null) {
+    const container = containerRef.current;
+    if (!container) return;
+    container
+      .querySelectorAll<HTMLElement>("[data-drop-lane-id].dropTarget")
+      .forEach((element) => element.classList.remove("dropTarget"));
+    if (target) {
+      container
+        .querySelector<HTMLElement>(
+          `[data-drop-lane-id="${CSS.escape(target.laneId)}"]`,
+        )
+        ?.classList.add("dropTarget");
+    }
+  }
+
+  function applyDirectBlockPreview(
+    element: HTMLElement,
+    leftPx: number,
+    widthPx: number,
+    kind: string,
+  ) {
+    element.classList.add("dragging");
+    element.style.left = `${leftPx}px`;
+    element.style.width = `${Math.max(widthPx, 4)}px`;
+    publishV2Preview(kind, leftPx / pxPerSec);
+  }
+
+  function startBrollDragV2(
+    event: ReactPointerEvent,
+    clip: Clip,
+    mode: "move" | "resize-end",
+  ) {
+    if (
+      event.button !== 0 ||
+      brollEditBusy ||
+      isInteractiveTarget(event.target) ||
+      !canClaimGesturePointer(
+        activeV2GestureRef.current !== null,
+        pointerData(event),
+      )
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    clearAllSelections();
+    onSelectBrollClip?.(clip.id);
+    if (mode === "move") captureDropLanes();
+    const duration = clipTimelineDuration(clip);
+    const previewElement = (
+      event.currentTarget as HTMLElement
+    ).closest<HTMLElement>(".brollBlock");
+    if (!previewElement) return;
+    const originalStyle = previewElement.getAttribute("style");
+    const clearDirectPreview = (restoreStyle: boolean) => {
+      if (restoreStyle) {
+        if (originalStyle === null) previewElement.removeAttribute("style");
+        else previewElement.setAttribute("style", originalStyle);
+      }
+      previewElement.classList.remove("dragging");
+      setDirectDropTarget(null);
+      finishV2Preview();
+    };
+    const initial: BrollDragState = {
+      clipId: clip.id,
+      mode,
+      startClientX: event.clientX,
+      initialStartSec: clip.timeline_start_sec,
+      initialDurationSec: duration,
+      currentStartSec: clip.timeline_start_sec,
+      currentDurationSec: duration,
+    };
+    activateV2Gesture(event, {
+      thresholdPx: 3,
+      onPreview(update) {
+        const preview = computeBrollPreview(initial, update.deltaX);
+        applyDirectBlockPreview(
+          previewElement,
+          preview.currentStartSec * pxPerSec,
+          preview.currentDurationSec * pxPerSec,
+          `broll-${mode}`,
+        );
+        if (mode === "move") {
+          setDirectDropTarget(resolveDropTarget(update.clientY, BROLL_LANE_ID));
+        }
+      },
+      onCommit(update) {
+        const preview = computeBrollPreview(initial, update.deltaX);
+        const target =
+          mode === "move"
+            ? resolveDropTarget(update.clientY, BROLL_LANE_ID)
+            : null;
+        suppressClickRef.current = true;
+        clearDirectPreview(false);
+        if (mode === "move") {
+          const initialFrame = secondsToFrame(initial.initialStartSec, fps);
+          const finalFrame = secondsToFrame(preview.currentStartSec, fps);
+          if (
+            target &&
+            onMoveBrollClipToLane &&
+            shouldCommitFrameChange(initialFrame, finalFrame, true)
+          ) {
+            onMoveBrollClipToLane(clip.id, preview.currentStartSec, target);
+          } else if (
+            shouldCommitFrameChange(initialFrame, finalFrame, false)
+          ) {
+            onMoveBrollClip(clip.id, preview.currentStartSec);
+          }
+        } else if (
+          shouldCommitFrameChange(
+            secondsToFrame(initial.initialDurationSec, fps),
+            secondsToFrame(preview.currentDurationSec, fps),
+            false,
+          )
+        ) {
+          onTrimBrollClip(clip.id, preview.currentDurationSec);
+        }
+      },
+      onCancel: () => clearDirectPreview(true),
+    });
+  }
+
+  function startLaneDragV2(
+    event: ReactPointerEvent,
+    lane: TimelineLane,
+    clip: Clip,
+    mode: LaneDragState["mode"],
+  ) {
+    if (
+      event.button !== 0 ||
+      isInteractiveTarget(event.target) ||
+      !canClaimGesturePointer(
+        activeV2GestureRef.current !== null,
+        pointerData(event),
+      )
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const selection: TimelineLaneClipSelection = {
+      clipId: clip.id,
+      laneId: lane.id,
+      laneLabel: lane.label,
+      laneKind: lane.kind,
+    };
+    onSelectLaneClip?.(selection);
+    onSelectBrollClip?.(null);
+    onSelectCaptionBlock?.(null);
+    if (lockedLaneIds.has(lane.id)) return;
+    if (mode === "move") captureDropLanes();
+    const duration = clipTimelineDuration(clip);
+    const previewElement = (
+      event.currentTarget as HTMLElement
+    ).closest<HTMLElement>(".timelineLaneClip");
+    if (!previewElement) return;
+    const originalStyle = previewElement.getAttribute("style");
+    const clearDirectPreview = (restoreStyle: boolean) => {
+      if (restoreStyle) {
+        if (originalStyle === null) previewElement.removeAttribute("style");
+        else previewElement.setAttribute("style", originalStyle);
+      }
+      previewElement.classList.remove("dragging");
+      setDirectDropTarget(null);
+      finishV2Preview();
+    };
+    const assetDurationSec = assetDurationById.get(clip.asset_id) ?? null;
+    const initial: LaneDragState = {
+      selection,
+      mode,
+      startClientX: event.clientX,
+      speed: Math.max(clip.speed, 0.01),
+      sourceMaxEndSec:
+        assetDurationSec && assetDurationSec > 0
+          ? assetDurationSec
+          : clip.end_sec + 30,
+      initialTimelineStartSec: clip.timeline_start_sec,
+      initialTimelineEndSec: clip.timeline_start_sec + duration,
+      currentTimelineStartSec: clip.timeline_start_sec,
+      initialStartSec: clip.start_sec,
+      initialEndSec: clip.end_sec,
+      currentStartSec: clip.start_sec,
+      currentEndSec: clip.end_sec,
+    };
+    activateV2Gesture(event, {
+      thresholdPx: 3,
+      onPreview(update) {
+        const preview = computeLanePreview(initial, update.deltaX);
+        applyDirectBlockPreview(
+          previewElement,
+          preview.currentTimelineStartSec * pxPerSec,
+          ((preview.currentEndSec - preview.currentStartSec) / preview.speed) *
+            pxPerSec,
+          `lane-${mode}`,
+        );
+        if (mode === "move") {
+          setDirectDropTarget(resolveDropTarget(update.clientY, lane.id));
+        }
+      },
+      onCommit(update) {
+        const preview = computeLanePreview(initial, update.deltaX);
+        const target =
+          mode === "move" ? resolveDropTarget(update.clientY, lane.id) : null;
+        suppressClickRef.current = true;
+        clearDirectPreview(false);
+        if (mode === "move") {
+          if (
+            shouldCommitFrameChange(
+              secondsToFrame(initial.initialTimelineStartSec, fps),
+              secondsToFrame(preview.currentTimelineStartSec, fps),
+              target !== null,
+            )
+          ) {
+            onMoveLaneClip(
+              selection,
+              preview.currentTimelineStartSec,
+              target ?? undefined,
+            );
+          }
+        } else if (
+          shouldCommitFrameChange(
+            sourceBoundaryFrame(initial.initialStartSec, fps, "start"),
+            sourceBoundaryFrame(preview.currentStartSec, fps, "start"),
+            false,
+          ) ||
+          shouldCommitFrameChange(
+            sourceBoundaryFrame(initial.initialEndSec, fps, "end"),
+            sourceBoundaryFrame(preview.currentEndSec, fps, "end"),
+            false,
+          )
+        ) {
+          onTrimLaneClip(selection, {
+            startSec: preview.currentStartSec,
+            endSec: preview.currentEndSec,
+          });
+        }
+      },
+      onCancel: () => clearDirectPreview(true),
+    });
+  }
+
+  function startCaptionDragV2(
+    event: ReactPointerEvent,
+    block: TimelineCaptionBlock,
+    mode: CaptionDragState["mode"],
+  ) {
+    if (
+      event.button !== 0 ||
+      isInteractiveTarget(event.target) ||
+      !canClaimGesturePointer(
+        activeV2GestureRef.current !== null,
+        pointerData(event),
+      )
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const selection: TimelineCaptionSelection = {
+      overlayId: block.id,
+      clipId: block.clipId,
+      laneId: block.laneId,
+      laneLabel: block.laneLabel,
+      text: block.text,
+      style: block.style,
+    };
+    onSelectCaptionBlock?.(selection);
+    onSelectLaneClip?.(null);
+    onSelectBrollClip?.(null);
+    const previewElement = (
+      event.currentTarget as HTMLElement
+    ).closest<HTMLElement>(".captionBlock");
+    if (!previewElement) return;
+    const originalStyle = previewElement.getAttribute("style");
+    const clearDirectPreview = (restoreStyle: boolean) => {
+      if (restoreStyle) {
+        if (originalStyle === null) previewElement.removeAttribute("style");
+        else previewElement.setAttribute("style", originalStyle);
+      }
+      previewElement.classList.remove("dragging");
+      finishV2Preview();
+    };
+    const speed = Math.max(block.clipSpeed, 0.01);
+    const initial: CaptionDragState = {
+      selection,
+      mode,
+      startClientX: event.clientX,
+      clipTimelineStartSec: block.clipTimelineStartSec,
+      clipSourceDurationSec: block.clipSourceDurationSec,
+      clipSpeed: speed,
+      initialStartSec: (block.startSec - block.clipTimelineStartSec) * speed,
+      currentStartSec: (block.startSec - block.clipTimelineStartSec) * speed,
+      initialDurationSec: block.durationSec * speed,
+      currentDurationSec: block.durationSec * speed,
+    };
+    activateV2Gesture(event, {
+      thresholdPx: 3,
+      onPreview(update) {
+        const preview = computeCaptionPreview(initial, update.deltaX);
+        const timelineStart =
+          initial.clipTimelineStartSec +
+          preview.currentStartSec / preview.clipSpeed;
+        const timelineDuration = preview.currentDurationSec / preview.clipSpeed;
+        applyDirectBlockPreview(
+          previewElement,
+          timelineStart * pxPerSec,
+          timelineDuration * pxPerSec,
+          `caption-${mode}`,
+        );
+      },
+      onCommit(update) {
+        const preview = computeCaptionPreview(initial, update.deltaX);
+        suppressClickRef.current = true;
+        clearDirectPreview(false);
+        if (mode === "move") {
+          if (
+            shouldCommitFrameChange(
+              sourceBoundaryFrame(initial.initialStartSec, fps, "start"),
+              sourceBoundaryFrame(preview.currentStartSec, fps, "start"),
+              false,
+            )
+          ) {
+            onMoveCaptionBlock?.(selection, preview.currentStartSec);
+          }
+        } else if (
+          shouldCommitFrameChange(
+            sourceBoundaryFrame(initial.initialStartSec, fps, "start"),
+            sourceBoundaryFrame(preview.currentStartSec, fps, "start"),
+            false,
+          ) ||
+          shouldCommitFrameChange(
+            sourceBoundaryFrame(
+              initial.initialStartSec + initial.initialDurationSec,
+              fps,
+              "end",
+            ),
+            sourceBoundaryFrame(
+              preview.currentStartSec + preview.currentDurationSec,
+              fps,
+              "end",
+            ),
+            false,
+          )
+        ) {
+          onTrimCaptionBlock?.(
+            selection,
+            preview.currentStartSec,
+            preview.currentDurationSec,
+          );
+        }
+      },
+      onCancel: () => clearDirectPreview(true),
+    });
+  }
+
+  function startScrubV2(event: ReactPointerEvent) {
+    if (
+      event.button !== 0 ||
+      event.altKey ||
+      event.shiftKey ||
+      isInteractiveTarget(event.target) ||
+      !canClaimGesturePointer(
+        activeV2GestureRef.current !== null,
+        pointerData(event),
+      )
+    ) {
+      return;
+    }
+    setContextMenu(null);
+    // Keep clip selection during scrub so Split (S) still works after
+    // positioning the playhead inside the selected clip.
+    onSelectBrollClip?.(null);
+    onSelectCaptionBlock?.(null);
+    const initialSnapshot = activeTimelineClock.getSnapshot();
+    const clockPreview = activeTimelineClock.beginPreview();
+    if (!clockPreview) return;
+    const preview = (clientX: number) => {
+      const frame = secondsToFrame(secFromClientX(clientX), fps);
+      const seconds = frameToSeconds(frame, fps);
+      clockPreview.setTime(seconds);
+      return seconds;
+    };
+    preview(event.clientX);
+    const activated = activateV2Gesture(
+      event,
+      {
+        thresholdPx: 0,
+        onPreview(update) {
+          publishV2Preview("scrub", preview(update.clientX));
+        },
+        onCommit(update) {
+          const frame = secondsToFrame(secFromClientX(update.clientX), fps);
+          const seconds = frameToSeconds(frame, fps);
+          const initialFrame = secondsToFrame(initialSnapshot, fps);
+          clockPreview.commit(
+            frame === initialFrame ? initialSnapshot : seconds,
+          );
+          activeV2GestureRef.current = null;
+          if (frame !== initialFrame) onSeek(seconds);
+        },
+        onCancel() {
+          clockPreview.cancel();
+          activeV2GestureRef.current = null;
+        },
+      },
+      clockPreview,
+    );
+    if (!activated) clockPreview.cancel();
+  }
+
+  function handleV2PointerMove(event: ReactPointerEvent) {
+    activeV2GestureRef.current?.controller.pointerMove(pointerData(event));
+  }
+
+  function handleV2PointerUp(event: ReactPointerEvent) {
+    const active = activeV2GestureRef.current;
+    active?.controller.pointerUp(pointerData(event));
+    if (active && !active.controller.isActive()) {
+      activeV2GestureRef.current = null;
+    }
+  }
+
+  function handleV2PointerCancel(event: ReactPointerEvent) {
+    activeV2GestureRef.current?.controller.pointerCancel(pointerData(event));
+  }
+
+  function consumeSuppressedClick(event: ReactMouseEvent): boolean {
+    if (!suppressClickRef.current) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    suppressClickRef.current = false;
+    return true;
+  }
+
+  useEffect(() => {
+    if (!TIMELINE_CORE_V2) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      activeV2GestureRef.current?.controller.keyDown(event);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   function handleMouseDown(event: ReactMouseEvent) {
     if (event.button !== 0 || isInteractiveTarget(event.target)) return;
     setContextMenu(null);
@@ -1014,6 +1963,7 @@ function Timeline({
   }, [dragMode, rangeStart, rangeEnd, onSelectWordsInRange]);
 
   useEffect(() => {
+    if (TIMELINE_CORE_V2) return;
     if (!brollDragState) return;
 
     function onMove(event: MouseEvent) {
@@ -1118,6 +2068,7 @@ function Timeline({
   ]);
 
   useEffect(() => {
+    if (TIMELINE_CORE_V2) return;
     if (!laneDragState) return;
 
     function onMove(event: MouseEvent) {
@@ -1253,6 +2204,7 @@ function Timeline({
   ]);
 
   useEffect(() => {
+    if (TIMELINE_CORE_V2) return;
     if (!captionDragState) return;
 
     function onMove(event: MouseEvent) {
@@ -1407,6 +2359,56 @@ function Timeline({
     return () => window.removeEventListener("click", close);
   }, []);
 
+  const setZoomAt = useCallback(
+    (requested: number, clientX?: number) => {
+      if (zoomAnimationFrameRef.current !== null) {
+        window.cancelAnimationFrame(zoomAnimationFrameRef.current);
+      }
+      zoomAnimationFrameRef.current = window.requestAnimationFrame(() => {
+        zoomAnimationFrameRef.current = null;
+        const container = containerRef.current;
+        const previous = pxPerSecRef.current;
+        const next = clamp(requested, MIN_PX_PER_SEC, MAX_PX_PER_SEC);
+        if (!container || next === previous) return;
+        const rect = container.getBoundingClientRect();
+        const anchorClientX = clientX ?? rect.left + rect.width / 2;
+        const nextWidth = Math.max(durationSec * next, 200);
+        const maxScrollLeft = Math.max(0, nextWidth - container.clientWidth);
+        const result = zoomViewportAtCursor({
+          scrollLeft: clamp(
+            container.scrollLeft,
+            0,
+            Math.max(0, container.scrollWidth - container.clientWidth),
+          ),
+          viewportLeft: rect.left + TRACK_LEFT_MARGIN,
+          cursorClientX: anchorClientX,
+          oldPixelsPerFrame: previous / fps,
+          newPixelsPerFrame: next / fps,
+          maxScrollLeft,
+        });
+        // Expand/shrink scrollable width before applying anchor scroll so the
+        // browser does not clamp against the previous canvas size.
+        const canvas =
+          container.querySelector<HTMLElement>(".timelineCanvas");
+        if (canvas) canvas.style.width = `${nextWidth}px`;
+        pxPerSecRef.current = next;
+        playheadAutoScrollEnabledRef.current = false;
+        pendingZoomScrollRef.current = result.scrollLeft;
+        container.scrollLeft = result.scrollLeft;
+        setPxPerSec(next);
+        window.requestAnimationFrame(() => {
+          const pending = pendingZoomScrollRef.current;
+          if (pending !== null) {
+            container.scrollLeft = pending;
+            pendingZoomScrollRef.current = null;
+          }
+          playheadAutoScrollEnabledRef.current = true;
+        });
+      });
+    },
+    [durationSec, fps],
+  );
+
   useEffect(() => {
     const element = containerRef.current;
     if (!element) return;
@@ -1414,13 +2416,24 @@ function Timeline({
       if (event.ctrlKey || event.metaKey) {
         event.preventDefault();
         const container = containerRef.current;
+        const delta = event.deltaY > 0 ? 0.85 : 1.18;
+        if (TIMELINE_CORE_V2) {
+          setZoomAt(
+            clamp(
+              pxPerSecRef.current * delta,
+              MIN_PX_PER_SEC,
+              MAX_PX_PER_SEC,
+            ),
+            event.clientX,
+          );
+          return;
+        }
         setPxPerSec((prev) => {
-          const delta = event.deltaY > 0 ? 0.85 : 1.18;
           const next = Math.max(
             MIN_PX_PER_SEC,
             Math.min(MAX_PX_PER_SEC, prev * delta),
           );
-          if (container && next !== prev) {
+          if (container && next !== prev && !TIMELINE_CORE_V2) {
             // Keep the time under the cursor fixed while zooming.
             const rect = container.getBoundingClientRect();
             const viewportX = event.clientX - rect.left;
@@ -1437,7 +2450,7 @@ function Timeline({
     }
     element.addEventListener("wheel", onWheel, { passive: false });
     return () => element.removeEventListener("wheel", onWheel);
-  }, []);
+  }, [setZoomAt]);
 
   const selectedCount = selectedWordIds.size;
   const selectedHasDeleted = useMemo(() => {
@@ -1459,10 +2472,10 @@ function Timeline({
         <div className="timelineHeaderCopy">
           <h3>Timeline</h3>
           <span className="tlHint">
-            Drag clips to move (up/down to change track), drag edges to trim,
-            press <kbd>S</kbd> to split, <kbd>Ctrl</kbd>+<kbd>C</kbd>/
-            <kbd>V</kbd> to copy/paste, <kbd>Ctrl</kbd>+<kbd>D</kbd> to
-            duplicate, <kbd>Delete</kbd> to remove.
+            Drag clips to move (up/down to change track), drag edges to trim.
+            Split: select clip → scrub playhead inside it → press <kbd>S</kbd>.
+            <kbd>Ctrl</kbd>+<kbd>C</kbd>/<kbd>V</kbd> copy/paste,{" "}
+            <kbd>Ctrl</kbd>+<kbd>D</kbd> duplicate, <kbd>Delete</kbd> remove.
           </span>
           {speakerLegend.length > 1 && (
             <div className="timelineSpeakerLegend" aria-label="Speaker legend">
@@ -1497,7 +2510,11 @@ function Timeline({
             <button
               className="zoomBtn"
               onClick={() =>
-                setPxPerSec((prev) => Math.max(MIN_PX_PER_SEC, prev * 0.7))
+                TIMELINE_CORE_V2
+                  ? setZoomAt(pxPerSec * 0.7)
+                  : setPxPerSec((prev) =>
+                      Math.max(MIN_PX_PER_SEC, prev * 0.7),
+                    )
               }
               title="Zoom out"
               aria-label="Zoom out"
@@ -1510,13 +2527,21 @@ function Timeline({
               max={MAX_PX_PER_SEC}
               step={1}
               value={pxPerSec}
-              onChange={(event) => setPxPerSec(Number(event.target.value))}
+              onChange={(event) =>
+                TIMELINE_CORE_V2
+                  ? setZoomAt(Number(event.target.value))
+                  : setPxPerSec(Number(event.target.value))
+              }
               className="zoomSlider"
             />
             <button
               className="zoomBtn"
               onClick={() =>
-                setPxPerSec((prev) => Math.min(MAX_PX_PER_SEC, prev * 1.4))
+                TIMELINE_CORE_V2
+                  ? setZoomAt(pxPerSec * 1.4)
+                  : setPxPerSec((prev) =>
+                      Math.min(MAX_PX_PER_SEC, prev * 1.4),
+                    )
               }
               title="Zoom in"
               aria-label="Zoom in"
@@ -1531,8 +2556,28 @@ function Timeline({
       <div
         className="timelineScroll"
         ref={containerRef}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
+        onMouseDown={(event) => {
+          if (!TIMELINE_CORE_V2 || event.altKey || event.shiftKey) {
+            handleMouseDown(event);
+          }
+        }}
+        onMouseMove={(event) => {
+          if (!TIMELINE_CORE_V2 || dragMode === "range") {
+            handleMouseMove(event);
+          }
+        }}
+        onPointerDown={(event) => {
+          if (TIMELINE_CORE_V2) startScrubV2(event);
+        }}
+        onPointerMove={(event) => {
+          if (TIMELINE_CORE_V2) handleV2PointerMove(event);
+        }}
+        onPointerUp={(event) => {
+          if (TIMELINE_CORE_V2) handleV2PointerUp(event);
+        }}
+        onPointerCancel={(event) => {
+          if (TIMELINE_CORE_V2) handleV2PointerCancel(event);
+        }}
         onContextMenu={handleContextMenu}
       >
         <div className="timelineCanvas" style={{ width: totalWidth }}>
@@ -1636,10 +2681,18 @@ function Timeline({
                       .filter(Boolean)
                       .join(" ")}
                     style={{ left: x, width: w }}
-                    onMouseDown={(event) =>
-                      startLaneDrag(event, lane, clip, "move")
+                    onMouseDown={
+                      TIMELINE_CORE_V2
+                        ? undefined
+                        : (event) => startLaneDrag(event, lane, clip, "move")
+                    }
+                    onPointerDown={
+                      TIMELINE_CORE_V2
+                        ? (event) => startLaneDragV2(event, lane, clip, "move")
+                        : undefined
                     }
                     onClick={(event) => {
+                      if (consumeSuppressedClick(event)) return;
                       event.stopPropagation();
                       const selection: TimelineLaneClipSelection = {
                         clipId: clip.id,
@@ -1647,7 +2700,16 @@ function Timeline({
                         laneLabel: lane.label,
                         laneKind: lane.kind,
                       };
-                      onSeek(timelineStartSec);
+                      // Keep playhead if already inside this clip so Split (S)
+                      // works; only jump to start when outside.
+                      const playheadSec = TIMELINE_CORE_V2
+                        ? activeTimelineClock.getSnapshot()
+                        : currentTimeSec;
+                      const clipEndSec = timelineStartSec + duration;
+                      const playheadInside =
+                        playheadSec > timelineStartSec + 0.01 &&
+                        playheadSec < clipEndSec - 0.01;
+                      if (!playheadInside) onSeek(timelineStartSec);
                       onSelectLaneClip?.(selection);
                       onSelectBrollClip?.(null);
                       onSelectCaptionBlock?.(null);
@@ -1656,15 +2718,33 @@ function Timeline({
                   >
                     <div
                       className="laneClipHandle start"
-                      onMouseDown={(event) =>
-                        startLaneDrag(event, lane, clip, "trim-start")
+                      onMouseDown={
+                        TIMELINE_CORE_V2
+                          ? undefined
+                          : (event) =>
+                              startLaneDrag(event, lane, clip, "trim-start")
+                      }
+                      onPointerDown={
+                        TIMELINE_CORE_V2
+                          ? (event) =>
+                              startLaneDragV2(event, lane, clip, "trim-start")
+                          : undefined
                       }
                       title="Trim clip in"
                     />
                     <div
                       className="laneClipHandle end"
-                      onMouseDown={(event) =>
-                        startLaneDrag(event, lane, clip, "trim-end")
+                      onMouseDown={
+                        TIMELINE_CORE_V2
+                          ? undefined
+                          : (event) =>
+                              startLaneDrag(event, lane, clip, "trim-end")
+                      }
+                      onPointerDown={
+                        TIMELINE_CORE_V2
+                          ? (event) =>
+                              startLaneDragV2(event, lane, clip, "trim-end")
+                          : undefined
                       }
                       title="Trim clip out"
                     />
@@ -1718,8 +2798,18 @@ function Timeline({
                   .filter(Boolean)
                   .join(" ")}
                 style={{ left: block.x, width: block.w }}
-                onMouseDown={(event) => startCaptionDrag(event, block, "move")}
+                onMouseDown={
+                  TIMELINE_CORE_V2
+                    ? undefined
+                    : (event) => startCaptionDrag(event, block, "move")
+                }
+                onPointerDown={
+                  TIMELINE_CORE_V2
+                    ? (event) => startCaptionDragV2(event, block, "move")
+                    : undefined
+                }
                 onClick={(event) => {
+                  if (consumeSuppressedClick(event)) return;
                   event.stopPropagation();
                   onSeek(block.renderedStartSec);
                   onSelectCaptionBlock?.({
@@ -1749,8 +2839,17 @@ function Timeline({
               >
                 <div
                   className="captionBlockHandle start"
-                  onMouseDown={(event) =>
-                    startCaptionDrag(event, block, "trim-start")
+                  onMouseDown={
+                    TIMELINE_CORE_V2
+                      ? undefined
+                      : (event) =>
+                          startCaptionDrag(event, block, "trim-start")
+                  }
+                  onPointerDown={
+                    TIMELINE_CORE_V2
+                      ? (event) =>
+                          startCaptionDragV2(event, block, "trim-start")
+                      : undefined
                   }
                   title="Trim caption in"
                 />
@@ -1783,8 +2882,16 @@ function Timeline({
                 )}
                 <div
                   className="captionBlockHandle end"
-                  onMouseDown={(event) =>
-                    startCaptionDrag(event, block, "trim-end")
+                  onMouseDown={
+                    TIMELINE_CORE_V2
+                      ? undefined
+                      : (event) => startCaptionDrag(event, block, "trim-end")
+                  }
+                  onPointerDown={
+                    TIMELINE_CORE_V2
+                      ? (event) =>
+                          startCaptionDragV2(event, block, "trim-end")
+                      : undefined
                   }
                   title="Trim caption out"
                 />
@@ -1802,16 +2909,7 @@ function Timeline({
               height={50}
               preserveAspectRatio="none"
             >
-              {waveformBars.map((bar, index) => (
-                <rect
-                  key={index}
-                  x={bar.x}
-                  y={50 - bar.height * 46}
-                  width={bar.width}
-                  height={bar.height * 46}
-                  rx={1}
-                />
-              ))}
+              {waveformRects}
             </svg>
             {deletedRegions.map((region, index) => (
               <div
@@ -1867,8 +2965,18 @@ function Timeline({
                       width: w,
                       opacity: Math.max(0.28, Math.min(opacity, 1)),
                     }}
-                    onMouseDown={(event) => startBrollDrag(event, clip, "move")}
+                    onMouseDown={
+                      TIMELINE_CORE_V2
+                        ? undefined
+                        : (event) => startBrollDrag(event, clip, "move")
+                    }
+                    onPointerDown={
+                      TIMELINE_CORE_V2
+                        ? (event) => startBrollDragV2(event, clip, "move")
+                        : undefined
+                    }
                     onClick={(event) => {
+                      if (consumeSuppressedClick(event)) return;
                       event.stopPropagation();
                       clearAllSelections();
                       onSelectBrollClip?.(clip.id);
@@ -1943,8 +3051,17 @@ function Timeline({
                     </button>
                     <div
                       className="brollResizeHandle"
-                      onMouseDown={(event) =>
-                        startBrollDrag(event, clip, "resize-end")
+                      onMouseDown={
+                        TIMELINE_CORE_V2
+                          ? undefined
+                          : (event) =>
+                              startBrollDrag(event, clip, "resize-end")
+                      }
+                      onPointerDown={
+                        TIMELINE_CORE_V2
+                          ? (event) =>
+                              startBrollDragV2(event, clip, "resize-end")
+                          : undefined
                       }
                       title="Trim B-roll duration"
                     />
@@ -2052,10 +3169,13 @@ function Timeline({
             />
           )}
 
-          <div className="timeline-playhead" style={{ left: playheadX }}>
-            <div className="timeline-playheadHead" />
-            <div className="timeline-playheadLine" />
-          </div>
+          <TimelinePlayhead
+            currentTimeSec={currentTimeSec}
+            pxPerSec={pxPerSec}
+            timelineClock={TIMELINE_CORE_V2 ? activeTimelineClock : undefined}
+            containerRef={containerRef}
+            autoScrollEnabledRef={playheadAutoScrollEnabledRef}
+          />
         </div>
       </div>
 

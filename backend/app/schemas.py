@@ -161,13 +161,39 @@ class ProjectResponse(BaseModel):
 
 
 class OperationPayload(BaseModel):
+    """Timeline command envelope.
+
+    Frame parameters live in ``params`` for backward compatibility:
+    ``start_frame`` and ``end_frame`` are absolute source-time frames,
+    independent of clip speed. ``timeline_start_frame`` and ``at_frame`` are
+    absolute project-timeline frames. A frame field takes precedence over its
+    legacy float-second counterpart.
+    """
+
     op_type: str
     params: dict[str, Any] = Field(default_factory=dict)
     source: Literal["ui", "prompt"] = "ui"
 
+    @model_validator(mode="after")
+    def validate_frame_coordinates(self) -> "OperationPayload":
+        frame_fields = {
+            "timeline_start_frame",
+            "start_frame",
+            "end_frame",
+            "at_frame",
+        }
+        for field_name in frame_fields:
+            if field_name not in self.params:
+                continue
+            value = self.params[field_name]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{field_name} must be a non-negative integer")
+        return self
+
 
 class OperationApplyRequest(BaseModel):
     operations: list[OperationPayload]
+    expected_version: Optional[int] = Field(default=None, ge=0)
 
 
 class OperationApplyResponse(BaseModel):
@@ -209,6 +235,7 @@ class PromptParseResponse(BaseModel):
 
 class PromptApplyRequest(BaseModel):
     prompt: str
+    expected_version: Optional[int] = Field(default=None, ge=0)
 
 
 class IngestUrlRequest(BaseModel):

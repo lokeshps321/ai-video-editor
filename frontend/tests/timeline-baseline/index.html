@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Timeline baseline harness</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --layer-0: #11141b;
+        --ink: #f4f6fb;
+        --muted: #9aa3b5;
+        --accent: #8b7cff;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: #090b10;
+        color: var(--ink);
+        font-family: Inter, system-ui, sans-serif;
+      }
+
+      #root {
+        width: 100vw;
+        padding: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>

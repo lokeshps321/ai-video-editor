@@ -1,6 +1,7 @@
 import React, {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -42,6 +43,7 @@ import type {
   MediaAsset,
   Project,
   Timeline as ProjectTimeline,
+  TimelineOperation,
   Transcript,
   TranscriptGenerateResponse,
   TranscriptMode,
@@ -81,6 +83,17 @@ import { BrollCandidateCard } from "./components/BrollCandidateCard";
 import { BrollTrustSummary } from "./components/features/BrollTrustSummary";
 import { TranscriptQualityPanel } from "./components/features/TranscriptQualityPanel";
 import { BRAND } from "./config/brand";
+import { createTimelineClock } from "./timeline/clock";
+import {
+  compileTimelineKeyboardCommand,
+  decideTimelineArrowHandling,
+  resolveCanonicalFps,
+} from "./timeline/integration";
+import { frameToSeconds, secondsToFrame } from "./timeline/timebase";
+import {
+  createTimelineMutationCoordinator,
+  TimelineMutationProjectChangedError,
+} from "./timeline/mutationCoordinator";
 import {
   AI_ACTION_ITEMS,
   CAPTION_STYLE_CONFIG_BY_ID,
@@ -97,6 +110,8 @@ import {
   TRANSCRIPT_MODE_OPTIONS,
   type FeatureTabId,
 } from "./config/editor";
+
+const TIMELINE_CORE_V2 = import.meta.env.VITE_TIMELINE_CORE_V2 !== "false";
 
 type TextBlock = {
   id: string;
@@ -931,6 +946,10 @@ const MAX_UNDO = 80;
 
 function App() {
   const [project, setProject] = useState<Project | null>(null);
+  const timelineVersionRef = useRef(0);
+  const timelineMutationCoordinatorRef = useRef(
+    createTimelineMutationCoordinator(),
+  );
   const [media, setMedia] = useState<MediaAsset[]>([]);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [transcriptMode, setTranscriptMode] = useState<TranscriptMode>("auto");
@@ -947,6 +966,11 @@ function App() {
   const [transcriptStageBaseProgress, setTranscriptStageBaseProgress] =
     useState(0);
   const [transcript, setTranscript] = useState<Transcript | null>(null);
+
+  useLayoutEffect(() => {
+    timelineMutationCoordinatorRef.current.activate(project?.id ?? null);
+    timelineVersionRef.current = project?.timeline_version ?? 0;
+  }, [project?.id, project?.timeline_version]);
 
   const [deletedWordIds, setDeletedWordIds] = useState<Set<string>>(new Set());
   const [selectedWordIds, setSelectedWordIds] = useState<Set<string>>(
@@ -1120,6 +1144,12 @@ function App() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewUpdateQueued, setPreviewUpdateQueued] = useState(false);
   const [currentTimeSec, setCurrentTimeSec] = useState(0);
+  const timelineClockRef = useRef(createTimelineClock(0));
+  const lastAppClockRenderMsRef = useRef(0);
+  const canonicalTimelineFps = resolveCanonicalFps(
+    project?.timeline.fps,
+    project?.fps,
+  );
 
   // Waveform data for timeline
   const [waveformPeaks, setWaveformPeaks] = useState<number[]>([]);
@@ -1691,6 +1721,7 @@ function App() {
     const element = videoRef.current;
     if (!element) return;
     const nextTime = element.currentTime;
+    timelineClockRef.current.setTime(nextTime);
     setCurrentTimeSec((prev) =>
       Math.abs(prev - nextTime) >= 0.005 ? nextTime : prev,
     );
@@ -1718,9 +1749,16 @@ function App() {
         return;
       }
       const nextTime = element.currentTime;
-      setCurrentTimeSec((prev) =>
-        Math.abs(prev - nextTime) >= 0.005 ? nextTime : prev,
-      );
+      timelineClockRef.current.setTime(nextTime);
+      if (
+        !TIMELINE_CORE_V2 ||
+        performance.now() - lastAppClockRenderMsRef.current >= 100
+      ) {
+        lastAppClockRenderMsRef.current = performance.now();
+        setCurrentTimeSec((prev) =>
+          Math.abs(prev - nextTime) >= 0.005 ? nextTime : prev,
+        );
+      }
       if (!element.paused && !element.ended) {
         playbackSyncFrameRef.current = window.requestAnimationFrame(tick);
       } else {
@@ -1729,6 +1767,10 @@ function App() {
     };
     playbackSyncFrameRef.current = window.requestAnimationFrame(tick);
   }, []);
+
+  useEffect(() => {
+    timelineClockRef.current.setTime(currentTimeSec);
+  }, [currentTimeSec]);
 
   useEffect(() => {
     if (!previewJob || previewJob.status !== "completed") {
@@ -2522,29 +2564,54 @@ function App() {
     [project, refreshBrollSlots, queuePreview],
   );
 
+  async function requestTimelineOperations(
+    projectId: string,
+    operations: TimelineOperation[],
+  ) {
+    return timelineMutationCoordinatorRef.current.run(
+      projectId,
+      () => timelineVersionRef.current,
+      (expectedVersion) =>
+        api.applyOperations(projectId, operations, expectedVersion),
+      (response) => {
+        timelineVersionRef.current = response.version;
+        setProject((prev) => {
+          if (
+            !prev ||
+            prev.id !== projectId ||
+            response.version < (prev.timeline_version ?? 0)
+          ) {
+            return prev;
+          }
+          return {
+            ...prev,
+            timeline: response.timeline,
+            timeline_version: response.version,
+            timeline_can_undo: response.timeline_can_undo,
+            timeline_can_redo: response.timeline_can_redo,
+          };
+        });
+        setTimelineCanUndo(!!response.timeline_can_undo);
+        setTimelineCanRedo(!!response.timeline_can_redo);
+      },
+    );
+  }
+
   async function applyTimelineOperations(
-    operations: Array<{
-      op_type: string;
-      params: Record<string, unknown>;
-      source?: string;
-    }>,
+    operations: TimelineOperation[],
     options?: { notice?: string | null; forcePreview?: boolean },
   ) {
     if (!project || !operations.length) return null;
     setError(null);
     try {
-      const response = await api.applyOperations(project.id, operations);
-      setProject((prev) =>
-        prev ? { ...prev, timeline: response.timeline } : prev,
-      );
-      setTimelineCanUndo(!!response.timeline_can_undo);
-      setTimelineCanRedo(!!response.timeline_can_redo);
+      const response = await requestTimelineOperations(project.id, operations);
       if (options?.notice !== undefined) {
         setNotice(options.notice);
       }
       await queuePreview(!!options?.forcePreview);
       return response.timeline;
     } catch (err) {
+      if (err instanceof TimelineMutationProjectChangedError) return null;
       setError((err as Error).message);
       return null;
     }
@@ -2917,7 +2984,7 @@ function App() {
         );
         if (!hasVideoClip && Number.isFinite(durationSec) && durationSec > 0) {
           try {
-            const response = await api.applyOperations(project.id, [
+            await requestTimelineOperations(project.id, [
               {
                 op_type: "add_clip",
                 source: "ui",
@@ -2929,24 +2996,13 @@ function App() {
                 },
               },
             ]);
-            setProject((prev) =>
-              prev
-                ? {
-                    ...prev,
-                    timeline: response.timeline,
-                    timeline_version: response.version,
-                    timeline_can_undo: response.timeline_can_undo,
-                    timeline_can_redo: response.timeline_can_redo,
-                  }
-                : prev,
-            );
-            setTimelineCanUndo(!!response.timeline_can_undo);
-            setTimelineCanRedo(!!response.timeline_can_redo);
             addedToTimeline = true;
           } catch (timelineError) {
-            setError(
-              `Video uploaded, but timeline setup failed: ${(timelineError as Error).message}`,
-            );
+            if (!(timelineError instanceof TimelineMutationProjectChangedError)) {
+              setError(
+                `Video uploaded, but timeline setup failed: ${(timelineError as Error).message}`,
+              );
+            }
           }
         }
       }
@@ -3194,22 +3250,21 @@ function App() {
     setRemovingCaptions(true);
     setError(null);
     try {
-      const response = await api.applyOperations(project.id, [
+      await requestTimelineOperations(project.id, [
         {
           op_type: "clear_subtitles",
           params: { asset_id: selectedVideoAsset.id },
           source: "ui",
         },
       ]);
-      setProject((prev) =>
-        prev ? { ...prev, timeline: response.timeline } : prev,
-      );
       setSelectedCaptionBlock(null);
       setCaptionResultInfo(null);
       setNotice("Captions removed.");
       await queuePreview(true);
     } catch (err) {
-      setError((err as Error).message);
+      if (!(err instanceof TimelineMutationProjectChangedError)) {
+        setError((err as Error).message);
+      }
     } finally {
       setRemovingCaptions(false);
     }
@@ -4101,6 +4156,7 @@ function App() {
 
   const handleTimelineSeek = useCallback((sec: number) => {
     if (videoRef.current) videoRef.current.currentTime = sec;
+    timelineClockRef.current.setTime(sec);
     setCurrentTimeSec(sec);
   }, []);
 
@@ -5439,7 +5495,51 @@ function App() {
         (event.key === "ArrowLeft" || event.key === "ArrowRight")
       ) {
         const player = videoRef.current;
-        if (player) {
+        const arrowHandling = decideTimelineArrowHandling({
+          key: event.key,
+          timelineCoreV2: TIMELINE_CORE_V2,
+          altKey: event.altKey,
+          shiftKey: event.shiftKey,
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+        });
+        if (arrowHandling === "v2") {
+          const durationSec =
+            (player && Number.isFinite(player.duration) ? player.duration : 0) ||
+            transcript?.duration_sec ||
+            project?.timeline.duration_sec ||
+            0;
+          const command = compileTimelineKeyboardCommand({
+            key: event.key,
+            altKey: event.altKey,
+            shiftKey: event.shiftKey,
+            ctrlKey: event.ctrlKey,
+            metaKey: event.metaKey,
+            currentFrame: secondsToFrame(
+              timelineClockRef.current.getSnapshot(),
+              canonicalTimelineFps,
+            ),
+            durationFrames: secondsToFrame(
+              Math.max(0, durationSec),
+              canonicalTimelineFps,
+            ),
+            selectedClipStartFrame: selectedTimelineClipDetails
+              ? secondsToFrame(
+                  selectedTimelineClipDetails.clip.timeline_start_sec,
+                  canonicalTimelineFps,
+                )
+              : null,
+          });
+          if (command) {
+            event.preventDefault();
+            const seconds = frameToSeconds(command.frame, canonicalTimelineFps);
+            if (command.kind === "seek") {
+              handleTimelineSeek(seconds);
+            } else if (selectedTimelineClip) {
+              handleTimelineMoveLaneClip(selectedTimelineClip, seconds);
+            }
+          }
+        } else if (arrowHandling === "legacy" && player) {
           event.preventDefault();
           const step = event.shiftKey ? 1 : 5;
           const next =
@@ -5569,21 +5669,26 @@ function App() {
     cancelEdit,
     clearEditorSelections,
     clipClipboard,
+    canonicalTimelineFps,
     copySelectedTimelineClip,
     deleteSelectedCaptionBlock,
     deleteSelectedTimelineClip,
     duplicateSelectedTimelineClip,
     editingCaptionOverlayId,
     editingWordId,
+    handleTimelineMoveLaneClip,
+    handleTimelineSeek,
     pasteTimelineClip,
     redo,
     removeBrollClipById,
     selectedBrollClipId,
     selectedCaptionBlock,
     selectedTimelineClip,
+    selectedTimelineClipDetails,
     selectedWordIds,
     splitSelectedTimelineClip,
     transcript,
+    project?.timeline.duration_sec,
     undo,
     updateDeletedWords,
   ]);
@@ -6002,25 +6107,20 @@ function App() {
   async function applyBrollTimelineOperations(
     clipId: string,
     action: "move" | "trim" | "opacity" | "delete" | "reroll",
-    operations: Array<{
-      op_type: string;
-      params: Record<string, unknown>;
-      source?: string;
-    }>,
+    operations: TimelineOperation[],
     noticeMessage: string,
   ) {
     if (!project || !operations.length) return;
     setBrollTimelineActionKey(`${action}:${clipId}`);
     setError(null);
     try {
-      const response = await api.applyOperations(project.id, operations);
-      setProject((prev) =>
-        prev ? { ...prev, timeline: response.timeline } : prev,
-      );
+      await requestTimelineOperations(project.id, operations);
       setNotice(noticeMessage);
       await queuePreview();
     } catch (err) {
-      setError((err as Error).message);
+      if (!(err instanceof TimelineMutationProjectChangedError)) {
+        setError((err as Error).message);
+      }
     } finally {
       setBrollTimelineActionKey(null);
     }
@@ -8729,6 +8829,10 @@ function App() {
               transcript?.duration_sec || project.timeline.duration_sec
             }
             currentTimeSec={currentTimeSec}
+            fps={canonicalTimelineFps}
+            timelineClock={
+              TIMELINE_CORE_V2 ? timelineClockRef.current : undefined
+            }
             deletedWordIds={deletedWordIds}
             selectedWordIds={selectedWordIds}
             activeWordId={activeWordId}

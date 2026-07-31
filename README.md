@@ -153,6 +153,22 @@ VITE_API_BASE=http://localhost:8000 npm run dev
 VITE_REQUEST_TIMEOUT_MS=120000 npm run dev
 ```
 
+Timeline Core V2 is rollout-gated and disabled by default. The legacy timeline
+remains active unless `VITE_TIMELINE_CORE_V2=true` is set explicitly.
+
+Frontend verification:
+
+```bash
+cd frontend
+npm run test:unit
+npm run build
+npm run test:timeline-v2
+```
+
+The browser gate starts isolated legacy and V2 harnesses, uses installed Chrome
+or Playwright Chromium, and writes `frontend/artifacts/timeline-v2-result.json`.
+It fails with installation guidance when neither browser is available.
+
 Convenience targets:
 
 ```bash
