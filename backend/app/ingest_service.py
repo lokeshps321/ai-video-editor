@@ -105,7 +105,8 @@ def download_video_with_ytdlp(url: str, project_id: str) -> tuple[str, str, str 
 
 
 def _download_hls_stream(hls_url: str, project_id: str) -> tuple[str, str, str | None]:
-    """Download HLS/M3U8 stream using ffmpeg with SSRF/LFI protection."""
+    """Download HLS/M3U8 stream using ffmpeg with strict SSRF/LFI protection."""
+    import ipaddress
     from urllib.parse import urlparse
 
     if shutil.which("ffmpeg") is None:
@@ -114,8 +115,22 @@ def _download_hls_stream(hls_url: str, project_id: str) -> tuple[str, str, str |
     parsed = urlparse(hls_url)
     if parsed.scheme not in {"http", "https"}:
         raise ValueError("Only HTTP(S) URLs are allowed")
-    if parsed.hostname in {"localhost", "127.0.0.1", "0.0.0.0"}:
-        raise ValueError("Local addresses not allowed")
+
+    hostname = parsed.hostname or ""
+    if not hostname:
+        raise ValueError("Invalid URL: no hostname")
+
+    # Block local/private addresses
+    blocked_hosts = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"}
+    if hostname in blocked_hosts or hostname.startswith("127.") or hostname.startswith("192.168."):
+        raise ValueError("Local/private addresses not allowed")
+
+    try:
+        ip = ipaddress.ip_address(hostname)
+        if ip.is_private or ip.is_loopback or ip.is_link_local:
+            raise ValueError("Private/loopback addresses not allowed")
+    except ValueError:
+        pass
 
     project_dir = storage.upload_root / project_id
     project_dir.mkdir(parents=True, exist_ok=True)
