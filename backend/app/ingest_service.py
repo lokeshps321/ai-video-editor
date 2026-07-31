@@ -75,10 +75,10 @@ def download_video_with_apify(url: str, project_id: str) -> tuple[str, str, str 
     file_prefix = uuid4().hex
     output_file = project_dir / f"{file_prefix}.mp4"
 
-    # Call Apify YouTube Video Downloader actor
-    # Actor: apify/youtube-video-downloader (free tier: 100 runs/month)
-    actor_id = "apify/youtube-video-downloader"
-    api_url = f"https://api.apify.com/v2/acts/{actor_id}/run"
+    # Call Apify YouTube Video Downloader actor (epctex)
+    # Actor: epctex/youtube-video-downloader (most reliable, free tier: 100 runs/month)
+    actor_id = "epctex/youtube-video-downloader"
+    api_url = f"https://api.apify.com/v2/acts/{actor_id}/calls"
 
     headers = {
         "Authorization": f"Bearer {apify_token}",
@@ -86,20 +86,24 @@ def download_video_with_apify(url: str, project_id: str) -> tuple[str, str, str 
     }
 
     payload = {
-        "youtubeUrl": normalized_url,
-        "maxHeight": 1080,
+        "startUrls": [{"url": normalized_url}],
+        "quality": "1080",
+        "storageType": "apify",
     }
 
     try:
-        # Start the Apify actor run
-        response = requests.post(api_url, json=payload, headers=headers, timeout=30)
+        # Start the Apify actor run (sync call)
+        response = requests.post(api_url, json=payload, headers=headers, timeout=600)
         response.raise_for_status()
         run_data = response.json()
 
         if not run_data.get("data"):
             raise RuntimeError(f"Apify API error: {run_data}")
 
-        run_id = run_data["data"]["id"]
+        # For /calls endpoint, it returns the run data directly
+        run_id = run_data["data"].get("id")
+        if not run_id:
+            raise RuntimeError(f"No run ID in response: {run_data}")
 
         # Poll for completion (with timeout)
         max_wait = 300  # 5 minutes max
@@ -122,20 +126,24 @@ def download_video_with_apify(url: str, project_id: str) -> tuple[str, str, str 
             raise RuntimeError("Apify download timeout (>5 minutes)")
 
         # Get the output dataset
-        dataset_url = f"https://api.apify.com/v2/actor-runs/{run_id}/dataset/items"
+        dataset_id = run_data["data"].get("defaultDatasetId")
+        if not dataset_id:
+            raise RuntimeError(f"No dataset ID in run response: {run_data}")
+
+        dataset_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items"
         dataset_resp = requests.get(dataset_url, headers=headers, timeout=30)
         dataset_resp.raise_for_status()
         dataset_items = dataset_resp.json()
 
-        if not dataset_items.get("data"):
-            raise RuntimeError("No download URL returned from Apify")
+        if not isinstance(dataset_items, list) or len(dataset_items) == 0:
+            raise RuntimeError(f"No results in dataset: {dataset_items}")
 
-        video_item = dataset_items["data"][0]
+        video_item = dataset_items[0]
         download_url = video_item.get("url")
         video_title = video_item.get("title", "Downloaded Video")
 
         if not download_url:
-            raise RuntimeError("Apify did not return a download URL")
+            raise RuntimeError(f"No download URL in result: {video_item}")
 
         # Download the video file from the URL
         video_resp = requests.get(download_url, timeout=600, stream=True)
