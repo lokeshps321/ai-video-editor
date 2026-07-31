@@ -54,6 +54,11 @@ def validate_ingest_url(url: str) -> str:
 
 def download_video_with_ytdlp(url: str, project_id: str) -> tuple[str, str, str | None]:
     normalized_url = validate_ingest_url(url)
+
+    # Handle M3U8/HLS streams with ffmpeg (no bot detection)
+    if normalized_url.endswith(".m3u8") or ".m3u8" in normalized_url:
+        return _download_hls_stream(normalized_url, project_id)
+
     if shutil.which(settings.yt_dlp_bin) is None:
         raise RuntimeError(f"{settings.yt_dlp_bin} not found in PATH")
 
@@ -73,10 +78,7 @@ def download_video_with_ytdlp(url: str, project_id: str) -> tuple[str, str, str 
         "--print",
         f"after_move:{_SOURCE_TITLE_PREFIX}%(title)s",
     ]
-    # YouTube extraction needs a JS runtime; yt-dlp only auto-detects deno,
-    # so point it at node when that's what the host has.
-    if shutil.which("deno") is None and shutil.which("node") is not None:
-        cmd += ["--js-runtimes", "node"]
+    # YouTube extraction needs a JS runtime; yt-dlp will auto-detect deno or node
     cmd += [
         "-o",
         str(output_template),
@@ -100,3 +102,38 @@ def download_video_with_ytdlp(url: str, project_id: str) -> tuple[str, str, str 
     relative = str(file_path.resolve().relative_to(storage.upload_root))
     source_title = _source_title_from_ytdlp_output(result.stdout or "")
     return str(file_path.resolve()), relative, source_title
+
+
+def _download_hls_stream(hls_url: str, project_id: str) -> tuple[str, str, str | None]:
+    """Download HLS/M3U8 stream using ffmpeg (no bot detection, works on Azure)."""
+    if shutil.which("ffmpeg") is None:
+        raise RuntimeError("ffmpeg not found in PATH")
+
+    project_dir = storage.upload_root / project_id
+    project_dir.mkdir(parents=True, exist_ok=True)
+
+    file_prefix = uuid4().hex
+    output_file = project_dir / f"{file_prefix}.mp4"
+
+    cmd = [
+        "ffmpeg",
+        "-i", hls_url,
+        "-c", "copy",
+        "-bsf:a", "aac_adtstoasc",
+        str(output_file),
+        "-y",
+    ]
+
+    try:
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=3600)
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"HLS download failed: {exc.stderr or 'unknown error'}") from exc
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("HLS download timeout (>1 hour)")
+
+    if not output_file.exists():
+        raise RuntimeError("ffmpeg did not produce an output file")
+
+    relative = str(output_file.resolve().relative_to(storage.upload_root))
+    source_title = hls_url.split("/")[-1].split("?")[0] or None
+    return str(output_file.resolve()), relative, source_title
