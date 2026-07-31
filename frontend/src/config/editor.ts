@@ -57,6 +57,14 @@ export const TRANSCRIPT_MODE_OPTIONS: ReadonlyArray<{ value: "auto" | "speech" |
   { value: "song", label: "Song" },
 ];
 
+export const TRANSCRIPT_SPEED_OPTIONS: ReadonlyArray<{
+  value: "fast" | "normal";
+  label: string;
+}> = [
+  { value: "normal", label: "Normal" },
+  { value: "fast", label: "Fast" },
+];
+
 export type CaptionStylePreset = {
   id: string;
   name: string;

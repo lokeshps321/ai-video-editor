@@ -1283,6 +1283,60 @@ def test_transcript_generate_retries_fast_mode_after_sigkill(
         assert seen_fast_mode == [False, True]
 
 
+def test_transcript_generate_ui_speed_fast_enables_fast_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.routers.media.probe_duration_seconds", lambda _: 8.0)
+    monkeypatch.setattr(
+        "app.routers.media.probe_stream_flags",
+        lambda _: {"has_video": True, "has_audio": True},
+    )
+    monkeypatch.setenv("TRANSCRIBE_REUSE_EXISTING_ON_GENERATE", "false")
+    monkeypatch.setenv("TRANSCRIBE_FAST_MODE", "false")
+
+    seen_fast_mode: list[bool] = []
+
+    def fake_chunked(
+        _source_path: str,
+        _duration_sec: float,
+        *,
+        language_hint: str | None,
+        fast_mode: bool,
+        prompt: str | None,
+        progress_callback=None,
+    ) -> TranscriptPayload:
+        del language_hint, prompt, progress_callback
+        seen_fast_mode.append(fast_mode)
+        return TranscriptPayload(
+            source="test_provider",
+            language="en",
+            text="hello world",
+            words=[
+                TranscriptWordPayload(
+                    id="w1", text="hello", start_sec=0.0, end_sec=0.4
+                ),
+                TranscriptWordPayload(
+                    id="w2", text="world", start_sec=0.4, end_sec=0.8
+                ),
+            ],
+            is_mock=False,
+        )
+
+    monkeypatch.setattr(
+        "app.routers.transcript._generate_transcript_payload_chunked", fake_chunked
+    )
+
+    with TestClient(app) as client:
+        project_id = _create_project(client, name="Transcript UI Speed Fast")
+        asset_id = _upload_video(client, project_id)
+        response = client.post(
+            f"/api/v1/transcript/generate?project_id={project_id}",
+            json={"asset_id": asset_id, "mode": "song", "speed": "fast"},
+        )
+        assert response.status_code == 200
+        assert seen_fast_mode == [True]
+
+
 def test_transcript_generate_bypasses_chunking_for_short_clips(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -31,12 +31,16 @@ def get_current_user(
     """
     Extract and verify the Clerk Bearer token from the Authorization header.
     Returns the decoded JWT payload (includes 'sub' = Clerk user ID).
+    For development, allows a default test user if SKIP_AUTH_DEV is set.
     """
+    import os
     import jwt as pyjwt
 
     from .auth import verify_clerk_token
 
     if not authorization or not authorization.startswith("Bearer "):
+        if os.getenv("SKIP_AUTH_DEV") == "true":
+            return {"sub": "dev-user"}
         raise HTTPException(
             status_code=401, detail="Missing or invalid Authorization header"
         )

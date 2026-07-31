@@ -20,6 +20,7 @@ import type {
   TranscriptEditResponse,
   TranscriptGenerateResponse,
   TranscriptMode,
+  TranscriptSpeed,
   VibeAction,
   VibeActionResponse,
 } from "../types";
@@ -423,6 +424,7 @@ export const api = {
     language?: string,
     prompt?: string,
     translateToEnglish?: boolean,
+    speed: TranscriptSpeed = "normal",
   ): Promise<TranscriptGenerateResponse> =>
     request<TranscriptGenerateResponse>(
       `/api/v1/transcript/generate?project_id=${encodeURIComponent(projectId)}`,
@@ -432,6 +434,7 @@ export const api = {
         body: JSON.stringify({
           asset_id: assetId,
           mode,
+          speed,
           ...(language ? { language } : {}),
           ...(prompt ? { prompt } : {}),
           ...(translateToEnglish ? { translate_to_english: true } : {}),
@@ -447,9 +450,10 @@ export const api = {
     language?: string,
     prompt?: string,
     translateToEnglish?: boolean,
-    options?: { forceRegenerate?: boolean },
+    options?: { forceRegenerate?: boolean; speed?: TranscriptSpeed },
   ): Promise<Job> => {
     const forceRegenerate = !!options?.forceRegenerate;
+    const speed = options?.speed ?? "normal";
     const query = new URLSearchParams({ project_id: projectId });
     if (forceRegenerate) {
       query.set("force", "true");
@@ -462,6 +466,7 @@ export const api = {
         body: JSON.stringify({
           asset_id: assetId,
           mode,
+          speed,
           force_regenerate: forceRegenerate,
           ...(language ? { language } : {}),
           ...(prompt ? { prompt } : {}),

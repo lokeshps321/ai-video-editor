@@ -3501,6 +3501,12 @@ def generate_transcript(
             os.getenv("TRANSCRIBE_SARVAM_PROMPT", "") or ""
         ).strip() or None
         use_vocal_isolation = _vocal_isolation_allowed_for_profile(profile)
+        if fast_mode_enabled:
+            if use_vocal_isolation:
+                _perf_logger.info(
+                    "[transcribe] Skipping vocal isolation (fast mode)"
+                )
+            use_vocal_isolation = False
         music_auto_routing = _auto_sarvam_music_routing_allowed(
             profile=profile,
             configured_language=configured_language,

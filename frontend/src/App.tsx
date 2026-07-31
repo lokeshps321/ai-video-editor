@@ -48,6 +48,7 @@ import type {
   TranscriptGenerateResponse,
   TranscriptMode,
   TranscriptRegion,
+  TranscriptSpeed,
   TranscriptWord,
   VibeAction,
 } from "./types";
@@ -108,6 +109,7 @@ import {
   LOW_CONFIDENCE_WARN_RATIO,
   TRANSCRIPT_LANGUAGE_OPTIONS,
   TRANSCRIPT_MODE_OPTIONS,
+  TRANSCRIPT_SPEED_OPTIONS,
   type FeatureTabId,
 } from "./config/editor";
 
@@ -247,11 +249,20 @@ function formatFixedSec(value: number): string {
 function estimateTranscriptRuntimeLabel(
   mode: TranscriptMode,
   durationSec: number | null | undefined,
+  speed: TranscriptSpeed = "normal",
 ): string {
   const duration =
     typeof durationSec === "number" && Number.isFinite(durationSec)
       ? durationSec
       : null;
+  if (speed === "fast") {
+    if (duration === null || duration <= 0) {
+      return "about 30-90 sec for most clips";
+    }
+    if (duration <= 45) return "usually under 45 sec";
+    if (duration <= 180) return "about 45-90 sec";
+    return "about 1-3 min";
+  }
   if (duration === null || duration <= 0) {
     return mode === "song"
       ? "about 2-4 min for lyric-heavy clips"
@@ -266,21 +277,28 @@ function estimateTranscriptRuntimeLabel(
   return mode === "song" ? "about 4-8+ min" : "about 3-6 min";
 }
 
-function transcriptModeDetail(mode: TranscriptMode): string {
+function transcriptModeDetail(
+  mode: TranscriptMode,
+  speed: TranscriptSpeed = "normal",
+): string {
+  if (speed === "fast") {
+    return "Fast skips voice isolation for quicker transcripts.";
+  }
   if (mode === "song")
-    return "Song mode spends extra time on lyric-safe passes.";
+    return "Song mode spends extra time on lyric-safe passes and uses voice isolation when needed.";
   if (mode === "speech")
     return "Speech mode is the fastest reliable choice for talking clips.";
-  return "Auto may add time when it needs to detect speech vs. song.";
+  return "Auto may add time when it needs to detect speech vs. song; Normal uses voice isolation for songs when needed.";
 }
 
 function estimateQuickEditRuntimeLabel(
   mode: TranscriptMode,
   durationSec: number | null | undefined,
   hasTranscript: boolean,
+  speed: TranscriptSpeed = "normal",
 ): string {
   if (hasTranscript) return "usually under 1 min because transcript is ready";
-  return `${estimateTranscriptRuntimeLabel(mode, durationSec)} + caption render`;
+  return `${estimateTranscriptRuntimeLabel(mode, durationSec, speed)} + caption render`;
 }
 
 function estimateExportRuntimeLabel(
@@ -953,6 +971,8 @@ function App() {
   const [media, setMedia] = useState<MediaAsset[]>([]);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [transcriptMode, setTranscriptMode] = useState<TranscriptMode>("auto");
+  const [transcriptSpeed, setTranscriptSpeed] =
+    useState<TranscriptSpeed>("normal");
   const [transcriptLanguage, setTranscriptLanguage] = useState(() => {
     try {
       return localStorage.getItem("clipmind_transcript_lang") || "auto";
@@ -1177,6 +1197,9 @@ function App() {
   const latestDeletedWordIdsRef = useRef<Set<string>>(new Set());
   const pendingPreviewRefreshRef = useRef(false);
   const transcriptBoxRef = useRef<HTMLDivElement | null>(null);
+  const transcriptFollowPlaybackRef = useRef(true);
+  const transcriptProgrammaticScrollRef = useRef(false);
+  const [isVideoPlaying, setIsVideoPlaying] = useState(false);
   const activeWordRef = useRef<HTMLButtonElement | null>(null);
   const autoCreateAttemptedRef = useRef(false);
   const pendingCaptionSeekRef = useRef<{
@@ -1229,8 +1252,12 @@ function App() {
 
   const transcriptRuntimeHint = useMemo(
     () =>
-      estimateTranscriptRuntimeLabel(transcriptMode, selectedAssetDurationSec),
-    [selectedAssetDurationSec, transcriptMode],
+      estimateTranscriptRuntimeLabel(
+        transcriptMode,
+        selectedAssetDurationSec,
+        transcriptSpeed,
+      ),
+    [selectedAssetDurationSec, transcriptMode, transcriptSpeed],
   );
 
   const quickEditRuntimeHint = useMemo(
@@ -1239,8 +1266,14 @@ function App() {
         transcriptMode,
         selectedAssetDurationSec,
         !!transcript?.words?.length,
+        transcriptSpeed,
       ),
-    [selectedAssetDurationSec, transcript?.words?.length, transcriptMode],
+    [
+      selectedAssetDurationSec,
+      transcript?.words?.length,
+      transcriptMode,
+      transcriptSpeed,
+    ],
   );
 
   const selectedBrollPlan = useMemo(() => {
@@ -3122,7 +3155,7 @@ function App() {
         language,
         undefined,
         false,
-        { forceRegenerate },
+        { forceRegenerate, speed: transcriptSpeed },
       );
       setTranscriptJob(job);
       if (job.status === "completed") {
@@ -5693,21 +5726,32 @@ function App() {
     updateDeletedWords,
   ]);
 
-  // Auto-scroll to active word during playback
+  // Auto-scroll to active word during playback (paused after manual scroll)
   useEffect(() => {
+    if (!isVideoPlaying) return;
     if (!activeWordId || editingWordId) return;
+    if (!transcriptFollowPlaybackRef.current) return;
     const el = document.getElementById(`word-${activeWordId}`);
-    if (el && transcriptBoxRef.current) {
-      const box = transcriptBoxRef.current;
-      const elTop = el.offsetTop - box.offsetTop;
-      const elBottom = elTop + el.offsetHeight;
-      const scrollTop = box.scrollTop;
-      const boxHeight = box.clientHeight;
-      if (elTop < scrollTop || elBottom > scrollTop + boxHeight) {
-        el.scrollIntoView({ behavior: "smooth", block: "center" });
-      }
+    const box = transcriptBoxRef.current;
+    if (!el || !box) return;
+    const elTop = el.offsetTop - box.offsetTop;
+    const elBottom = elTop + el.offsetHeight;
+    const scrollTop = box.scrollTop;
+    const boxHeight = box.clientHeight;
+    if (elTop < scrollTop || elBottom > scrollTop + boxHeight) {
+      transcriptProgrammaticScrollRef.current = true;
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      window.setTimeout(() => {
+        transcriptProgrammaticScrollRef.current = false;
+      }, 400);
     }
-  }, [activeWordId, editingWordId]);
+  }, [activeWordId, editingWordId, isVideoPlaying]);
+
+  useEffect(() => {
+    if (isVideoPlaying) {
+      transcriptFollowPlaybackRef.current = true;
+    }
+  }, [isVideoPlaying]);
 
   // Drag selection handler — mouseup
   useEffect(() => {
@@ -6478,13 +6522,18 @@ function App() {
               onUploadVideo={(file) => void uploadVideo(file)}
               onIngestUrl={(url) => void ingestVideoFromUrl(url)}
               onLoadedMetadata={() => setCurrentTimeSec(0)}
-              onPlay={startPlaybackSync}
+              onPlay={() => {
+                setIsVideoPlaying(true);
+                startPlaybackSync();
+              }}
               onPause={() => {
+                setIsVideoPlaying(false);
                 stopPlaybackSync();
                 syncVideoTimeOnce();
               }}
               onSeeked={syncVideoTimeOnce}
               onEnded={() => {
+                setIsVideoPlaying(false);
                 stopPlaybackSync();
                 syncVideoTimeOnce();
               }}
@@ -6580,6 +6629,25 @@ function App() {
                     </select>
                   </label>
                   <label className="transcriptControlField">
+                    <span>Speed</span>
+                    <select
+                      value={transcriptSpeed}
+                      disabled={generatingTranscript}
+                      onChange={(event) =>
+                        setTranscriptSpeed(
+                          event.target.value as TranscriptSpeed,
+                        )
+                      }
+                      title="Fast skips voice isolation. Normal uses voice isolation for songs when needed."
+                    >
+                      {TRANSCRIPT_SPEED_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="transcriptControlField">
                     <span>Transcript Language</span>
                     <select
                       value={transcriptLanguage}
@@ -6630,7 +6698,7 @@ function App() {
                 <p className="muted transcriptEstimateHint">
                   Estimated transcript time:{" "}
                   <strong>{transcriptRuntimeHint}</strong>.{" "}
-                  {transcriptModeDetail(transcriptMode)}
+                  {transcriptModeDetail(transcriptMode, transcriptSpeed)}
                   {transcriptJob?.status === "running" && transcriptStageLabel
                     ? ` Current stage: ${transcriptStageLabel}`
                     : ""}
@@ -7052,6 +7120,21 @@ function App() {
                       ref={transcriptBoxRef}
                       onMouseLeave={() => {
                         isDragging.current = false;
+                      }}
+                      onWheel={() => {
+                        if (!transcriptProgrammaticScrollRef.current) {
+                          transcriptFollowPlaybackRef.current = false;
+                        }
+                      }}
+                      onTouchMove={() => {
+                        if (!transcriptProgrammaticScrollRef.current) {
+                          transcriptFollowPlaybackRef.current = false;
+                        }
+                      }}
+                      onScroll={() => {
+                        if (!transcriptProgrammaticScrollRef.current) {
+                          transcriptFollowPlaybackRef.current = false;
+                        }
                       }}
                     >
                       {transcriptWordNodes}
@@ -8829,6 +8912,7 @@ function App() {
               transcript?.duration_sec || project.timeline.duration_sec
             }
             currentTimeSec={currentTimeSec}
+            isPlaying={isVideoPlaying}
             fps={canonicalTimelineFps}
             timelineClock={
               TIMELINE_CORE_V2 ? timelineClockRef.current : undefined

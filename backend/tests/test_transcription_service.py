@@ -2531,6 +2531,66 @@ def test_vocal_isolation_allowed_for_profile(monkeypatch: pytest.MonkeyPatch) ->
     assert ts._vocal_isolation_allowed_for_profile("speech") is False
 
 
+def test_generate_transcript_fast_mode_skips_vocal_isolation_for_song(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRANSCRIBE_BACKEND", "groq")
+    monkeypatch.setenv("TRANSCRIBE_ALLOW_MOCK_FALLBACK", "false")
+    monkeypatch.setenv("TRANSCRIBE_GROQ_ENABLE_RETRY", "false")
+    monkeypatch.setenv("TRANSCRIBE_ENABLE_GAP_RESCUE", "false")
+    monkeypatch.setenv("TRANSCRIBE_AUTO_UNKNOWN_TO_SARVAM_FIRST", "false")
+    monkeypatch.setenv("TRANSCRIBE_VOCAL_ISOLATION_PROFILES", "music,mixed")
+
+    seen_isolation: list[bool] = []
+    dense = _payload_with_entries(
+        [(idx * 0.4, (idx * 0.4) + 0.35, "word") for idx in range(50)],
+        source="groq",
+    )
+
+    def fake_start(_path: str, *, use_vocal_isolation: bool = True) -> None:
+        seen_isolation.append(use_vocal_isolation)
+
+    monkeypatch.setattr(ts, "_start_groq_audio_session", fake_start)
+    monkeypatch.setattr(ts, "_finish_groq_audio_session", lambda: None)
+    monkeypatch.setattr(ts, "_call_groq", lambda *_args, **_kwargs: dense)
+
+    result = ts.generate_transcript(
+        "sample.mp4", 20.0, mode="song", fast_mode=True
+    )
+    assert result.words
+    assert seen_isolation == [False]
+
+
+def test_generate_transcript_normal_mode_allows_vocal_isolation_for_song(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRANSCRIBE_BACKEND", "groq")
+    monkeypatch.setenv("TRANSCRIBE_ALLOW_MOCK_FALLBACK", "false")
+    monkeypatch.setenv("TRANSCRIBE_GROQ_ENABLE_RETRY", "false")
+    monkeypatch.setenv("TRANSCRIBE_ENABLE_GAP_RESCUE", "false")
+    monkeypatch.setenv("TRANSCRIBE_AUTO_UNKNOWN_TO_SARVAM_FIRST", "false")
+    monkeypatch.setenv("TRANSCRIBE_VOCAL_ISOLATION_PROFILES", "music,mixed")
+
+    seen_isolation: list[bool] = []
+    dense = _payload_with_entries(
+        [(idx * 0.4, (idx * 0.4) + 0.35, "word") for idx in range(50)],
+        source="groq",
+    )
+
+    def fake_start(_path: str, *, use_vocal_isolation: bool = True) -> None:
+        seen_isolation.append(use_vocal_isolation)
+
+    monkeypatch.setattr(ts, "_start_groq_audio_session", fake_start)
+    monkeypatch.setattr(ts, "_finish_groq_audio_session", lambda: None)
+    monkeypatch.setattr(ts, "_call_groq", lambda *_args, **_kwargs: dense)
+
+    result = ts.generate_transcript(
+        "sample.mp4", 20.0, mode="song", fast_mode=False
+    )
+    assert result.words
+    assert seen_isolation == [True]
+
+
 def test_prepare_vocal_isolation_source_dispatches_alias_backends(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

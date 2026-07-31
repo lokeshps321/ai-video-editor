@@ -2378,12 +2378,18 @@ def _generate_transcript_response(
             duration_sec, transcript_mode, song_like_media=song_like_media
         )
         configured_fast_mode = _env_bool("TRANSCRIBE_FAST_MODE", False)
-        fast_mode = configured_fast_mode
-        allow_fast_retry = not configured_fast_mode
+        requested_speed = (getattr(payload, "speed", None) or "normal").strip().lower()
+        ui_fast_mode = requested_speed == "fast"
+        fast_mode = configured_fast_mode or ui_fast_mode
+        allow_fast_retry = not fast_mode
         if progress_callback:
+            speed_label = "fast" if fast_mode else "normal"
             progress_callback(
                 8,
-                f"Using {strategy.mode} transcript mode for a {duration_sec:.0f}s clip",
+                (
+                    f"Using {strategy.mode} transcript mode ({speed_label}) "
+                    f"for a {duration_sec:.0f}s clip"
+                ),
             )
         # Acquire semaphore to limit concurrent transcript jobs and prevent OOM
         acquired = _transcript_semaphore.acquire(timeout=300)

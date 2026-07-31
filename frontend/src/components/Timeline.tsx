@@ -108,6 +108,7 @@ export type TimelineProps = {
   captionBlocks: TimelineCaptionBlock[];
   durationSec: number;
   currentTimeSec: number;
+  isPlaying?: boolean;
   fps?: number;
   timelineClock?: TimelineClock;
   deletedWordIds: Set<string>;
@@ -256,12 +257,14 @@ const TimelinePlayhead = memo(function TimelinePlayhead({
   timelineClock,
   containerRef,
   autoScrollEnabledRef,
+  programmaticScrollRef,
 }: {
   currentTimeSec: number;
   pxPerSec: number;
   timelineClock?: TimelineClock;
   containerRef: RefObject<HTMLDivElement | null>;
   autoScrollEnabledRef: RefObject<boolean>;
+  programmaticScrollRef: RefObject<boolean>;
 }) {
   const clockTime = useSyncExternalStore(
     timelineClock?.subscribe ?? noopSubscribe,
@@ -286,9 +289,19 @@ const TimelinePlayhead = memo(function TimelinePlayhead({
     const viewLeft = element.scrollLeft;
     const viewRight = viewLeft + element.clientWidth;
     if (playheadX < viewLeft + 40 || playheadX > viewRight - 40) {
+      programmaticScrollRef.current = true;
       element.scrollLeft = playheadX - element.clientWidth / 3;
+      window.requestAnimationFrame(() => {
+        programmaticScrollRef.current = false;
+      });
     }
-  }, [autoScrollEnabledRef, containerRef, playheadX, timeSec]);
+  }, [
+    autoScrollEnabledRef,
+    containerRef,
+    playheadX,
+    programmaticScrollRef,
+    timeSec,
+  ]);
 
   return (
     <div
@@ -395,6 +408,7 @@ function Timeline({
   captionBlocks,
   durationSec,
   currentTimeSec,
+  isPlaying = false,
   fps = 30,
   timelineClock,
   deletedWordIds,
@@ -450,6 +464,7 @@ function Timeline({
   const zoomAnimationFrameRef = useRef<number | null>(null);
   const pendingZoomScrollRef = useRef<number | null>(null);
   const playheadAutoScrollEnabledRef = useRef(true);
+  const programmaticScrollRef = useRef(false);
   const [showTranscriptAssist, setShowTranscriptAssist] = useState(
     words.length > 0,
   );
@@ -961,6 +976,7 @@ function Timeline({
 
   useEffect(() => {
     if (TIMELINE_CORE_V2) return;
+    if (!playheadAutoScrollEnabledRef.current) return;
     if (
       !containerRef.current ||
       dragMode !== "none" ||
@@ -974,7 +990,11 @@ function Timeline({
     const viewLeft = element.scrollLeft;
     const viewRight = viewLeft + element.clientWidth;
     if (playheadX < viewLeft + 40 || playheadX > viewRight - 40) {
+      programmaticScrollRef.current = true;
       element.scrollLeft = playheadX - element.clientWidth / 3;
+      window.requestAnimationFrame(() => {
+        programmaticScrollRef.current = false;
+      });
     }
   }, [
     currentTimeSec,
@@ -984,6 +1004,23 @@ function Timeline({
     laneDragState,
     captionDragState,
   ]);
+
+  useEffect(() => {
+    if (isPlaying) {
+      playheadAutoScrollEnabledRef.current = true;
+    }
+  }, [isPlaying]);
+
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element) return;
+    function onScroll() {
+      if (programmaticScrollRef.current) return;
+      playheadAutoScrollEnabledRef.current = false;
+    }
+    element.addEventListener("scroll", onScroll, { passive: true });
+    return () => element.removeEventListener("scroll", onScroll);
+  }, []);
 
   const secFromClientX = useCallback(
     (clientX: number) => {
@@ -2446,6 +2483,18 @@ function Timeline({
           }
           return next;
         });
+        return;
+      }
+      // Map vertical wheel/trackpad to horizontal pan, and stop playhead
+      // follow so scrolling isn't yanked back during playback.
+      const container = containerRef.current;
+      if (!container) return;
+      if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
+        event.preventDefault();
+        playheadAutoScrollEnabledRef.current = false;
+        container.scrollLeft += event.deltaY;
+      } else if (event.deltaX !== 0) {
+        playheadAutoScrollEnabledRef.current = false;
       }
     }
     element.addEventListener("wheel", onWheel, { passive: false });
@@ -3175,6 +3224,7 @@ function Timeline({
             timelineClock={TIMELINE_CORE_V2 ? activeTimelineClock : undefined}
             containerRef={containerRef}
             autoScrollEnabledRef={playheadAutoScrollEnabledRef}
+            programmaticScrollRef={programmaticScrollRef}
           />
         </div>
       </div>

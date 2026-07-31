@@ -278,6 +278,7 @@ class TranscriptRegion(BaseModel):
 class TranscriptGenerateRequest(BaseModel):
     asset_id: str
     mode: Literal["auto", "speech", "song"] = "auto"
+    speed: Literal["fast", "normal"] = "normal"
     language: Optional[str] = None
     prompt: Optional[str] = None
     translate_to_english: Optional[bool] = None

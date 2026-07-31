@@ -189,6 +189,8 @@ export type JobEvent = {
 
 export type TranscriptMode = "auto" | "speech" | "song";
 
+export type TranscriptSpeed = "fast" | "normal";
+
 export type OperationHistoryItem = {
   id: number;
   project_id: string;
