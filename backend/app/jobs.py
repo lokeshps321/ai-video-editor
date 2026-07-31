@@ -14,7 +14,7 @@ from sqlmodel import Session, select
 
 from .config import get_settings
 from .database import engine
-from .ingest_service import download_video_with_ytdlp, source_title_to_filename
+from .ingest_service import download_video_with_apify, source_title_to_filename
 from .media_utils import probe_duration_seconds, probe_stream_flags
 from .models import Job, JobEvent, MediaAsset, TimelineVersion
 from .render_service import build_ffmpeg_command, ensure_parent_dir, run_ffmpeg
@@ -387,7 +387,7 @@ def process_ingest_url_job(job_id: str, url: str) -> None:
                 stage="download",
                 message="Downloading source video",
             )
-            download_result = download_video_with_ytdlp(url, job.project_id)
+            download_result = download_video_with_apify(url, job.project_id)
             # Accept the older two-item return shape too. It keeps existing
             # deployment extensions/mocks working while URL ingestion rolls
             # out the title-aware result.
