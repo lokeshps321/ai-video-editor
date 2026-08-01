@@ -135,50 +135,31 @@ def _apify_actor_id() -> str:
     return configured or "streamers~youtube-video-downloader"
 
 
-def _youtube_cookies() -> str | None:
-    """Get YouTube cookies for bot detection bypass (paste from browser DevTools)."""
-    cookies = (os.getenv("YOUTUBE_COOKIES", "") or "").strip()
-    return cookies if cookies else None
-
-
 def _apify_actor_payload(normalized_url: str, actor_id: str) -> dict:
     quality = _apify_quality()
     quality_label = quality if quality.endswith("p") else f"{quality}p"
-    cookies = _youtube_cookies()
-
     if "streamers" in actor_id:
-        payload = {
+        return {
             "videos": [{"url": normalized_url}],
             "storeInKVStore": True,
             "preferredQuality": quality_label,
             "preferredFormat": "mp4",
             "filenameTemplateParts": ["title"],
         }
-        if cookies:
-            payload["cookies"] = cookies
-        return payload
-
     if "eunit" in actor_id:
-        payload = {
+        return {
             "startUrls": [{"url": normalized_url}],
             "downloadMode": "save-best-progressive",
             "preferredContainer": "mp4",
             "maxHeight": int(quality) if quality.isdigit() else 720,
         }
-        if cookies:
-            payload["cookies"] = cookies
-        return payload
-
     # epctex / generic PPE downloaders
-    payload = {
+    return {
         "startUrls": [normalized_url],
         "videoIds": [],
         "quality": quality if quality.isdigit() else "720",
         "storageType": "apify",
     }
-    if cookies:
-        payload["cookies"] = cookies
-    return payload
 
 
 def download_video_with_apify(
@@ -346,12 +327,15 @@ def download_video_with_apify(
         raise RuntimeError(f"Apify download failed: {exc}") from exc
 
 
+_YTDLP_PROGRESS_RE = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
+
+
 def download_video_with_ytdlp(
     url: str,
     project_id: str,
     progress_callback: ProgressCallback | None = None,
 ) -> tuple[str, str, str | None]:
-    """Download video with local yt-dlp (best for local/dev machines)."""
+    """Download video with yt-dlp using OAuth2 (bypasses YouTube bot checks)."""
     normalized_url = validate_ingest_url(url)
 
     if shutil.which(settings.yt_dlp_bin) is None:
@@ -368,6 +352,12 @@ def download_video_with_ytdlp(
         "--restrict-filenames",
         "--merge-output-format",
         "mp4",
+        "--newline",
+        # OAuth2 auth bypasses YouTube bot detection on datacenter IPs.
+        "--username",
+        "oauth2",
+        "--password",
+        "",
         # Keep the physical filename opaque, but emit the platform title so
         # the asset can be labelled correctly and used for lyric lookup.
         "--print",
@@ -376,12 +366,38 @@ def download_video_with_ytdlp(
         str(output_template),
         normalized_url,
     ]
-    _emit_progress(progress_callback, 30, "Downloading with local yt-dlp...")
+    _emit_progress(progress_callback, 5, "Downloading video...")
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert process.stdout is not None
+    output_chunks: list[str] = []
+    last_reported = -1
     try:
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-    except subprocess.CalledProcessError as exc:
-        stderr = (exc.stderr or "").strip()
-        raise RuntimeError(stderr or "URL ingestion failed with yt-dlp") from exc
+        for line in process.stdout:
+            output_chunks.append(line)
+            match = _YTDLP_PROGRESS_RE.search(line)
+            if not match:
+                continue
+            percent = int(float(match.group(1)))
+            if percent == last_reported:
+                continue
+            last_reported = percent
+            _emit_progress(progress_callback, percent, "Downloading video...")
+        returncode = process.wait()
+    except Exception:
+        process.kill()
+        process.wait(timeout=10)
+        raise
+
+    combined_output = "".join(output_chunks)
+    if returncode != 0:
+        detail = combined_output.strip()
+        raise RuntimeError(detail or "URL ingestion failed with yt-dlp")
 
     _emit_progress(progress_callback, 75, "Local download finished, preparing media...")
     candidates = sorted(
@@ -394,7 +410,7 @@ def download_video_with_ytdlp(
         raise RuntimeError("yt-dlp did not produce an output file")
 
     relative = str(file_path.resolve().relative_to(storage.upload_root))
-    source_title = _source_title_from_ytdlp_output(result.stdout or "")
+    source_title = _source_title_from_ytdlp_output(combined_output)
     return str(file_path.resolve()), relative, source_title
 
 
@@ -403,28 +419,31 @@ def download_video_from_url(
     project_id: str,
     progress_callback: ProgressCallback | None = None,
 ) -> tuple[str, str, str | None]:
-    """Cloud-friendly ingest: Apify when configured, yt-dlp for local/fallback."""
+    """Prefer yt-dlp (OAuth2); fall back to Apify only when yt-dlp fails or forced."""
     provider = _ingest_provider()
     has_apify = bool(_apify_api_token())
 
-    if provider == "apify" or (provider == "auto" and has_apify):
-        try:
-            return download_video_with_apify(
-                url, project_id, progress_callback=progress_callback
-            )
-        except Exception as exc:
-            if provider == "apify":
-                raise
-            logger.warning(
-                "Apify ingest failed; falling back to yt-dlp: %s",
-                type(exc).__name__,
-            )
-            _emit_progress(
-                progress_callback,
-                25,
-                "Cloud fetch failed, trying local download...",
-            )
+    if provider == "apify":
+        return download_video_with_apify(
+            url, project_id, progress_callback=progress_callback
+        )
 
-    return download_video_with_ytdlp(
-        url, project_id, progress_callback=progress_callback
-    )
+    try:
+        return download_video_with_ytdlp(
+            url, project_id, progress_callback=progress_callback
+        )
+    except Exception as exc:
+        if provider == "ytdlp" or not has_apify:
+            raise
+        logger.warning(
+            "yt-dlp ingest failed; falling back to Apify: %s",
+            type(exc).__name__,
+        )
+        _emit_progress(
+            progress_callback,
+            25,
+            "Local download failed, trying cloud fetch...",
+        )
+        return download_video_with_apify(
+            url, project_id, progress_callback=progress_callback
+        )
