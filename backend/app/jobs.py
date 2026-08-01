@@ -124,6 +124,10 @@ def _set_job_status(
     output_path: str | None = None,
 ) -> None:
     job.status = status
+    # Prevent progress from going backward (e.g., when audio-separator chunks audio)
+    # Only allow progress to decrease if we're resetting to a new stage
+    if progress < job.progress and status == "running":
+        progress = job.progress
     job.progress = progress
     job.updated_at = _utcnow()
     if error is not None:
