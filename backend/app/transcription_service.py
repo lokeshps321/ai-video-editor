@@ -1975,12 +1975,27 @@ def _auto_vocal_isolation_backends() -> list[str]:
 def _find_isolated_stem(root: Path, stem_name: str) -> Path | None:
     candidates: list[Path] = []
     for ext in ("wav", "flac", "mp3", "m4a", "ogg"):
+        # First try exact stem name match (e.g., vocals.wav)
         candidates.extend(root.rglob(f"{stem_name}.{ext}"))
+        # Also match audio-separator's new format: chunk_XXXX_(Vocals)_model.ext
+        # Case-insensitive match for the stem name in parentheses
+        stem_upper = stem_name.capitalize()
+        candidates.extend(root.rglob(f"*({stem_upper})*.{ext}"))
+        # Also try with all caps for other models
+        candidates.extend(root.rglob(f"*({stem_name.upper()})*.{ext}"))
+
     if not candidates:
         return None
 
     scored: list[tuple[int, float, Path]] = []
+    seen: set[str] = set()
     for candidate in candidates:
+        # Deduplicate by path
+        candidate_str = str(candidate.resolve())
+        if candidate_str in seen:
+            continue
+        seen.add(candidate_str)
+
         try:
             stat = candidate.stat()
         except OSError:
