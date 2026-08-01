@@ -904,48 +904,120 @@ h3 {
 
 .mobilePane {
   min-width: 0;
+  position: relative;
+  isolation: isolate;
 }
 
-@media (max-width: 768px) {
+/* JS + CSS both hide inactive panes so they can't paint on top of each other. */
+.mobilePane.is-mobile-hidden {
+  display: none !important;
+}
+
+.appShell.isMobileEditor .mobileWorkspaceTabs {
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 200;
+  padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px));
+  background: rgba(8, 9, 13, 0.96);
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.appShell.isMobileEditor .mobileWorkspaceTabs button {
+  min-height: 46px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 0.88rem;
+}
+
+.appShell.isMobileEditor .mobileWorkspaceTabs button.active {
+  color: var(--accent-ink);
+  background: var(--accent);
+  border-color: transparent;
+}
+
+.appShell.isMobileEditor.appShellEditor {
+  padding-bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+}
+
+.appShell.isMobileEditor .editorMainGrid {
+  grid-template-columns: 1fr !important;
+  margin-top: 10px;
+  gap: 12px;
+}
+
+.appShell.isMobileEditor .editorWorkspace.mobileTab-preview .mobilePaneTranscript,
+.appShell.isMobileEditor .editorWorkspace.mobileTab-preview .mobilePaneTimeline,
+.appShell.isMobileEditor .editorWorkspace.mobileTab-transcript .mobilePanePreview,
+.appShell.isMobileEditor .editorWorkspace.mobileTab-transcript .mobilePaneTimeline,
+.appShell.isMobileEditor .editorWorkspace.mobileTab-timeline .mobilePanePreview,
+.appShell.isMobileEditor .editorWorkspace.mobileTab-timeline .mobilePaneTranscript {
+  display: none !important;
+}
+
+.appShell.isMobileEditor .panelTranscript,
+.appShell.isMobileEditor .editorPreviewDock,
+.appShell.isMobileEditor .timeline.card {
+  overflow: hidden;
+  max-width: 100%;
+}
+
+.appShell.isMobileEditor .panel.card {
+  transform: none !important;
+  animation: none !important;
+}
+
+.appShell.isMobileEditor .card:hover {
+  transform: none;
+}
+
+@media (max-width: 900px) {
   .appShell {
     width: min(100%, 100vw);
     padding: calc(10px + env(safe-area-inset-top, 0px)) 10px 12px;
   }
 
   .appShellEditor {
-    padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: calc(76px + env(safe-area-inset-bottom, 0px));
   }
 
   .editorMainGrid {
-    grid-template-columns: 1fr;
-    margin-top: 10px;
-    gap: 12px;
+    grid-template-columns: 1fr !important;
   }
 
   .mobileWorkspaceTabs {
-    display: grid;
+    display: grid !important;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 6px;
     position: fixed;
     left: 0;
     right: 0;
     bottom: 0;
-    z-index: 80;
+    z-index: 200;
     padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px));
-    background: rgba(8, 9, 13, 0.94);
-    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(8, 9, 13, 0.96);
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
     backdrop-filter: blur(14px);
     -webkit-backdrop-filter: blur(14px);
   }
 
   .mobileWorkspaceTabs button {
-    min-height: 44px;
+    min-height: 46px;
     border-radius: 12px;
     border: 1px solid rgba(255, 255, 255, 0.08);
     background: rgba(255, 255, 255, 0.04);
     color: var(--muted);
-    font-weight: 600;
-    font-size: 0.86rem;
+    font-weight: 700;
+    font-size: 0.88rem;
   }
 
   .mobileWorkspaceTabs button.active {
@@ -960,10 +1032,18 @@ h3 {
   .editorWorkspace.mobileTab-transcript .mobilePaneTimeline,
   .editorWorkspace.mobileTab-timeline .mobilePanePreview,
   .editorWorkspace.mobileTab-timeline .mobilePaneTranscript {
-    display: none;
+    display: none !important;
   }
 
-  .editorWorkspace.mobileTab-timeline .mobilePaneTimeline {
-    margin-top: 8px;
+  .panelTranscript,
+  .editorPreviewDock,
+  .timeline.card {
+    overflow: hidden;
+    max-width: 100%;
+  }
+
+  .panel.card {
+    transform: none !important;
+    animation: none !important;
   }
 }

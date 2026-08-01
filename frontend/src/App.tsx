@@ -1109,6 +1109,7 @@ function App() {
   const [mobileWorkspaceTab, setMobileWorkspaceTab] = useState<
     "preview" | "transcript" | "timeline"
   >("preview");
+  const [isMobileEditor, setIsMobileEditor] = useState(false);
   const [selectedTimelineClip, setSelectedTimelineClip] =
     useState<InspectorTimelineSelection | null>(null);
   const [clipClipboard, setClipClipboard] = useState<{
@@ -6134,8 +6135,26 @@ function App() {
     setFeatureDrawerOpen(true);
   }
 
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const media = window.matchMedia("(max-width: 900px)");
+    const apply = () => setIsMobileEditor(media.matches);
+    apply();
+    media.addEventListener("change", apply);
+    return () => media.removeEventListener("change", apply);
+  }, []);
+
+  const showMobilePreview =
+    !isMobileEditor || mobileWorkspaceTab === "preview";
+  const showMobileTranscript =
+    !isMobileEditor || mobileWorkspaceTab === "transcript";
+  const showMobileTimeline =
+    !isMobileEditor || mobileWorkspaceTab === "timeline";
+
   return (
-    <div className={`appShell${project ? " appShellEditor" : ""}`}>
+    <div
+      className={`appShell${project ? " appShellEditor" : ""}${isMobileEditor ? " isMobileEditor" : ""}`}
+    >
       {!project ? (
         <>
           <EditorHeader title={BRAND.loadingTitle} />
@@ -6333,9 +6352,14 @@ function App() {
               onDownload={() => void downloadCompletedExport()}
             />
           )}
-          <div className={`editorWorkspace mobileTab-${mobileWorkspaceTab}`}>
+          <div
+            className={`editorWorkspace mobileTab-${mobileWorkspaceTab}${isMobileEditor ? " isMobileEditor" : ""}`}
+          >
           <section className="editorMainGrid">
-            <div className="mobilePane mobilePanePreview">
+            <div
+              className={`mobilePane mobilePanePreview${showMobilePreview ? "" : " is-mobile-hidden"}`}
+              aria-hidden={!showMobilePreview}
+            >
             <PreviewDock
               previewSource={previewSource}
               uploading={uploading}
@@ -6381,7 +6405,10 @@ function App() {
               formatPreciseSeconds={formatPreciseSeconds}
             />
             </div>
-            <main className="twoPanel mobilePane mobilePaneTranscript">
+            <main
+              className={`twoPanel mobilePane mobilePaneTranscript${showMobileTranscript ? "" : " is-mobile-hidden"}`}
+              aria-hidden={!showMobileTranscript}
+            >
               <section className="panel card panelTranscript">
                 <div className="transcriptPanelHead">
                   <div>
@@ -6729,7 +6756,7 @@ function App() {
                       <input
                         id="transcript-search"
                         type="text"
-                        placeholder="Search words... (Ctrl+F)"
+                        placeholder="Search words..."
                         value={searchQuery}
                         onChange={(e) => {
                           setSearchQuery(e.target.value);
@@ -8740,7 +8767,10 @@ function App() {
           </section>
 
           {/* ── Visual Timeline ─────────────────────────── */}
-          <div className="mobilePane mobilePaneTimeline">
+          <div
+            className={`mobilePane mobilePaneTimeline${showMobileTimeline ? "" : " is-mobile-hidden"}`}
+            aria-hidden={!showMobileTimeline}
+          >
           <Timeline
             words={timelineAssistWords}
             timelineLanes={timelineLanes}

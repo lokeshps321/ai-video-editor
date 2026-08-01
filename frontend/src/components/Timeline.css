@@ -952,10 +952,11 @@
   display: none;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 900px) {
   .timeline {
     margin-top: 0;
     border-radius: 12px;
+    overflow: hidden;
   }
 
   .timelineHeader {
@@ -964,7 +965,7 @@
   }
 
   .tlHint {
-    display: none;
+    display: none !important;
   }
 
   .timelineAssistToggle,

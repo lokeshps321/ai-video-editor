@@ -433,7 +433,7 @@
   }
 }
 
-@media (max-width: 768px) {
+@media (max-width: 900px) {
   .workspacePreviewBlock h2 {
     font-size: 0.9rem;
   }
