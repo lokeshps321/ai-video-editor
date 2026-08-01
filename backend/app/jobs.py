@@ -124,10 +124,11 @@ def _set_job_status(
     output_path: str | None = None,
 ) -> None:
     job.status = status
-    # Prevent progress from going backward (e.g., when audio-separator chunks audio)
-    # Only allow progress to decrease if we're resetting to a new stage
-    if progress < job.progress and status == "running":
-        progress = job.progress
+    # Prevent progress from going backward (only when running and progress has been set)
+    # Use current_progress to avoid SQLAlchemy lazy loading in threads
+    current_progress = job.progress if hasattr(job, "progress") and job.progress is not None else 0
+    if progress < current_progress and status == "running":
+        progress = current_progress
     job.progress = progress
     job.updated_at = _utcnow()
     if error is not None:
