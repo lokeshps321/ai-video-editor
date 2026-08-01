@@ -1106,6 +1106,9 @@ function App() {
   const [activeFeatureTab, setActiveFeatureTab] =
     useState<FeatureTabId>("broll_studio");
   const [featureDrawerOpen, setFeatureDrawerOpen] = useState(false);
+  const [mobileWorkspaceTab, setMobileWorkspaceTab] = useState<
+    "preview" | "transcript" | "timeline"
+  >("preview");
   const [selectedTimelineClip, setSelectedTimelineClip] =
     useState<InspectorTimelineSelection | null>(null);
   const [clipClipboard, setClipClipboard] = useState<{
@@ -6132,7 +6135,7 @@ function App() {
   }
 
   return (
-    <div className="appShell">
+    <div className={`appShell${project ? " appShellEditor" : ""}`}>
       {!project ? (
         <>
           <EditorHeader title={BRAND.loadingTitle} />
@@ -6265,6 +6268,30 @@ function App() {
             formatSeconds={formatSeconds}
           />
 
+          <nav className="mobileWorkspaceTabs" aria-label="Editor views">
+            <button
+              type="button"
+              className={mobileWorkspaceTab === "preview" ? "active" : ""}
+              onClick={() => setMobileWorkspaceTab("preview")}
+            >
+              Preview
+            </button>
+            <button
+              type="button"
+              className={mobileWorkspaceTab === "transcript" ? "active" : ""}
+              onClick={() => setMobileWorkspaceTab("transcript")}
+            >
+              Edit
+            </button>
+            <button
+              type="button"
+              className={mobileWorkspaceTab === "timeline" ? "active" : ""}
+              onClick={() => setMobileWorkspaceTab("timeline")}
+            >
+              Timeline
+            </button>
+          </nav>
+
           {projectsPanelOpen && (
             <ProjectReopenPanel
               project={project}
@@ -6306,7 +6333,9 @@ function App() {
               onDownload={() => void downloadCompletedExport()}
             />
           )}
+          <div className={`editorWorkspace mobileTab-${mobileWorkspaceTab}`}>
           <section className="editorMainGrid">
+            <div className="mobilePane mobilePanePreview">
             <PreviewDock
               previewSource={previewSource}
               uploading={uploading}
@@ -6351,7 +6380,8 @@ function App() {
               onQueuePreview={() => void queuePreview()}
               formatPreciseSeconds={formatPreciseSeconds}
             />
-            <main className="twoPanel">
+            </div>
+            <main className="twoPanel mobilePane mobilePaneTranscript">
               <section className="panel card panelTranscript">
                 <div className="transcriptPanelHead">
                   <div>
@@ -8710,6 +8740,7 @@ function App() {
           </section>
 
           {/* ── Visual Timeline ─────────────────────────── */}
+          <div className="mobilePane mobilePaneTimeline">
           <Timeline
             words={timelineAssistWords}
             timelineLanes={timelineLanes}
@@ -8772,6 +8803,8 @@ function App() {
             canPasteLaneClip={!!clipClipboard}
             brollEditBusy={!!brollTimelineActionKey}
           />
+          </div>
+          </div>
         </>
       )}
 

@@ -60,8 +60,11 @@ body {
   color: var(--ink);
   background: var(--bg-gradient);
   min-height: 100vh;
+  min-height: 100dvh;
   position: relative;
   overflow-x: hidden;
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
 }
 
 /* Subtle grid texture — mirrors landing page texture */
@@ -124,6 +127,7 @@ body::before {
 
 #root {
   min-height: 100vh;
+  min-height: 100dvh;
 }
 
 .appShell {
@@ -894,17 +898,72 @@ h3 {
 /* ═══════════════════════════════════════════════════════════════
    MOBILE RESPONSIVE — Editor layout
    ═══════════════════════════════════════════════════════════════ */
+.mobileWorkspaceTabs {
+  display: none;
+}
+
+.mobilePane {
+  min-width: 0;
+}
+
 @media (max-width: 768px) {
+  .appShell {
+    width: min(100%, 100vw);
+    padding: calc(10px + env(safe-area-inset-top, 0px)) 10px 12px;
+  }
+
+  .appShellEditor {
+    padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+  }
 
   .editorMainGrid {
     grid-template-columns: 1fr;
+    margin-top: 10px;
+    gap: 12px;
   }
 
-  .timelineOuter {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
+  .mobileWorkspaceTabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 80;
+    padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px));
+    background: rgba(8, 9, 13, 0.94);
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
   }
 
+  .mobileWorkspaceTabs button {
+    min-height: 44px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 0.86rem;
+  }
 
+  .mobileWorkspaceTabs button.active {
+    color: var(--accent-ink);
+    background: var(--accent);
+    border-color: transparent;
+  }
 
+  .editorWorkspace.mobileTab-preview .mobilePaneTranscript,
+  .editorWorkspace.mobileTab-preview .mobilePaneTimeline,
+  .editorWorkspace.mobileTab-transcript .mobilePanePreview,
+  .editorWorkspace.mobileTab-transcript .mobilePaneTimeline,
+  .editorWorkspace.mobileTab-timeline .mobilePanePreview,
+  .editorWorkspace.mobileTab-timeline .mobilePaneTranscript {
+    display: none;
+  }
+
+  .editorWorkspace.mobileTab-timeline .mobilePaneTimeline {
+    margin-top: 8px;
+  }
 }

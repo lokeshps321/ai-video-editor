@@ -933,27 +933,62 @@
 
 @media (max-width: 768px) {
   .transcriptControlFields {
-      flex-wrap: wrap;
-      gap: 8px;
-    }
-  
-    .transcriptControlField select {
-      font-size: 0.78rem;
-      min-width: 100px;
-    }
-  
-    .panelTranscript {
-      max-height: 45vh;
-    }
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .transcriptControlField select {
+    font-size: 0.78rem;
+    min-width: 100px;
+    min-height: 44px;
+  }
+
+  .panelTranscript {
+    min-height: auto;
+    max-height: none;
+    padding: 14px;
+  }
+
+  .transcriptPanelHead {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .transcriptBox {
+    min-height: 220px;
+    max-height: min(62dvh, calc(100dvh - 260px));
+    padding: 12px;
+    gap: 4px 3px;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .word {
+    padding: 6px 5px;
+    min-height: 36px;
+    font-size: 0.95rem;
+    border-radius: 6px;
+  }
 
   .featureLauncher {
-      overflow-x: auto;
-      flex-wrap: nowrap;
-      -webkit-overflow-scrolling: touch;
-    }
-  
-    .featureLauncher button {
-      flex: 0 0 auto;
-      min-width: 90px;
-    }
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+    gap: 8px;
+    padding-bottom: 4px;
+  }
+
+  .featureLauncher button,
+  .toolbar button,
+  .transcriptViewToggle button {
+    flex: 0 0 auto;
+    min-width: 96px;
+    min-height: 44px;
+  }
+}
+
+@media (pointer: coarse) {
+  .word {
+    padding: 6px 5px;
+    min-height: 36px;
+  }
 }

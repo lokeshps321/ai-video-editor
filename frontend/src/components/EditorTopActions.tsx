@@ -1,9 +1,11 @@
+import { useEffect, useRef, useState } from "react";
 import {
   Captions,
   Clapperboard,
   Download,
   FolderOpen,
   Keyboard,
+  MoreHorizontal,
   Sparkles,
   UploadCloud,
   Zap,
@@ -49,6 +51,20 @@ export function EditorTopActions({
   onShowShortcuts,
   formatSeconds,
 }: EditorTopActionsProps) {
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!moreOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!moreRef.current?.contains(event.target as Node)) {
+        setMoreOpen(false);
+      }
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [moreOpen]);
+
   return (
     <section className="controls card creatorTopActions">
       <label className="uploadBtn primaryBtn">
@@ -70,6 +86,7 @@ export function EditorTopActions({
 
       <button
         type="button"
+        className="creatorTopSecondary"
         onClick={onToggleProjects}
         title="Open an existing local project"
       >
@@ -97,6 +114,7 @@ export function EditorTopActions({
         {exportingVideo ? "Exporting..." : "Export"}
       </button>
       <button
+        className="creatorTopSecondary"
         onClick={() => onOpenFeatureDrawer("captions")}
         title="Caption styles & settings"
       >
@@ -104,6 +122,7 @@ export function EditorTopActions({
         Captions
       </button>
       <button
+        className="creatorTopSecondary"
         onClick={() => onOpenFeatureDrawer("broll_studio")}
         title="B-roll studio"
       >
@@ -111,6 +130,7 @@ export function EditorTopActions({
         B-roll
       </button>
       <button
+        className="creatorTopSecondary"
         onClick={() => onOpenFeatureDrawer("ai_actions")}
         title="AI editing tools"
       >
@@ -118,12 +138,85 @@ export function EditorTopActions({
         AI Tools
       </button>
       <button
-        className="shortcutsHelpBtn"
+        className="shortcutsHelpBtn creatorTopSecondary"
         onClick={onShowShortcuts}
         title="Keyboard shortcuts (?)"
       >
         <Keyboard size={16} />
       </button>
+
+      <div className="creatorTopMore" ref={moreRef}>
+        <button
+          type="button"
+          className="creatorTopMoreBtn"
+          aria-expanded={moreOpen}
+          aria-haspopup="menu"
+          onClick={() => setMoreOpen((open) => !open)}
+        >
+          <MoreHorizontal size={18} />
+          More
+        </button>
+        {moreOpen && (
+          <div className="creatorTopMoreMenu" role="menu">
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                onToggleProjects();
+                setMoreOpen(false);
+              }}
+            >
+              <FolderOpen size={14} />
+              Projects
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                onOpenFeatureDrawer("captions");
+                setMoreOpen(false);
+              }}
+            >
+              <Captions size={14} />
+              Captions
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                onOpenFeatureDrawer("broll_studio");
+                setMoreOpen(false);
+              }}
+            >
+              <Clapperboard size={14} />
+              B-roll
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                onOpenFeatureDrawer("ai_actions");
+                setMoreOpen(false);
+              }}
+            >
+              <Sparkles size={14} />
+              AI Tools
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                onShowShortcuts();
+                setMoreOpen(false);
+              }}
+            >
+              <Keyboard size={14} />
+              Shortcuts
+            </button>
+          </div>
+        )}
+      </div>
+
       <p className="muted creatorTopMeta">
         <span>{selectedVideoFilename ?? "No video selected"}</span>
         <span>{formatSeconds(timelineDurationSec)}</span>

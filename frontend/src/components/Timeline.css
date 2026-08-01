@@ -947,3 +947,102 @@
   font-size: 0.7rem;
   color: var(--ink);
 }
+
+.timelineMobileActions {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .timeline {
+    margin-top: 0;
+    border-radius: 12px;
+  }
+
+  .timelineHeader {
+    padding: 10px 12px 8px;
+    gap: 10px;
+  }
+
+  .tlHint {
+    display: none;
+  }
+
+  .timelineAssistToggle,
+  .zoomBtn {
+    min-height: 40px;
+    min-width: 40px;
+  }
+
+  .zoomSlider {
+    width: 72px;
+  }
+
+  .timelineScroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-x;
+  }
+
+  .timelineMobileActions {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+    padding: 8px 10px 10px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  .timelineMobileActions button {
+    min-height: 44px;
+    font-size: 0.75rem;
+    padding: 0 6px;
+    gap: 4px;
+    justify-content: center;
+  }
+
+  .trackRailBtn {
+    width: 36px;
+    height: 36px;
+    min-height: 36px;
+  }
+
+  .laneClipHandle,
+  .captionBlockHandle {
+    width: 22px;
+  }
+
+  .laneClipHandle {
+    background: rgba(255, 255, 255, 0.28);
+  }
+
+  .brollResizeHandle {
+    width: 22px;
+  }
+
+  .brollDeleteBtn,
+  .brollRerollBtn {
+    width: 28px;
+    height: 28px;
+    min-height: 28px;
+    top: -2px;
+  }
+
+  .brollDeleteBtn {
+    right: 4px;
+  }
+
+  .brollRerollBtn {
+    right: 34px;
+  }
+
+  .brollRerollBtn svg,
+  .brollDeleteBtn svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  .brollBlock {
+    padding-right: 64px;
+    height: 28px;
+    line-height: 28px;
+  }
+}

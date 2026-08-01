@@ -434,20 +434,17 @@
 }
 
 @media (max-width: 768px) {
-  .previewStagePortrait {
-    max-height: 50vh;
-  }
-
   .workspacePreviewBlock h2 {
     font-size: 0.9rem;
   }
 
   .previewMeta {
     font-size: 0.72rem;
+    gap: 8px;
   }
 
   .onboardingDropZone {
-    padding: 32px 16px 24px;
+    padding: 28px 14px 20px;
   }
 
   .onboardingSteps {
@@ -460,7 +457,23 @@
     overflow: visible;
   }
 
+  .previewStageLandscape {
+    border-radius: 10px;
+  }
+
   .previewStagePortrait {
-    max-height: 55vh;
+    width: min(100%, 360px, calc((100dvh - 220px) * 0.5625));
+    max-height: min(58dvh, calc(100dvh - 220px));
+  }
+
+  .previewVideo {
+    max-height: min(58dvh, 75vh);
+  }
+
+  .previewStage button,
+  .previewMeta button,
+  .onboardingDropZone button,
+  .urlIngestRow button {
+    min-height: 44px;
   }
 }

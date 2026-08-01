@@ -179,6 +179,7 @@ const MIN_PX_PER_SEC = 15;
 const MAX_PX_PER_SEC = 250;
 const DEFAULT_PX_PER_SEC = 40;
 const TRACK_LEFT_MARGIN = 96;
+const MOBILE_TRACK_LEFT_MARGIN = 56;
 const MIN_BROLL_DURATION_SEC = 0.1;
 const MIN_CLIP_SOURCE_DURATION_SEC = 0.05;
 const BROLL_LANE_ID = "__broll__";
@@ -468,6 +469,8 @@ function Timeline({
   const [showTranscriptAssist, setShowTranscriptAssist] = useState(
     words.length > 0,
   );
+  const [trackLeftMargin, setTrackLeftMargin] = useState(TRACK_LEFT_MARGIN);
+  const trackLeftMarginRef = useRef(TRACK_LEFT_MARGIN);
 
   type DragMode = "none" | "seek" | "range";
   const [dragMode, setDragMode] = useState<DragMode>("none");
@@ -527,6 +530,21 @@ function Timeline({
     }
     setShowTranscriptAssist((prev) => prev || words.length > 0);
   }, [words.length]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const media = window.matchMedia("(max-width: 768px)");
+    const apply = () => {
+      const next = media.matches
+        ? MOBILE_TRACK_LEFT_MARGIN
+        : TRACK_LEFT_MARGIN;
+      trackLeftMarginRef.current = next;
+      setTrackLeftMargin(next);
+    };
+    apply();
+    media.addEventListener("change", apply);
+    return () => media.removeEventListener("change", apply);
+  }, []);
 
   const ticks = useMemo(() => {
     let interval = 1;
@@ -1030,10 +1048,10 @@ function Timeline({
         clientX -
         rect.left +
         containerRef.current.scrollLeft -
-        TRACK_LEFT_MARGIN;
+        trackLeftMargin;
       return Math.max(0, Math.min(x / pxPerSec, durationSec));
     },
-    [pxPerSec, durationSec],
+    [pxPerSec, durationSec, trackLeftMargin],
   );
 
   const secFromEvent = useCallback(
@@ -2417,7 +2435,7 @@ function Timeline({
             0,
             Math.max(0, container.scrollWidth - container.clientWidth),
           ),
-          viewportLeft: rect.left + TRACK_LEFT_MARGIN,
+          viewportLeft: rect.left + trackLeftMarginRef.current,
           cursorClientX: anchorClientX,
           oldPixelsPerFrame: previous / fps,
           newPixelsPerFrame: next / fps,
@@ -2474,11 +2492,11 @@ function Timeline({
             // Keep the time under the cursor fixed while zooming.
             const rect = container.getBoundingClientRect();
             const viewportX = event.clientX - rect.left;
+            const margin = trackLeftMarginRef.current;
             const anchorSec =
-              (viewportX + container.scrollLeft - TRACK_LEFT_MARGIN) / prev;
+              (viewportX + container.scrollLeft - margin) / prev;
             window.requestAnimationFrame(() => {
-              container.scrollLeft =
-                anchorSec * next + TRACK_LEFT_MARGIN - viewportX;
+              container.scrollLeft = anchorSec * next + margin - viewportX;
             });
           }
           return next;
@@ -2511,8 +2529,37 @@ function Timeline({
 
   const sectionStyle = useMemo(
     () =>
-      ({ "--timeline-rail-width": `${TRACK_LEFT_MARGIN}px` }) as CSSProperties,
-    [],
+      ({ "--timeline-rail-width": `${trackLeftMargin}px` }) as CSSProperties,
+    [trackLeftMargin],
+  );
+
+  const selectedLaneSelection = useMemo(() => {
+    if (!selectedLaneClipId) return null;
+    for (const lane of timelineLanes) {
+      const clip = lane.clips.find((item) => item.id === selectedLaneClipId);
+      if (!clip) continue;
+      return {
+        clipId: clip.id,
+        laneId: lane.id,
+        laneLabel: lane.label,
+        laneKind: lane.kind,
+        timelineStartSec: clip.timeline_start_sec,
+        durationSec: Math.max(
+          0.01,
+          (clip.end_sec - clip.start_sec) / Math.max(clip.speed || 1, 0.01),
+        ),
+      };
+    }
+    return null;
+  }, [selectedLaneClipId, timelineLanes]);
+
+  const canSplitSelectedLaneClip = Boolean(
+    selectedLaneSelection &&
+      currentTimeSec > selectedLaneSelection.timelineStartSec + 0.01 &&
+      currentTimeSec <
+        selectedLaneSelection.timelineStartSec +
+          selectedLaneSelection.durationSec -
+          0.01,
   );
 
   return (
@@ -2600,6 +2647,60 @@ function Timeline({
             <span className="zoomLabel">{Math.round(pxPerSec)}px/s</span>
           </div>
         </div>
+      </div>
+
+      <div className="timelineMobileActions" aria-label="Timeline touch actions">
+        <button
+          type="button"
+          disabled={!canSplitSelectedLaneClip || !onSplitLaneClip}
+          onClick={() => {
+            if (!selectedLaneSelection || !canSplitSelectedLaneClip) return;
+            onSplitLaneClip?.({
+              clipId: selectedLaneSelection.clipId,
+              laneId: selectedLaneSelection.laneId,
+              laneLabel: selectedLaneSelection.laneLabel,
+              laneKind: selectedLaneSelection.laneKind,
+            });
+          }}
+          title="Split selected clip at playhead"
+        >
+          <Scissors size={14} aria-hidden="true" />
+          Split
+        </button>
+        <button
+          type="button"
+          disabled={!selectedLaneSelection || !onDeleteLaneClip}
+          onClick={() => {
+            if (!selectedLaneSelection) return;
+            onDeleteLaneClip?.({
+              clipId: selectedLaneSelection.clipId,
+              laneId: selectedLaneSelection.laneId,
+              laneLabel: selectedLaneSelection.laneLabel,
+              laneKind: selectedLaneSelection.laneKind,
+            });
+          }}
+          title="Delete selected clip"
+        >
+          <Trash2 size={14} aria-hidden="true" />
+          Delete
+        </button>
+        <button
+          type="button"
+          disabled={selectedCount === 0}
+          onClick={() => onDeleteSelected()}
+          title="Mark selected transcript words deleted"
+        >
+          Cut words
+        </button>
+        <button
+          type="button"
+          disabled={selectedCount === 0 || !selectedHasDeleted}
+          onClick={() => onRestoreSelected()}
+          title="Restore selected deleted words"
+        >
+          <RotateCcw size={14} aria-hidden="true" />
+          Restore
+        </button>
       </div>
 
       <div
@@ -3201,7 +3302,7 @@ function Timeline({
           {rangeLeft !== null && rangeWidth !== null && rangeWidth > 2 && (
             <div
               className="rangeSelection"
-              style={{ left: rangeLeft + TRACK_LEFT_MARGIN, width: rangeWidth }}
+              style={{ left: rangeLeft + trackLeftMargin, width: rangeWidth }}
             >
               {rangeDuration !== null && rangeDuration > 0.1 && (
                 <span className="rangeLabel">

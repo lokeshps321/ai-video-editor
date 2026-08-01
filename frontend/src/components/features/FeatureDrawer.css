@@ -376,32 +376,33 @@
 
 @media (max-width: 640px) {
   .inspectorQuickSettings {
-      grid-template-columns: 1fr;
-    }
+    grid-template-columns: 1fr;
+  }
 
   .featureDrawer {
-      top: 0;
-      right: 0;
-      bottom: 0;
-      width: 100vw;
-      border-radius: 0;
-    }
-  
-    .featureDrawerBackdrop {
-      background: rgba(3, 8, 22, 0.48);
-    }
-  
-    .featureDrawerBackdrop.open {
-      pointer-events: auto;
-    }
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 100vw;
+    width: 100dvw;
+    border-radius: 0;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
 
-  .featureDrawer {
-      top: 0;
-      right: 0;
-      bottom: 0;
-      width: 100vw;
-      border-radius: 0;
-    }
+  .featureDrawerBackdrop {
+    background: rgba(3, 8, 22, 0.55);
+  }
 
+  .featureDrawerBackdrop.open {
+    pointer-events: auto;
+  }
+
+  .featureDrawerHeader button {
+    min-height: 44px;
+    min-width: 44px;
+    padding: 0 14px;
+    font-size: 0.84rem;
+  }
 }
 
