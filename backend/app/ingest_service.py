@@ -135,31 +135,50 @@ def _apify_actor_id() -> str:
     return configured or "streamers~youtube-video-downloader"
 
 
+def _youtube_cookies() -> str | None:
+    """Get YouTube cookies for bot detection bypass (paste from browser DevTools)."""
+    cookies = (os.getenv("YOUTUBE_COOKIES", "") or "").strip()
+    return cookies if cookies else None
+
+
 def _apify_actor_payload(normalized_url: str, actor_id: str) -> dict:
     quality = _apify_quality()
     quality_label = quality if quality.endswith("p") else f"{quality}p"
+    cookies = _youtube_cookies()
+
     if "streamers" in actor_id:
-        return {
+        payload = {
             "videos": [{"url": normalized_url}],
             "storeInKVStore": True,
             "preferredQuality": quality_label,
             "preferredFormat": "mp4",
             "filenameTemplateParts": ["title"],
         }
+        if cookies:
+            payload["cookies"] = cookies
+        return payload
+
     if "eunit" in actor_id:
-        return {
+        payload = {
             "startUrls": [{"url": normalized_url}],
             "downloadMode": "save-best-progressive",
             "preferredContainer": "mp4",
             "maxHeight": int(quality) if quality.isdigit() else 720,
         }
+        if cookies:
+            payload["cookies"] = cookies
+        return payload
+
     # epctex / generic PPE downloaders
-    return {
+    payload = {
         "startUrls": [normalized_url],
         "videoIds": [],
         "quality": quality if quality.isdigit() else "720",
         "storageType": "apify",
     }
+    if cookies:
+        payload["cookies"] = cookies
+    return payload
 
 
 def download_video_with_apify(
