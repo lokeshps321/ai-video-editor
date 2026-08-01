@@ -40,6 +40,8 @@ type PreviewDockProps = {
   queueingPreview: boolean;
   canRenderPreview: boolean;
   ingestingUrl: boolean;
+  ingestProgress?: number;
+  ingestStatusMessage?: string;
   onUploadVideo: (file: File) => void;
   onIngestUrl: (url: string) => void;
   onLoadedMetadata: () => void;
@@ -82,6 +84,8 @@ export function PreviewDock({
   queueingPreview,
   canRenderPreview,
   ingestingUrl,
+  ingestProgress = 0,
+  ingestStatusMessage = "",
   onUploadVideo,
   onIngestUrl,
   onLoadedMetadata,
@@ -174,9 +178,46 @@ export function PreviewDock({
                 onClick={submitIngestUrl}
               >
                 <Link2 size={14} />
-                {ingestingUrl ? "Fetching..." : "Add from URL"}
+                {ingestingUrl
+                  ? `Fetching ${Math.max(0, Math.min(100, Math.round(ingestProgress)))}%`
+                  : "Add from URL"}
               </button>
             </div>
+            {ingestingUrl && (
+              <div
+                className="ingestProgressCard"
+                role="status"
+                aria-live="polite"
+                aria-busy="true"
+              >
+                <div className="ingestProgressTop">
+                  <span>
+                    {ingestStatusMessage || "Fetching video from URL..."}
+                  </span>
+                  <strong>
+                    {Math.max(0, Math.min(100, Math.round(ingestProgress)))}%
+                  </strong>
+                </div>
+                <div
+                  className="ingestProgressTrack"
+                  aria-label="URL fetch progress"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.max(
+                    0,
+                    Math.min(100, Math.round(ingestProgress)),
+                  )}
+                  role="progressbar"
+                >
+                  <span
+                    className="ingestProgressFill"
+                    style={{
+                      width: `${Math.max(0, Math.min(100, Math.round(ingestProgress)))}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
             <p className="muted onboardingHint">
               Or press{" "}
               <span className="inlineIconLabel">

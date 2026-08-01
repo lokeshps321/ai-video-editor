@@ -1044,6 +1044,8 @@ function App() {
   const [newProjectName, setNewProjectName] = useState("");
   const [uploading, setUploading] = useState(false);
   const [ingestingUrl, setIngestingUrl] = useState(false);
+  const [ingestProgress, setIngestProgress] = useState(0);
+  const [ingestStatusMessage, setIngestStatusMessage] = useState("");
   const [generatingTranscript, setGeneratingTranscript] = useState(false);
   const [transcriptStartedAtMs, setTranscriptStartedAtMs] = useState<
     number | null
@@ -2184,28 +2186,6 @@ function App() {
 
   const resetEditorStateForProject = useCallback(
     (nextProject: Project) => {
-      // #region agent log
-      fetch("http://127.0.0.1:7321/ingest/10a1dd7b-b980-4792-99fd-cd87d659eed2", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Debug-Session-Id": "97aa4f",
-        },
-        body: JSON.stringify({
-          sessionId: "97aa4f",
-          runId: "pre-fix",
-          hypothesisId: "A",
-          location: "App.tsx:resetEditorStateForProject",
-          message: "Project reset entered; transcript job flags not cleared here",
-          data: {
-            nextProjectId: nextProject.id,
-            clearsGeneratingTranscript: false,
-            clearsTranscriptJob: false,
-          },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
       applyProjectFromServer(nextProject);
       setMedia([]);
       setSelectedAssetId(null);
@@ -2533,30 +2513,6 @@ function App() {
   const applyTranscriptGenerationResult = useCallback(
     async (response: TranscriptGenerateResponse) => {
       if (!project) return;
-      // #region agent log
-      fetch("http://127.0.0.1:7321/ingest/10a1dd7b-b980-4792-99fd-cd87d659eed2", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Debug-Session-Id": "97aa4f",
-        },
-        body: JSON.stringify({
-          sessionId: "97aa4f",
-          runId: "pre-fix",
-          hypothesisId: "C",
-          location: "App.tsx:applyTranscriptGenerationResult",
-          message: "Applying transcript result to current project",
-          data: {
-            applyToProjectId: project.id,
-            transcriptId: response.transcript?.id ?? null,
-            transcriptProjectId:
-              (response.transcript as { project_id?: string } | undefined)
-                ?.project_id ?? null,
-          },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
       setTranscript(response.transcript);
       setProject((prev) =>
         prev ? { ...prev, timeline: response.timeline } : prev,
@@ -2844,34 +2800,6 @@ function App() {
     setOpeningProjectId(projectId);
     setError(null);
     try {
-      // #region agent log
-      fetch("http://127.0.0.1:7321/ingest/10a1dd7b-b980-4792-99fd-cd87d659eed2", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Debug-Session-Id": "97aa4f",
-        },
-        body: JSON.stringify({
-          sessionId: "97aa4f",
-          runId: "pre-fix",
-          hypothesisId: "A",
-          location: "App.tsx:openProject",
-          message: "Switching project while transcript UI may be active",
-          data: {
-            fromProjectId: project?.id ?? null,
-            toProjectId: projectId,
-            generatingTranscript,
-            transcriptJobId: transcriptJob?.id ?? null,
-            transcriptJobProjectId: transcriptJob?.project_id ?? null,
-            transcriptJobStatus: transcriptJob?.status ?? null,
-            jobBelongsToTarget:
-              !transcriptJob?.project_id ||
-              transcriptJob.project_id === projectId,
-          },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
       const nextProject = await api.getProject(projectId);
       resetEditorStateForProject(nextProject);
 
@@ -3065,6 +2993,8 @@ function App() {
   async function ingestVideoFromUrl(url: string) {
     if (!project || ingestingUrl) return;
     setIngestingUrl(true);
+    setIngestProgress(5);
+    setIngestStatusMessage("Starting video fetch...");
     setError(null);
     setQuickEditSummary(null);
     setExportCompletion(null);
@@ -3072,14 +3002,26 @@ function App() {
     try {
       setNotice("Fetching video from URL...");
       let job = await api.ingestUrl(project.id, url.trim());
+      setIngestProgress(Math.max(5, Math.round(job.progress ?? 5)));
+      setIngestStatusMessage(job.message || "Queued for download...");
       while (job.status === "queued" || job.status === "running") {
-        await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        await new Promise((resolve) => window.setTimeout(resolve, 1000));
         job = await api.getJob(job.id);
-        setNotice(`Fetching video from URL... ${job.progress ?? 0}%`);
+        const pct = Math.max(0, Math.min(99, Math.round(job.progress ?? 0)));
+        setIngestProgress(pct);
+        const statusText =
+          job.message?.trim() ||
+          (job.status === "queued"
+            ? "Waiting in queue..."
+            : "Fetching video...");
+        setIngestStatusMessage(statusText);
+        setNotice(`${statusText} ${pct}%`);
       }
       if (job.status !== "completed") {
-        throw new Error(job.error ?? "URL ingestion failed.");
+        throw new Error(job.error ?? job.message ?? "URL ingestion failed.");
       }
+      setIngestProgress(100);
+      setIngestStatusMessage(job.message || "Video ready");
       const assets = await api.listMedia(project.id);
       const ingested =
         assets.find(
@@ -3097,6 +3039,8 @@ function App() {
     } catch (err) {
       setError((err as Error).message);
       setNotice(null);
+      setIngestStatusMessage("");
+      setIngestProgress(0);
     } finally {
       setIngestingUrl(false);
     }
@@ -3109,28 +3053,6 @@ function App() {
     const forceRegenerate = !!options?.forceRegenerate;
     lastTranscriptRequestRef.current = { forceRegenerate };
     const startedAtMs = Date.now();
-    // #region agent log
-    fetch("http://127.0.0.1:7321/ingest/10a1dd7b-b980-4792-99fd-cd87d659eed2", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Debug-Session-Id": "97aa4f",
-      },
-      body: JSON.stringify({
-        sessionId: "97aa4f",
-        runId: "pre-fix",
-        hypothesisId: "A",
-        location: "App.tsx:generateTranscript",
-        message: "Transcript generation started",
-        data: {
-          projectId: project.id,
-          assetId: selectedVideoAsset.id,
-          forceRegenerate,
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
     setGeneratingTranscript(true);
     setTranscriptStartedAtMs(startedAtMs);
     setTranscriptElapsedSec(0);
@@ -5144,43 +5066,6 @@ function App() {
     );
   }, [generatingTranscript, transcriptJob]);
 
-  // #region agent log
-  useEffect(() => {
-    if (!generatingTranscript && !transcriptJob) return;
-    fetch("http://127.0.0.1:7321/ingest/10a1dd7b-b980-4792-99fd-cd87d659eed2", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Debug-Session-Id": "97aa4f",
-      },
-      body: JSON.stringify({
-        sessionId: "97aa4f",
-        runId: "pre-fix",
-        hypothesisId: "A",
-        location: "App.tsx:transcriptUiStateEffect",
-        message: "Transcript loading UI state while project is active",
-        data: {
-          uiProjectId: project?.id ?? null,
-          generatingTranscript,
-          jobId: transcriptJob?.id ?? null,
-          jobProjectId: transcriptJob?.project_id ?? null,
-          jobStatus: transcriptJob?.status ?? null,
-          projectMismatch:
-            !!project?.id &&
-            !!transcriptJob?.project_id &&
-            transcriptJob.project_id !== project.id,
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-  }, [
-    project?.id,
-    generatingTranscript,
-    transcriptJob?.id,
-    transcriptJob?.project_id,
-    transcriptJob?.status,
-  ]);
-  // #endregion
 
   useEffect(() => {
     if (!project?.id || !transcriptJobId) return;
@@ -5188,31 +5073,6 @@ function App() {
     if (transcriptJobStatus === "completed") {
       if (transcriptJobResultHandledRef.current === transcriptJobId) return;
       transcriptJobResultHandledRef.current = transcriptJobId;
-      // #region agent log
-      fetch("http://127.0.0.1:7321/ingest/10a1dd7b-b980-4792-99fd-cd87d659eed2", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Debug-Session-Id": "97aa4f",
-        },
-        body: JSON.stringify({
-          sessionId: "97aa4f",
-          runId: "pre-fix",
-          hypothesisId: "C",
-          location: "App.tsx:transcriptJobCompleted",
-          message: "Completed job will fetch/apply against current UI project",
-          data: {
-            uiProjectId: project.id,
-            jobId: transcriptJobId,
-            jobProjectId: transcriptJob?.project_id ?? null,
-            projectMismatch:
-              !!transcriptJob?.project_id &&
-              transcriptJob.project_id !== project.id,
-          },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
       void (async () => {
         try {
           const response = await api.getTranscriptGenerateResult(
@@ -5251,36 +5111,6 @@ function App() {
     const interval = window.setInterval(async () => {
       try {
         const refreshed = await api.getJob(transcriptJobId);
-        // #region agent log
-        fetch(
-          "http://127.0.0.1:7321/ingest/10a1dd7b-b980-4792-99fd-cd87d659eed2",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-Debug-Session-Id": "97aa4f",
-            },
-            body: JSON.stringify({
-              sessionId: "97aa4f",
-              runId: "pre-fix",
-              hypothesisId: "B",
-              location: "App.tsx:transcriptJobPoll",
-              message: "Polling transcript job after possible project switch",
-              data: {
-                uiProjectId: project.id,
-                jobId: transcriptJobId,
-                jobProjectId: refreshed.project_id ?? null,
-                jobStatus: refreshed.status,
-                jobProgress: refreshed.progress,
-                projectMismatch:
-                  !!refreshed.project_id &&
-                  refreshed.project_id !== project.id,
-              },
-              timestamp: Date.now(),
-            }),
-          },
-        ).catch(() => {});
-        // #endregion
         setTranscriptJob(refreshed);
       } catch {
         // Ignore transient polling errors.
@@ -5321,29 +5151,6 @@ function App() {
     if (quickEditPhaseRef.current !== "transcribing") return;
     if (generatingTranscript) return; // still in progress
 
-    // #region agent log
-    fetch("http://127.0.0.1:7321/ingest/10a1dd7b-b980-4792-99fd-cd87d659eed2", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Debug-Session-Id": "97aa4f",
-      },
-      body: JSON.stringify({
-        sessionId: "97aa4f",
-        runId: "pre-fix",
-        hypothesisId: "D",
-        location: "App.tsx:quickEditContinuation",
-        message: "Quick Edit continuation fired",
-        data: {
-          projectId: project?.id ?? null,
-          hasWords: !!transcript?.words?.length,
-          generatingTranscript,
-          transcriptJobProjectId: transcriptJob?.project_id ?? null,
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
 
     if (!transcript?.words?.length) {
       // Transcript generation finished but no words — it failed or was empty
@@ -6519,6 +6326,8 @@ function App() {
               queueingPreview={queueingPreview}
               canRenderPreview={!!project}
               ingestingUrl={ingestingUrl}
+              ingestProgress={ingestProgress}
+              ingestStatusMessage={ingestStatusMessage}
               onUploadVideo={(file) => void uploadVideo(file)}
               onIngestUrl={(url) => void ingestVideoFromUrl(url)}
               onLoadedMetadata={() => setCurrentTimeSec(0)}

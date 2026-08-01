@@ -3,6 +3,11 @@
 Thumbs.db
 .idea/
 .vscode/
+.cursor/
+.codex/
+.agents/
+.claude/
+.replit
 
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
@@ -67,8 +72,8 @@ frontend/src/*.bak
 # ── Internal tooling (not for public repo) ────────────────────────────────────
 gemini-cli/
 claude_code_zai_env.sh
-
-
-.vercel
+setup_battery_fix.sh
+.vercel/
+.vercelignore
 .env*
 *.AppImage

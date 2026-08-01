@@ -14,7 +14,7 @@ from sqlmodel import Session, select
 
 from .config import get_settings
 from .database import engine
-from .ingest_service import download_video_with_apify, source_title_to_filename
+from .ingest_service import download_video_from_url, source_title_to_filename
 from .media_utils import probe_duration_seconds, probe_stream_flags
 from .models import Job, JobEvent, MediaAsset, TimelineVersion
 from .render_service import build_ffmpeg_command, ensure_parent_dir, run_ffmpeg
@@ -377,17 +377,44 @@ def process_ingest_url_job(job_id: str, url: str) -> None:
                 status="running",
                 progress=5,
                 stage="running",
-                message="Preparing URL ingestion",
+                message="Preparing URL fetch...",
             )
             _set_job_status(
                 session,
                 job,
                 status="running",
-                progress=20,
+                progress=15,
                 stage="download",
-                message="Downloading source video",
+                message="Starting video download...",
             )
-            download_result = download_video_with_apify(url, job.project_id)
+            last_progress = {"value": 15, "message": "Starting video download..."}
+
+            def on_download_progress(progress: int, message: str) -> None:
+                # Keep UI moving without flooding JobEvent rows.
+                if (
+                    progress < last_progress["value"] + 2
+                    and message == last_progress["message"]
+                ):
+                    return
+                last_progress["value"] = progress
+                last_progress["message"] = message
+                fresh = session.exec(select(Job).where(Job.id == job_id)).first()
+                if not fresh:
+                    return
+                _set_job_status(
+                    session,
+                    fresh,
+                    status="running",
+                    progress=min(progress, 88),
+                    stage="download",
+                    message=message,
+                )
+
+            download_result = download_video_from_url(
+                url,
+                job.project_id,
+                progress_callback=on_download_progress,
+            )
             # Accept the older two-item return shape too. It keeps existing
             # deployment extensions/mocks working while URL ingestion rolls
             # out the title-aware result.
@@ -398,13 +425,14 @@ def process_ingest_url_job(job_id: str, url: str) -> None:
                 else None
             )
 
+            job = session.exec(select(Job).where(Job.id == job_id)).first() or job
             _set_job_status(
                 session,
                 job,
                 status="running",
-                progress=70,
+                progress=90,
                 stage="probe",
-                message="Probing downloaded media",
+                message="Checking downloaded media...",
             )
             stream_flags = probe_stream_flags(absolute_path)
             if not stream_flags.get("has_video", False):
@@ -415,9 +443,9 @@ def process_ingest_url_job(job_id: str, url: str) -> None:
                 session,
                 job,
                 status="running",
-                progress=85,
+                progress=95,
                 stage="register",
-                message="Registering media in project",
+                message="Adding video to your project...",
             )
             file_name = source_title_to_filename(source_title, absolute_path)
             mime_type = mimetypes.guess_type(absolute_path)[0] or "video/mp4"

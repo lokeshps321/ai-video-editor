@@ -259,9 +259,11 @@ def test_render_export_accepts_aspect_ratio(monkeypatch: pytest.MonkeyPatch) -> 
 def test_ingest_url_creates_media_asset_and_events(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_download_video_with_ytdlp(
-        url: str, project_id: str
+    def fake_download_video_from_url(
+        url: str, project_id: str, progress_callback=None
     ) -> tuple[str, str, str]:
+        if progress_callback is not None:
+            progress_callback(40, "Fake download running...")
         project_dir = Path(os.environ["UPLOAD_DIR"]) / project_id
         project_dir.mkdir(parents=True, exist_ok=True)
         file_path = project_dir / "ingested-sample.mp4"
@@ -273,7 +275,7 @@ def test_ingest_url_creates_media_asset_and_events(
         )
 
     monkeypatch.setattr(
-        "app.jobs.download_video_with_ytdlp", fake_download_video_with_ytdlp
+        "app.jobs.download_video_from_url", fake_download_video_from_url
     )
     monkeypatch.setattr(
         "app.jobs.probe_stream_flags", lambda _: {"has_video": True, "has_audio": True}
@@ -309,7 +311,7 @@ def test_ingest_url_creates_media_asset_and_events(
             time.sleep(0.1)
 
         final_status = client.get(f"/api/v1/jobs/{job_id}").json()
-        assert final_status["status"] == "completed"
+        assert final_status["status"] == "completed", final_status
         assert final_status["output_path"].endswith("/ingested-sample.mp4")
 
         media_res = client.get(f"/api/v1/media?project_id={project_id}")
