@@ -485,3 +485,9 @@ def test_engine_uses_multilingual_model_not_reloaded_per_language():
 
     sig = inspect.signature(XlitEngine)
     assert "src_script_type" in sig.parameters
+
+
+def test_gemini_is_off_by_default():
+    """Free-tier Gemini (5 req/min) is too unreliable as the primary path;
+    IndicXlit is the default engine instead."""
+    assert ts.USE_LLM_TRANSLITERATION is False

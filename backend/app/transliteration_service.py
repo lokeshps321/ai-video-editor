@@ -6,9 +6,12 @@ so users who can't read the script can follow along phonetically - like YouTube
 lyric videos showing "Nee sigadere nee navladare" instead of "ನೀ ಸಿಗದೆರೆ ನೀ ನವ್ಲದರೆ".
 
 Uses a multi-tier approach:
-1. Groq LLM batch transliteration (best quality, context-aware) — FREE tier
-2. Google Gemini API as fallback (also free)
-3. indic-transliteration library + post-processing (good quality, offline)
+1. Gemini batch transliteration (best quality, context-aware) — off by
+   default; the free-tier key is capped at 5 requests/minute, so it is
+   opt-in via TRANSLITERATE_USE_LLM=true rather than the default path.
+2. IndicXlit (AI4Bharat) — offline neural model, near-Gemini quality, no
+   rate limit. Default engine.
+3. indic-transliteration library + post-processing (rule-based, offline)
 4. Character map fallback (basic, always available)
 """
 
@@ -39,8 +42,13 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-# Use LLM for transliteration (best quality)
-USE_LLM_TRANSLITERATION = _env_bool("TRANSLITERATE_USE_LLM", True)
+# Use Gemini for transliteration. Off by default: the free-tier key is capped
+# at 5 requests/minute, which made this an unreliable primary path in
+# practice. IndicXlit (below) gives near-Gemini quality with no rate limit,
+# so it is the default engine; set TRANSLITERATE_USE_LLM=true to try Gemini
+# first again (e.g. with a paid key) and fall back to IndicXlit only when it
+# fails.
+USE_LLM_TRANSLITERATION = _env_bool("TRANSLITERATE_USE_LLM", False)
 
 # Gemini model for transliteration
 GEMINI_TRANSLITERATION_MODEL = os.getenv(
