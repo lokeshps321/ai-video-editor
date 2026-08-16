@@ -464,6 +464,142 @@ def _detect_sparse_hallucinations(
     return filtered if filtered else words
 
 
+def _drop_impossible_rate_words(
+    words: list[TranscriptWordPayload],
+    duration_sec: float,
+) -> list[TranscriptWordPayload]:
+    """Drop runs of words that arrive faster than a human can utter them.
+
+    Whisper-family models hallucinate whole sentences into a fraction of a
+    second when fed music or noise — the observed case was 14 words inside
+    0.28 s (~50 words/sec). Unlike the phrase blocklists this signal is
+    language-agnostic, so it protects Tamil, Hindi and English alike.
+
+    Deliberately conservative: a run must be at least
+    ``TRANSCRIBE_HALLUCINATION_MIN_RUN`` words long, and if the rule wants to
+    delete more than ``TRANSCRIBE_RATE_HALLUCINATION_MAX_DROP_RATIO`` of the
+    transcript we assume the *timestamps* are broken globally (e.g. flat
+    provider timings) rather than the text, and bail out entirely.
+    """
+    if not _env_bool("TRANSCRIBE_RATE_HALLUCINATION_FILTER", True):
+        return words
+
+    min_run = _env_int("TRANSCRIBE_HALLUCINATION_MIN_RUN", 5, 2)
+    max_words_per_sec = _env_float("TRANSCRIBE_MAX_WORDS_PER_SEC", 9.0, 1.0)
+    max_drop_ratio = _env_float("TRANSCRIBE_RATE_HALLUCINATION_MAX_DROP_RATIO", 0.5, 0.0)
+    if len(words) < min_run:
+        return words
+
+    ordered = sorted(
+        words, key=lambda item: (float(item.start_sec), float(item.end_sec))
+    )
+    drop_indices: set[int] = set()
+    for start in range(len(ordered) - min_run + 1):
+        end = start + min_run - 1
+        span = float(ordered[end].end_sec) - float(ordered[start].start_sec)
+        if span > 0 and (min_run / span) <= max_words_per_sec:
+            continue
+        drop_indices.update(range(start, end + 1))
+
+    if not drop_indices:
+        return words
+    if len(drop_indices) > len(ordered) * max_drop_ratio:
+        _perf_logger.warning(
+            "[transcribe] impossible-rate rule matched %d/%d words; timestamps look "
+            "globally broken, skipping the filter",
+            len(drop_indices),
+            len(ordered),
+        )
+        return words
+
+    _perf_logger.info(
+        "[transcribe] dropped %d word(s) exceeding %.1f words/sec: %s",
+        len(drop_indices),
+        max_words_per_sec,
+        [ordered[idx].text for idx in sorted(drop_indices)],
+    )
+    filtered = [word for idx, word in enumerate(ordered) if idx not in drop_indices]
+    return filtered if filtered else words
+
+
+def _collapse_repetition_loops(
+    words: list[TranscriptWordPayload],
+) -> list[TranscriptWordPayload]:
+    """Collapse a phrase that repeats back-to-back beyond a plausible limit.
+
+    Songs legitimately repeat lines, so repetition alone is not evidence of a
+    hallucination. What separates a decoder loop from a chorus is *timing*: a
+    real chorus is separated by instrumental bars, while a loop re-emits the
+    phrase immediately. Repeats therefore only count when consecutive blocks
+    are within ``TRANSCRIBE_REPEAT_LOOP_MAX_GAP_SEC`` of each other.
+    """
+    if not _env_bool("TRANSCRIBE_REPEAT_LOOP_FILTER", True):
+        return words
+
+    max_repeats = _env_int("TRANSCRIBE_MAX_NGRAM_REPEATS", 2, 1)
+    max_gap_sec = _env_float("TRANSCRIBE_REPEAT_LOOP_MAX_GAP_SEC", 0.6, 0.0)
+    max_ngram = _env_int("TRANSCRIBE_REPEAT_LOOP_MAX_NGRAM", 6, 1)
+    if len(words) < 2:
+        return words
+
+    ordered = sorted(
+        words, key=lambda item: (float(item.start_sec), float(item.end_sec))
+    )
+    tokens = [_normalize_token(word.text) for word in ordered]
+    total = len(ordered)
+    drop_indices: set[int] = set()
+
+    # Gap preceding each word. A repeated n-gram can start at any offset, so the
+    # instrumental pause that distinguishes a chorus from a loop may land in the
+    # middle of a block rather than on its seam. Every gap inside the candidate
+    # run must therefore be tight, not just the seams between blocks.
+    gaps = [0.0] + [
+        max(0.0, float(ordered[i].start_sec) - float(ordered[i - 1].end_sec))
+        for i in range(1, total)
+    ]
+
+    def _is_tight(lo: int, hi: int) -> bool:
+        return all(gaps[k] <= max_gap_sec for k in range(lo + 1, hi))
+
+    index = 0
+    while index < total:
+        matched = False
+        widest = min(max_ngram, (total - index) // 2)
+        for size in range(widest, 0, -1):
+            base = tokens[index : index + size]
+            if not all(base):
+                continue
+            if not _is_tight(index, index + size):
+                continue
+            repeats = 1
+            cursor = index + size
+            while cursor + size <= total and tokens[cursor : cursor + size] == base:
+                if not _is_tight(cursor - 1, cursor + size):
+                    break
+                repeats += 1
+                cursor += size
+            if repeats > max_repeats:
+                drop_indices.update(
+                    range(index + size * max_repeats, index + size * repeats)
+                )
+                _perf_logger.info(
+                    "[transcribe] collapsed a %d-word phrase repeated %dx: %r",
+                    size,
+                    repeats,
+                    " ".join(base),
+                )
+                index += size * repeats
+                matched = True
+                break
+        if not matched:
+            index += 1
+
+    if not drop_indices:
+        return words
+    filtered = [word for idx, word in enumerate(ordered) if idx not in drop_indices]
+    return filtered if filtered else words
+
+
 def _drop_words_in_nonvocal_regions(
     words: list[TranscriptWordPayload],
     duration_sec: float,
@@ -1036,6 +1172,10 @@ def _apply_word_filters(
     audio_path: str | None = None,
 ) -> list[TranscriptWordPayload]:
     filtered = list(words)
+    # Language-agnostic rules run first: the phrase blocklists below only know
+    # English sign-offs, so novel hallucinations have to be caught by shape.
+    filtered = _drop_impossible_rate_words(filtered, duration_sec)
+    filtered = _collapse_repetition_loops(filtered)
     if _env_bool("TRANSCRIBE_HALLUCINATION_FILTER", True):
         filtered = _detect_hallucinations(filtered)
         filtered = _detect_sparse_hallucinations(filtered, duration_sec)

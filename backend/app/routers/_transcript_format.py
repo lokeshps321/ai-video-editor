@@ -290,6 +290,32 @@ def _with_transliteration_display(words: list[TranscriptWord]) -> list[Transcrip
     return enriched
 
 
+def _local_word_rate(
+    ordered: list[TranscriptWordPayload], index: int, window: int = 5
+) -> float | None:
+    """Fastest words-per-second among the windows containing ``index``.
+
+    Measured over a window rather than a single word because one crushed
+    timestamp is a glitch, while a sustained burst is a hallucination. All
+    windows containing the word are considered, not just a centred one: a
+    centred window at the edge of a burst straddles the silence before it and
+    averages the burst away.
+    """
+    if len(ordered) < window:
+        return None
+    first = max(0, index - window + 1)
+    last = min(index, len(ordered) - window)
+    fastest = 0.0
+    for start in range(first, last + 1):
+        span = float(ordered[start + window - 1].end_sec) - float(
+            ordered[start].start_sec
+        )
+        if span <= 0:
+            return float("inf")
+        fastest = max(fastest, window / span)
+    return fastest or None
+
+
 def _annotate_word_quality(
     words: list[TranscriptWordPayload], duration_sec: float
 ) -> list[TranscriptWordPayload]:
@@ -297,6 +323,8 @@ def _annotate_word_quality(
         return []
 
     trusted_min_score = _env_float("TRANSCRIPT_TRUSTED_MIN_SCORE", 0.72, 0.0)
+    impossible_rate = _env_float("TRANSCRIBE_MAX_WORDS_PER_SEC", 9.0, 1.0)
+    implausible_rate = _env_float("TRANSCRIPT_IMPLAUSIBLE_WORDS_PER_SEC", 7.0, 1.0)
     weak_gap_sec = _env_float(
         "TRANSCRIPT_WEAK_REGION_GAP_SEC",
         max(1.4, min(2.8, duration_sec * 0.035 + 0.6)),
@@ -332,6 +360,18 @@ def _annotate_word_quality(
 
         score = 0.88
         confidence = item.confidence
+
+        # Groq never returns per-word confidence, so the ladder below is dead on
+        # the cloud path and every word used to land on a flat 0.88 "trusted" —
+        # including hallucinated bursts of 50 words/sec. Fall back to a signal
+        # that is always available: how fast the words claim to arrive.
+        local_rate = _local_word_rate(ordered, index)
+        if local_rate is not None:
+            if local_rate > impossible_rate:
+                score = min(score, 0.25)
+            elif local_rate > implausible_rate:
+                score = min(score, 0.55)
+
         if confidence is not None:
             if confidence < 0.30:
                 score = min(score, 0.28)
