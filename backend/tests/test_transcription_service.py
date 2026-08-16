@@ -2697,6 +2697,9 @@ def test_prepare_vocal_stem_with_command_retries_on_cpu_after_gpu_cublas_failure
         "vocals.wav",
     )
     monkeypatch.setenv("TRANSCRIBE_VOCAL_ISOLATION_CPU_FALLBACK", "true")
+    # Same-device GPU retry is exercised by its own test below; keep this one
+    # about the CPU fallback by disabling it.
+    monkeypatch.setenv("TRANSCRIBE_VOCAL_ISOLATION_GPU_RETRIES", "0")
     monkeypatch.setattr(ts, "_resolve_vocal_isolation_device", lambda: "cuda")
 
     seen_envs: list[dict[str, str] | None] = []
@@ -2743,6 +2746,194 @@ def test_prepare_vocal_stem_with_command_retries_on_cpu_after_gpu_cublas_failure
     assert calls["n"] == 2
     assert seen_envs[1] is not None
     assert seen_envs[1].get("CUDA_VISIBLE_DEVICES") == ""
+
+
+def test_prepare_vocal_stem_with_command_retries_gpu_before_cpu_on_transient_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A one-off cuBLAS hiccup on a freshly-woken GPU should retry on GPU
+    first -- not fall straight to the much slower CPU path."""
+    source = tmp_path / "source.wav"
+    source.write_bytes(b"audio")
+    monkeypatch.setenv("TMP_DIR", str(tmp_path))
+    monkeypatch.setenv(
+        "TRANSCRIBE_VOCAL_ISOLATION_COMMAND_MDX23C",
+        "separator --in {input} --out {output_dir} --model {model}",
+    )
+    monkeypatch.setenv(
+        "TRANSCRIBE_VOCAL_ISOLATION_COMMAND_OUTPUT_MDX23C",
+        "vocals.wav",
+    )
+    monkeypatch.setenv("TRANSCRIBE_VOCAL_ISOLATION_GPU_RETRIES", "1")
+    monkeypatch.setenv("TRANSCRIBE_VOCAL_ISOLATION_GPU_RETRY_DELAY_SEC", "0")
+    monkeypatch.setattr(ts, "_resolve_vocal_isolation_device", lambda: "cuda")
+
+    seen_envs: list[dict[str, str] | None] = []
+    calls = {"n": 0}
+    cublas_failure = {
+        "returncode": 0,
+        "stderr": (
+            "ERROR - Failed to process file: CUBLAS failure 7: "
+            "CUBLAS_STATUS_INVALID_VALUE ; GPU=0\n"
+            "Separation complete! Output file(s): \n"
+        ),
+    }
+
+    def fake_run(
+        cmd: list[str],
+        capture_output: bool,
+        text: bool,
+        check: bool = False,
+        timeout: int | None = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+    ):
+        del capture_output, text, check, timeout, cmd
+        calls["n"] += 1
+        seen_envs.append(env)
+        assert cwd is not None
+        output_dir = Path(cwd) / "out"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        if calls["n"] == 1:
+            # First GPU attempt: transient failure.
+            return type("Proc", (), dict(cublas_failure))()
+        # Second attempt is the same-device GPU retry, and it succeeds.
+        (output_dir / "vocals.wav").write_bytes(b"gpu-isolated")
+        return type("Proc", (), {"returncode": 0, "stderr": "ok"})()
+
+    monkeypatch.setattr(ts.subprocess, "run", fake_run)
+
+    isolated_path, cleanup = ts._prepare_vocal_stem_with_command(
+        str(source), backend="mdx23c"
+    )
+    assert cleanup is not None
+    assert Path(isolated_path).read_bytes() == b"gpu-isolated"
+    assert calls["n"] == 2, "should retry once on GPU, not fall straight to CPU"
+    assert seen_envs[1] is not None
+    assert "CUDA_VISIBLE_DEVICES" not in seen_envs[1], (
+        "the retry must stay on GPU, not force CPU"
+    )
+
+
+def test_prepare_vocal_stem_with_command_falls_back_to_cpu_after_gpu_retry_exhausted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """When the GPU keeps failing, still land on CPU rather than giving up."""
+    source = tmp_path / "source.wav"
+    source.write_bytes(b"audio")
+    monkeypatch.setenv("TMP_DIR", str(tmp_path))
+    monkeypatch.setenv(
+        "TRANSCRIBE_VOCAL_ISOLATION_COMMAND_MDX23C",
+        "separator --in {input} --out {output_dir} --model {model}",
+    )
+    monkeypatch.setenv(
+        "TRANSCRIBE_VOCAL_ISOLATION_COMMAND_OUTPUT_MDX23C",
+        "vocals.wav",
+    )
+    monkeypatch.setenv("TRANSCRIBE_VOCAL_ISOLATION_CPU_FALLBACK", "true")
+    monkeypatch.setenv("TRANSCRIBE_VOCAL_ISOLATION_GPU_RETRIES", "1")
+    monkeypatch.setenv("TRANSCRIBE_VOCAL_ISOLATION_GPU_RETRY_DELAY_SEC", "0")
+    monkeypatch.setattr(ts, "_resolve_vocal_isolation_device", lambda: "cuda")
+
+    seen_envs: list[dict[str, str] | None] = []
+    calls = {"n": 0}
+    cublas_failure = {
+        "returncode": 0,
+        "stderr": (
+            "ERROR - Failed to process file: CUBLAS failure 7: "
+            "CUBLAS_STATUS_INVALID_VALUE ; GPU=0\n"
+            "Separation complete! Output file(s): \n"
+        ),
+    }
+
+    def fake_run(
+        cmd: list[str],
+        capture_output: bool,
+        text: bool,
+        check: bool = False,
+        timeout: int | None = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+    ):
+        del capture_output, text, check, timeout, cmd
+        calls["n"] += 1
+        seen_envs.append(env)
+        assert cwd is not None
+        output_dir = Path(cwd) / "out"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        if env and env.get("CUDA_VISIBLE_DEVICES") == "":
+            (output_dir / "vocals.wav").write_bytes(b"cpu-isolated")
+            return type("Proc", (), {"returncode": 0, "stderr": "ok"})()
+        # Every GPU attempt (first call and the retry) keeps failing.
+        return type("Proc", (), dict(cublas_failure))()
+
+    monkeypatch.setattr(ts.subprocess, "run", fake_run)
+
+    isolated_path, cleanup = ts._prepare_vocal_stem_with_command(
+        str(source), backend="mdx23c"
+    )
+    assert cleanup is not None
+    assert Path(isolated_path).read_bytes() == b"cpu-isolated"
+    assert calls["n"] == 3, "1 GPU attempt + 1 GPU retry + 1 CPU fallback"
+
+
+def test_prepare_vocal_stem_with_command_does_not_retry_gpu_for_config_errors(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A broken command template fails identically every time -- retrying on
+    GPU would just waste the delay before the (equally doomed) CPU attempt."""
+    source = tmp_path / "source.wav"
+    source.write_bytes(b"audio")
+    monkeypatch.setenv("TMP_DIR", str(tmp_path))
+    monkeypatch.setenv(
+        "TRANSCRIBE_VOCAL_ISOLATION_COMMAND_MDX23C",
+        "separator --in {input} --out {output_dir} --model {model}",
+    )
+    monkeypatch.setenv(
+        "TRANSCRIBE_VOCAL_ISOLATION_COMMAND_OUTPUT_MDX23C",
+        "vocals.wav",
+    )
+    monkeypatch.setenv("TRANSCRIBE_VOCAL_ISOLATION_CPU_FALLBACK", "true")
+    monkeypatch.setenv("TRANSCRIBE_VOCAL_ISOLATION_GPU_RETRIES", "1")
+    monkeypatch.setenv("TRANSCRIBE_VOCAL_ISOLATION_GPU_RETRY_DELAY_SEC", "0")
+    monkeypatch.setattr(ts, "_resolve_vocal_isolation_device", lambda: "cuda")
+
+    calls = {"n": 0}
+
+    def fake_run(
+        cmd: list[str],
+        capture_output: bool,
+        text: bool,
+        check: bool = False,
+        timeout: int | None = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+    ):
+        del capture_output, text, check, timeout, cmd
+        calls["n"] += 1
+        assert cwd is not None
+        output_dir = Path(cwd) / "out"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        if env and env.get("CUDA_VISIBLE_DEVICES") == "":
+            (output_dir / "vocals.wav").write_bytes(b"cpu-isolated")
+            return type("Proc", (), {"returncode": 0, "stderr": "ok"})()
+        return type(
+            "Proc",
+            (),
+            {
+                "returncode": 2,
+                "stderr": "separator: error: unrecognized arguments: --bogus-flag",
+            },
+        )()
+
+    monkeypatch.setattr(ts.subprocess, "run", fake_run)
+
+    isolated_path, cleanup = ts._prepare_vocal_stem_with_command(
+        str(source), backend="mdx23c"
+    )
+    assert cleanup is not None
+    assert Path(isolated_path).read_bytes() == b"cpu-isolated"
+    assert calls["n"] == 2, "config error should skip the GPU retry entirely"
 
 
 def test_prepare_vocal_stem_with_command_uses_absolute_paths_for_relative_tmp_dir(

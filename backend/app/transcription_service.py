@@ -2218,6 +2218,50 @@ def _prepare_vocal_stem_with_command(
         # Fall through to optional CPU retry when GPU providers crash.
     stem_path = _resolve_stem_output() if process.returncode == 0 else None
 
+    # A fresh GPU (just after boot, or waking from a low power state) sometimes
+    # throws a one-off cuBLAS/cuDNN init error on its first call, then works
+    # normally on the very next attempt. Retry on the SAME device before paying
+    # the much larger cost of falling back to CPU. Only retried when the
+    # failure actually looks GPU-shaped -- a broken command template fails
+    # identically every time, so retrying it would just waste the delay.
+    gpu_retry_attempts = (
+        _env_int("TRANSCRIBE_VOCAL_ISOLATION_GPU_RETRIES", 1, 0)
+        if device == "cuda"
+        else 0
+    )
+    gpu_retry_delay_sec = _env_float(
+        "TRANSCRIBE_VOCAL_ISOLATION_GPU_RETRY_DELAY_SEC", 1.5, 0.0
+    )
+    while (
+        stem_path is None
+        and gpu_retry_attempts > 0
+        and _looks_like_gpu_separator_failure(process.stderr or "")
+    ):
+        gpu_retry_attempts -= 1
+        _perf_logger.warning(
+            "[transcribe] GPU vocal isolation hit a transient failure, retrying "
+            "on GPU (%d attempt(s) left): %s",
+            gpu_retry_attempts,
+            (process.stderr or "").strip()[-240:],
+        )
+        for leftover in output_dir.glob("*"):
+            try:
+                if leftover.is_file():
+                    leftover.unlink()
+            except OSError:
+                pass
+        if gpu_retry_delay_sec > 0:
+            _time_module.sleep(gpu_retry_delay_sec)
+        try:
+            process = _run_separator()
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            _perf_logger.warning(
+                "[transcribe] GPU vocal isolation retry aborted: %s", exc
+            )
+            _cleanup_temp_path(work_dir)
+            return path, None
+        stem_path = _resolve_stem_output() if process.returncode == 0 else None
+
     should_retry_cpu = stem_path is None and device == "cuda" and _env_bool(
         "TRANSCRIBE_VOCAL_ISOLATION_CPU_FALLBACK", True
     )
