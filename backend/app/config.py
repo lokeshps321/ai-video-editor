@@ -44,6 +44,10 @@ class Settings:
     ffprobe_bin: str
     render_video_encoder: str
     yt_dlp_bin: str
+    yt_dlp_cookies_file: str
+    yt_dlp_cookies_from_browser: str
+    yt_dlp_max_height: int
+    yt_dlp_remote_components: str
     max_transcribe_duration_sec: float
     max_concurrent_render_jobs: int
     max_concurrent_ingest_jobs: int
@@ -112,6 +116,14 @@ def get_settings() -> Settings:
         render_video_encoder=os.getenv("RENDER_VIDEO_ENCODER", "auto").strip().lower()
         or "auto",
         yt_dlp_bin=os.getenv("YT_DLP_BIN", "yt-dlp"),
+        yt_dlp_cookies_file=os.getenv("YTDLP_COOKIES_FILE", "").strip(),
+        yt_dlp_cookies_from_browser=os.getenv(
+            "YTDLP_COOKIES_FROM_BROWSER", ""
+        ).strip(),
+        yt_dlp_max_height=max(240, int(os.getenv("YTDLP_MAX_HEIGHT", "1080"))),
+        yt_dlp_remote_components=os.getenv(
+            "YTDLP_REMOTE_COMPONENTS", "ejs:github"
+        ).strip(),
         max_transcribe_duration_sec=max(
             0.0, float(os.getenv("MAX_TRANSCRIBE_DURATION_SEC", "0"))
         ),

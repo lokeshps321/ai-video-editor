@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -48,10 +49,28 @@ def _source_title_from_ytdlp_output(output: str) -> str | None:
     for line in reversed(str(output or "").splitlines()):
         if not line.startswith(_SOURCE_TITLE_PREFIX):
             continue
-        title = _CONTROL_CHARS_RE.sub(" ", line[len(_SOURCE_TITLE_PREFIX) :])
-        title = re.sub(r"\s+", " ", title).strip()
+        title = _normalize_source_title(line[len(_SOURCE_TITLE_PREFIX) :])
         if title:
-            return title[:240]
+            return title
+    return None
+
+
+def _normalize_source_title(raw: str) -> str | None:
+    title = _CONTROL_CHARS_RE.sub(" ", str(raw or ""))
+    title = re.sub(r"\s+", " ", title).strip()
+    return title[:240] or None
+
+
+def _read_source_title_file(path: Path) -> str | None:
+    """Title written by yt-dlp's --print-to-file, if the download got that far."""
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in reversed(raw.splitlines()):
+        title = _normalize_source_title(line)
+        if title:
+            return title
     return None
 
 
@@ -330,12 +349,74 @@ def download_video_with_apify(
 _YTDLP_PROGRESS_RE = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
 
 
+def _ytdlp_auth_args() -> list[str]:
+    """Optional cookie auth for yt-dlp.
+
+    Public videos need no auth from a residential IP. Datacenter IPs (prod) hit
+    YouTube's bot check, which cookies are the supported way around -- yt-dlp
+    removed OAuth login entirely.
+    """
+    cookies_file = settings.yt_dlp_cookies_file
+    if cookies_file:
+        if Path(cookies_file).is_file():
+            logger.debug("yt-dlp: using cookies file")
+            return ["--cookies", cookies_file]
+        logger.warning(
+            "YTDLP_COOKIES_FILE is set but does not exist; continuing without cookies"
+        )
+
+    from_browser = settings.yt_dlp_cookies_from_browser
+    if from_browser:
+        logger.debug("yt-dlp: using cookies from browser")
+        return ["--cookies-from-browser", from_browser]
+
+    return []
+
+
+def _ytdlp_format_selector() -> str:
+    """Cap the download at H.264/<=max_height so the merge into mp4 is a remux.
+
+    Without this yt-dlp happily picks 2160p AV1, which is slow to fetch and
+    pointless for the editor timeline.
+    """
+    height = settings.yt_dlp_max_height
+    return (
+        f"bestvideo[height<={height}][vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
+        f"bestvideo[height<={height}]+bestaudio/"
+        f"best[height<={height}]/best"
+    )
+
+
+_YTDLP_COOKIE_HINTS = (
+    "sign in to confirm",
+    "confirm you're not a bot",
+    "use --cookies",
+    "login required",
+    "this video is private",
+    "age",
+)
+
+
+def _ytdlp_failure_message(detail: str) -> str:
+    """Front the raw yt-dlp dump with something actionable for the UI banner."""
+    if not detail:
+        return "URL ingestion failed with yt-dlp"
+    lowered = detail.lower()
+    if any(hint in lowered for hint in _YTDLP_COOKIE_HINTS):
+        return (
+            "YouTube is asking this server to sign in. Set YTDLP_COOKIES_FILE "
+            "(exported cookies.txt) or YTDLP_COOKIES_FROM_BROWSER and retry.\n\n"
+            f"{detail}"
+        )
+    return detail
+
+
 def download_video_with_ytdlp(
     url: str,
     project_id: str,
     progress_callback: ProgressCallback | None = None,
 ) -> tuple[str, str, str | None]:
-    """Download video with yt-dlp using OAuth2 (bypasses YouTube bot checks)."""
+    """Download video with yt-dlp, optionally authenticated with cookies."""
     normalized_url = validate_ingest_url(url)
 
     if shutil.which(settings.yt_dlp_bin) is None:
@@ -350,18 +431,33 @@ def download_video_with_ytdlp(
         settings.yt_dlp_bin,
         "--no-playlist",
         "--restrict-filenames",
+        "-f",
+        _ytdlp_format_selector(),
         "--merge-output-format",
         "mp4",
         "--newline",
-        # OAuth2 auth bypasses YouTube bot detection on datacenter IPs.
-        "--username",
-        "oauth2",
-        "--password",
-        "",
-        # Keep the physical filename opaque, but emit the platform title so
-        # the asset can be labelled correctly and used for lyric lookup.
-        "--print",
-        f"after_move:{_SOURCE_TITLE_PREFIX}%(title)s",
+    ]
+    # YouTube now gates its media URLs behind a JS signature/"n" challenge.
+    # Solving it needs both a JS runtime (only deno is enabled by default, so
+    # point yt-dlp at node) and the EJS solver script. Without the pair, the
+    # extractor falls back to the android-vr client and every media URL 403s.
+    if shutil.which("node") is not None:
+        cmd += ["--js-runtimes", "node"]
+    if settings.yt_dlp_remote_components:
+        cmd += ["--remote-components", settings.yt_dlp_remote_components]
+    cmd += _ytdlp_auth_args()
+    # Keep the physical filename opaque, but emit the platform title so the
+    # asset can be labelled correctly and used for lyric lookup.  This goes to
+    # a side file rather than stdout because `--print` implies `--quiet`, which
+    # suppresses the `[download] NN%` lines the progress bar is parsed from.
+    # The file lives outside project_dir so it can't be mistaken for the media.
+    title_fd, title_file_name = tempfile.mkstemp(prefix="ytdlp-title-", suffix=".txt")
+    os.close(title_fd)
+    title_file = Path(title_file_name)
+    cmd += [
+        "--print-to-file",
+        "after_move:%(title)s",
+        str(title_file),
         "-o",
         str(output_template),
         normalized_url,
@@ -378,40 +474,50 @@ def download_video_with_ytdlp(
     output_chunks: list[str] = []
     last_reported = -1
     try:
-        for line in process.stdout:
-            output_chunks.append(line)
-            match = _YTDLP_PROGRESS_RE.search(line)
-            if not match:
-                continue
-            percent = int(float(match.group(1)))
-            if percent == last_reported:
-                continue
-            last_reported = percent
-            _emit_progress(progress_callback, percent, "Downloading video...")
-        returncode = process.wait()
-    except Exception:
-        process.kill()
-        process.wait(timeout=10)
-        raise
+        try:
+            for line in process.stdout:
+                output_chunks.append(line)
+                match = _YTDLP_PROGRESS_RE.search(line)
+                if not match:
+                    continue
+                # yt-dlp restarts at 0% for each stream (video, then audio), so
+                # keep the reported value monotonic within the 5-70 band this
+                # stage owns.
+                percent = 5 + int(float(match.group(1)) * 0.65)
+                if percent <= last_reported:
+                    continue
+                last_reported = percent
+                _emit_progress(progress_callback, percent, "Downloading video...")
+            returncode = process.wait()
+        except Exception:
+            process.kill()
+            process.wait(timeout=10)
+            raise
 
-    combined_output = "".join(output_chunks)
-    if returncode != 0:
-        detail = combined_output.strip()
-        raise RuntimeError(detail or "URL ingestion failed with yt-dlp")
+        combined_output = "".join(output_chunks)
+        if returncode != 0:
+            detail = combined_output.strip()
+            raise RuntimeError(_ytdlp_failure_message(detail))
 
-    _emit_progress(progress_callback, 75, "Local download finished, preparing media...")
-    candidates = sorted(
-        project_dir.glob(f"{file_prefix}.*"),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
-    file_path = next((path for path in candidates if path.suffix != ".part"), None)
-    if file_path is None:
-        raise RuntimeError("yt-dlp did not produce an output file")
+        _emit_progress(
+            progress_callback, 75, "Local download finished, preparing media..."
+        )
+        candidates = sorted(
+            project_dir.glob(f"{file_prefix}.*"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        file_path = next((path for path in candidates if path.suffix != ".part"), None)
+        if file_path is None:
+            raise RuntimeError("yt-dlp did not produce an output file")
 
-    relative = str(file_path.resolve().relative_to(storage.upload_root))
-    source_title = _source_title_from_ytdlp_output(combined_output)
-    return str(file_path.resolve()), relative, source_title
+        relative = str(file_path.resolve().relative_to(storage.upload_root))
+        source_title = _read_source_title_file(title_file) or (
+            _source_title_from_ytdlp_output(combined_output)
+        )
+        return str(file_path.resolve()), relative, source_title
+    finally:
+        title_file.unlink(missing_ok=True)
 
 
 def download_video_from_url(

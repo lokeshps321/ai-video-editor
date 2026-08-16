@@ -1,4 +1,4 @@
-FROM python:3.10-slim
+FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -7,7 +7,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg curl \
+    # nodejs is the JS runtime yt-dlp needs to solve YouTube's signature
+    # challenge; without it every media URL comes back 403.
+    && apt-get install -y --no-install-recommends ffmpeg curl nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
