@@ -7,7 +7,13 @@ export default defineConfig({
     exclude: [...configDefaults.exclude, "tests/playwright/**"],
   },
   server: {
-    port: 5173
+    port: 5173,
+    // Avoid ENOSPC when the OS inotify watcher/instance limit is exhausted
+    // (common with IDEs + many node tools). Polling uses no inotify watches.
+    watch: {
+      usePolling: true,
+      interval: 300,
+    },
   },
   build: {
     chunkSizeWarningLimit: 900,

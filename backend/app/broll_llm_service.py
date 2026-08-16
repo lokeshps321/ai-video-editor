@@ -1834,7 +1834,9 @@ def build_broll_search_strategy(
     parsed_search_concept = " ".join(
         str(parsed.get("search_concept") or "").split()
     ).strip()
-    if not queries or _is_low_signal_phrase(parsed_search_concept):
+    if not queries or (
+        _is_low_signal_phrase(parsed_search_concept) and len(queries) <= 1
+    ):
         return fallback
     if cross_lingual_source:
         if _contains_non_latin_letters(parsed_search_concept) or any(
