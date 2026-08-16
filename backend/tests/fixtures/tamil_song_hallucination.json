@@ -1,0 +1,1459 @@
+{
+  "_comment": "Real hallucinated payload captured from job bced16fe-5397-4927-a002-b369efd01eb0 (Tamil song 'Thaensudare', asset a34acf42, 207.192s). Groq whisper-large-v3-turbo, auto language, no vocal isolation. Used as a regression fixture.",
+  "source": "groq_gapfill",
+  "language": "Tamil",
+  "duration_sec": 207.192,
+  "text": "My Enn? Vile yelam khanavaae ni eenvere? Uravay. Eembali yelam moorae tanda ooi iray. Nėk aattra en aith thiinnda ira kaai. Vidande. This is the one that I am seeing. This is the one that I have seen. I have a dream. I am a dream. I am a dream. I am a dream. En moue iraimu'n un'theem suderer. En moue rakkampollu'm un'theem suderer. En moue rakkampollu'm If you have any questions, please contact us at the address on the screen. The song that will bring life I'm a little shy to sing. is today's I'm a little to copy the audio of the form. Cp. The Kattril, ilayai poul, pidiayai tedi, thavikki nuen. Oru nodi, sara lana, maru nodi, kanalana. Enakkuu Peeditthamunnay, engu nee tholai thai. Oonakku Peeditthamunnay, engu nangu vythai. En mooyirai unnum, en mooyirai unnum, en mooyirai unnum, thén zoolaray, en mooyirai",
+  "words": [
+    {
+      "id": "b739f90a-a447-4ed4-b560-f898b5a084cb",
+      "text": "My",
+      "start_sec": 15.66,
+      "end_sec": 15.995,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "0c992819-8d98-41b3-9493-bfc9f6428145",
+      "text": "Enn?",
+      "start_sec": 16.0,
+      "end_sec": 16.355,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "b2d6b98b-8dd2-4005-91dd-867cf550b686",
+      "text": "Vile",
+      "start_sec": 16.36,
+      "end_sec": 17.36,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "0bec4ce0-e0e7-49a9-8dfa-142599b658c3",
+      "text": "yelam",
+      "start_sec": 17.82,
+      "end_sec": 18.795,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "ebcfd495-d7c6-4316-9249-760231ac2779",
+      "text": "khanavaae",
+      "start_sec": 18.8,
+      "end_sec": 19.8,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "cf1b6572-12c5-4d10-8349-e558587466f5",
+      "text": "ni",
+      "start_sec": 19.96,
+      "end_sec": 20.295,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "364f496c-566f-4b6c-8f2d-c327170519a1",
+      "text": "eenvere?",
+      "start_sec": 20.3,
+      "end_sec": 21.095,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "d04dd50a-6350-42cd-92d0-3e53dec0e52e",
+      "text": "Uravay.",
+      "start_sec": 21.1,
+      "end_sec": 22.1,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "3966eeb5-dd34-4a99-ad56-56deb0f9c558",
+      "text": "Eembali",
+      "start_sec": 23.02,
+      "end_sec": 24.02,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "9cedda91-9b20-4dcc-9036-8c245455976f",
+      "text": "yelam",
+      "start_sec": 26.02,
+      "end_sec": 26.715,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "af625bd7-df5c-40fa-a0e0-16e9cf8044f6",
+      "text": "moorae",
+      "start_sec": 26.72,
+      "end_sec": 27.72,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "fb7bc285-e626-46fe-8cb3-fae2bae056c4",
+      "text": "tanda",
+      "start_sec": 27.94,
+      "end_sec": 28.575,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "ac16fb61-dbfc-4f96-8b91-3ed4fe385ee8",
+      "text": "ooi",
+      "start_sec": 28.58,
+      "end_sec": 29.58,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "218b6b7b-837d-4d19-8610-2d65d83dac7f",
+      "text": "iray.",
+      "start_sec": 29.96,
+      "end_sec": 30.96,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "6ad349bd-e503-4367-bc88-feb191dfa17f",
+      "text": "Nėk",
+      "start_sec": 31.32,
+      "end_sec": 32.32,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "94a98837-587d-4e32-aaf0-7a15f6c29127",
+      "text": "aattra",
+      "start_sec": 33.6,
+      "end_sec": 34.255,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "e5414e97-fee1-45b0-b9b7-dc6f43db07f0",
+      "text": "en",
+      "start_sec": 34.26,
+      "end_sec": 34.755,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "70c53099-9681-44b0-ba46-8cbd5b37d718",
+      "text": "aith",
+      "start_sec": 34.76,
+      "end_sec": 34.995,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "a1e6004c-f459-4f5e-9fcb-6d1251c82a22",
+      "text": "thiinnda",
+      "start_sec": 35.0,
+      "end_sec": 35.915,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "8749716d-af88-4360-9ce0-3de259fef086",
+      "text": "ira",
+      "start_sec": 35.92,
+      "end_sec": 36.535,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "a4fe2bb9-9ab1-48f0-b815-422e2594b1e5",
+      "text": "kaai.",
+      "start_sec": 36.54,
+      "end_sec": 37.175,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "5c2f2338-b32c-4b9b-9b67-267e7d3cc739",
+      "text": "Vidande.",
+      "start_sec": 37.18,
+      "end_sec": 38.18,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "660e47e4-ed8b-4d30-9464-06d29df2b47c",
+      "text": "This",
+      "start_sec": 39.72,
+      "end_sec": 40.255,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "0f0f2ce7-0671-4aa0-a0d0-66ce356a5f30",
+      "text": "is",
+      "start_sec": 40.26,
+      "end_sec": 40.275,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "6b76dcf7-0e36-40ed-9be4-e088e1d03b0d",
+      "text": "the",
+      "start_sec": 40.28,
+      "end_sec": 41.28,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "1d3e601d-8912-4088-9b53-91463c4cd35a",
+      "text": "one",
+      "start_sec": 41.76,
+      "end_sec": 41.775,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "c0111b36-9325-4949-a9b0-e769a8ecb425",
+      "text": "that",
+      "start_sec": 41.78,
+      "end_sec": 42.78,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "f4ce8495-fc02-4c41-8278-bae221a0f441",
+      "text": "I",
+      "start_sec": 43.16,
+      "end_sec": 43.175,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "7d4eab5c-0814-4c73-b5b3-e90e719e6cec",
+      "text": "am",
+      "start_sec": 43.18,
+      "end_sec": 43.195,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "ab9eccd6-9c7c-4faf-8960-d708c495ef9c",
+      "text": "seeing.",
+      "start_sec": 43.2,
+      "end_sec": 44.2,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "0b777992-bd1e-454d-b144-899a708bc516",
+      "text": "This",
+      "start_sec": 46.52,
+      "end_sec": 47.52,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "05de71ff-2a4e-4609-8ce9-97fecb7c973e",
+      "text": "is",
+      "start_sec": 47.84,
+      "end_sec": 47.855,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "dbc0f612-6af2-436f-9b69-f12927c0f0ca",
+      "text": "the",
+      "start_sec": 47.86,
+      "end_sec": 48.435,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "cc47727d-5c8b-4677-996e-d14322e1bfb3",
+      "text": "one",
+      "start_sec": 48.44,
+      "end_sec": 48.455,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "d5c9bde3-e050-4161-9334-44114d211265",
+      "text": "that",
+      "start_sec": 48.46,
+      "end_sec": 49.115,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "da07a339-45e2-42ec-a96e-fbc906065995",
+      "text": "I",
+      "start_sec": 49.12,
+      "end_sec": 49.135,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "6af17d80-feda-4ed1-ad57-09255d0e24fb",
+      "text": "have",
+      "start_sec": 49.14,
+      "end_sec": 49.155,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "1195027b-4806-4743-b5a6-6c45731228df",
+      "text": "seen.",
+      "start_sec": 49.16,
+      "end_sec": 49.255,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "bad30023-5c59-402e-8c7c-e5c4794569bf",
+      "text": "I",
+      "start_sec": 49.26,
+      "end_sec": 49.315,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "18063de2-4dcd-4ed9-b2ce-ecfdcce9fa67",
+      "text": "have",
+      "start_sec": 49.32,
+      "end_sec": 49.335,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "161f9824-c731-4724-83a5-081fd5bc3398",
+      "text": "a",
+      "start_sec": 49.34,
+      "end_sec": 49.795,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "6c5d23a9-6d76-404f-9fb2-b86b80b10fac",
+      "text": "dream.",
+      "start_sec": 49.8,
+      "end_sec": 50.8,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "07b0c33f-3955-45b5-baf1-ab601232b476",
+      "text": "I",
+      "start_sec": 52.44,
+      "end_sec": 53.44,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "fc761bb0-6b58-4e90-bcb1-f041f477b913",
+      "text": "am",
+      "start_sec": 53.68,
+      "end_sec": 53.695,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "73c0987c-4239-4631-954c-ddb5f58016c9",
+      "text": "a",
+      "start_sec": 53.7,
+      "end_sec": 54.535,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "e77da05a-98e5-4a10-a842-60df8b6d13f1",
+      "text": "dream.",
+      "start_sec": 54.54,
+      "end_sec": 55.54,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "c81a28f0-d7fd-4e72-869a-83eeea8c293d",
+      "text": "I",
+      "start_sec": 55.92,
+      "end_sec": 56.92,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "edd53e00-6657-4286-a70f-4f61a3d0c375",
+      "text": "am",
+      "start_sec": 57.24,
+      "end_sec": 57.255,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "3f9b9481-afa1-43ba-ab02-4cd1026d33b7",
+      "text": "a",
+      "start_sec": 57.26,
+      "end_sec": 57.275,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "1fa6a792-3d99-4e44-be95-d35cafabb237",
+      "text": "dream.",
+      "start_sec": 57.28,
+      "end_sec": 57.295,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "56e95e34-2f16-40b9-b72a-285807cabdc6",
+      "text": "I",
+      "start_sec": 57.3,
+      "end_sec": 57.715,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "f88024e7-d718-4aba-aa37-2109f983c167",
+      "text": "am",
+      "start_sec": 57.72,
+      "end_sec": 57.755,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "8977cf18-94cb-4f38-a016-e4297e1df721",
+      "text": "a",
+      "start_sec": 57.76,
+      "end_sec": 57.895,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "73310b69-4257-4621-ab05-506947cfd27e",
+      "text": "dream.",
+      "start_sec": 57.9,
+      "end_sec": 58.9,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "be072a47-4a50-42b7-9990-a7f3637992bb",
+      "text": "En",
+      "start_sec": 63.62,
+      "end_sec": 63.895,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "5e9f6fd5-d8af-40ba-a541-6ab710434ee2",
+      "text": "moue",
+      "start_sec": 63.9,
+      "end_sec": 64.215,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "baed2e1f-e213-4145-98ba-b101fad5e40b",
+      "text": "iraimu'n",
+      "start_sec": 64.22,
+      "end_sec": 65.22,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "7c5d07f3-88a4-43ab-8f0d-173e84fe3d2f",
+      "text": "un'theem",
+      "start_sec": 65.48,
+      "end_sec": 66.375,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "6f75c221-cf3a-40fe-a8b9-6987f0f914b2",
+      "text": "suderer.",
+      "start_sec": 66.38,
+      "end_sec": 67.38,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "02af36af-1eaa-40d4-af8a-7e8625390915",
+      "text": "En",
+      "start_sec": 67.44,
+      "end_sec": 67.895,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "591cd59e-f8eb-490b-bdc3-ee0eecea89c0",
+      "text": "moue",
+      "start_sec": 67.9,
+      "end_sec": 68.235,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "79e561cc-b996-472b-9547-ad5a4d38b2b4",
+      "text": "rakkampollu'm",
+      "start_sec": 68.24,
+      "end_sec": 69.24,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "63134a64-140b-48af-b08d-60399ca68a85",
+      "text": "un'theem",
+      "start_sec": 69.54,
+      "end_sec": 70.355,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "cd7fe5d1-0339-485b-89f0-0ed64c1c2f60",
+      "text": "suderer.",
+      "start_sec": 70.36,
+      "end_sec": 71.36,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "5ef3cdba-7188-40c3-ac16-f0cb988b50f1",
+      "text": "En",
+      "start_sec": 71.52,
+      "end_sec": 71.915,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "7caa5812-bafc-4d87-b8ae-74923267df75",
+      "text": "moue",
+      "start_sec": 71.92,
+      "end_sec": 72.215,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "1e13d197-d807-4c72-a636-6d3db8958c86",
+      "text": "rakkampollu'm",
+      "start_sec": 72.22,
+      "end_sec": 73.22,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "9e91f1f1-fe55-4b7a-a6c4-c8ff360bcf7a",
+      "text": "If",
+      "start_sec": 109.1,
+      "end_sec": 109.115,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "fc8d6e2c-098d-49db-b979-9b3b74699b8e",
+      "text": "you",
+      "start_sec": 109.12,
+      "end_sec": 109.135,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "b9006c5a-6bdb-47c9-84b4-fc26085a28c2",
+      "text": "have",
+      "start_sec": 109.14,
+      "end_sec": 109.155,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "b5f2d337-f350-426c-9200-c3033ab7b278",
+      "text": "any",
+      "start_sec": 109.16,
+      "end_sec": 109.175,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "102421ab-8909-4496-9947-f2d6742bfb4e",
+      "text": "questions,",
+      "start_sec": 109.18,
+      "end_sec": 109.195,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "9a2a25df-fed7-4840-8a13-518ffb95741b",
+      "text": "please",
+      "start_sec": 109.2,
+      "end_sec": 109.215,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "8af65283-bc39-4f96-8562-b89ee48bbb5d",
+      "text": "contact",
+      "start_sec": 109.22,
+      "end_sec": 109.235,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "8638d878-c055-4c7e-b162-b1b8bd105f5a",
+      "text": "us",
+      "start_sec": 109.24,
+      "end_sec": 109.255,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "d9d54de5-b7f9-4ddd-b2a9-163c1bf40af5",
+      "text": "at",
+      "start_sec": 109.26,
+      "end_sec": 109.275,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "7ff8b3f4-68c8-4bb7-a5ed-41fc964c8b6b",
+      "text": "the",
+      "start_sec": 109.28,
+      "end_sec": 109.295,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "f02e59b5-c08c-4324-88ae-9a198872765b",
+      "text": "address",
+      "start_sec": 109.3,
+      "end_sec": 109.315,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "16273ba6-550f-40ad-84b5-f88a709b83ab",
+      "text": "on",
+      "start_sec": 109.32,
+      "end_sec": 109.335,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "3da545dd-e62f-4a9a-850a-b5afba58c897",
+      "text": "the",
+      "start_sec": 109.34,
+      "end_sec": 109.355,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "6afe2f8d-b982-4244-bfd0-b6f5da1fffc8",
+      "text": "screen.",
+      "start_sec": 109.36,
+      "end_sec": 109.38,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "4765f163-1111-49f9-971e-f14f637a78df",
+      "text": "The",
+      "start_sec": 113.904,
+      "end_sec": 113.919,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "42ae404a-75d1-4544-84ab-3ad1bfe0f123",
+      "text": "song",
+      "start_sec": 113.924,
+      "end_sec": 113.939,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "95893602-57ea-4c1c-a30c-2fec18a7067d",
+      "text": "that",
+      "start_sec": 113.944,
+      "end_sec": 113.959,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "16edffa6-e04a-4270-aabb-3c7c9a7cf66f",
+      "text": "will",
+      "start_sec": 113.964,
+      "end_sec": 113.979,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "bf8f0f23-dce9-44a3-9ec0-453835daa14f",
+      "text": "bring",
+      "start_sec": 113.984,
+      "end_sec": 113.999,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "db3ce616-aace-419d-a65a-427970f8b9dd",
+      "text": "life",
+      "start_sec": 114.004,
+      "end_sec": 115.004,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "18a70c3c-1f6b-40b1-8bf8-f125fdef507f",
+      "text": "I'm",
+      "start_sec": 115.544,
+      "end_sec": 115.559,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "a8f7b6a2-e414-464f-a4b8-37edc4d67b1e",
+      "text": "a",
+      "start_sec": 115.564,
+      "end_sec": 115.579,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "d0aa7a93-a83d-4023-b197-f3e068dcfc7c",
+      "text": "little",
+      "start_sec": 115.584,
+      "end_sec": 115.599,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "24fea259-8c4b-4bf5-8e14-7103da11caf0",
+      "text": "shy",
+      "start_sec": 115.604,
+      "end_sec": 115.619,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "e92b33d8-b49f-4de9-8482-2fa9358912d8",
+      "text": "to",
+      "start_sec": 115.624,
+      "end_sec": 115.639,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "18b5ee77-cf6b-4b37-af13-c825c7392d8d",
+      "text": "sing.",
+      "start_sec": 115.644,
+      "end_sec": 115.899,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "b5a4a11a-f25f-419c-919e-4ac1c0d669d9",
+      "text": "is",
+      "start_sec": 115.904,
+      "end_sec": 116.019,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "d5a0dae5-eb1b-40f1-823f-bbad694be0d4",
+      "text": "today's",
+      "start_sec": 116.024,
+      "end_sec": 116.044,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "572a1a61-4a7a-4249-968d-ed7294ff4bf1",
+      "text": "I'm",
+      "start_sec": 121.764,
+      "end_sec": 122.764,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "b94e51d9-bb4b-438f-a182-23d63c2f6886",
+      "text": "a",
+      "start_sec": 123.044,
+      "end_sec": 123.059,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "d08a89c7-2e94-4b27-bc0a-fbaba5eb8b52",
+      "text": "little",
+      "start_sec": 123.064,
+      "end_sec": 123.199,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "6d1d1f79-f994-436a-9408-82fe0418d6a6",
+      "text": "to",
+      "start_sec": 123.26,
+      "end_sec": 123.275,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "68bdab9f-56fa-403e-8d36-dbf94f266a68",
+      "text": "copy",
+      "start_sec": 123.28,
+      "end_sec": 123.295,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "93ee5ba4-1ad1-44af-a1e5-c961efd2d5a9",
+      "text": "the",
+      "start_sec": 123.3,
+      "end_sec": 123.315,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "349de489-b2a8-4df2-9b45-10c58d03c885",
+      "text": "audio",
+      "start_sec": 123.32,
+      "end_sec": 123.335,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "5b456f4a-3c0f-4b79-9598-818aeb90f526",
+      "text": "of",
+      "start_sec": 123.34,
+      "end_sec": 123.355,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "e22c914a-2a1d-4229-9b57-4340a79d0482",
+      "text": "the",
+      "start_sec": 123.36,
+      "end_sec": 123.375,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "93ac405a-4275-46a9-9c64-89c8ae7688b9",
+      "text": "form.",
+      "start_sec": 123.38,
+      "end_sec": 123.395,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "3e4cb762-37fe-4ca6-8e47-a8252988422f",
+      "text": "Cp.",
+      "start_sec": 123.4,
+      "end_sec": 123.415,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "39ac8725-ae6c-4331-912e-d27c23571a3a",
+      "text": "The",
+      "start_sec": 123.42,
+      "end_sec": 123.44,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "c2b11843-6daf-45c1-a0a8-c9df592adcd2",
+      "text": "Kattril,",
+      "start_sec": 128.664,
+      "end_sec": 129.664,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "a2efae19-c5cc-42b6-b14e-df8d941bab6e",
+      "text": "ilayai",
+      "start_sec": 131.004,
+      "end_sec": 131.699,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "123ed5d4-0212-4334-9d2c-9dbdbd4a21b4",
+      "text": "poul,",
+      "start_sec": 131.704,
+      "end_sec": 132.679,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "54721a38-aa69-46b7-a150-fe0506c4eba5",
+      "text": "pidiayai",
+      "start_sec": 132.684,
+      "end_sec": 133.684,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "7a5d65c1-3639-46b4-bf52-071fd26b97fb",
+      "text": "tedi,",
+      "start_sec": 133.804,
+      "end_sec": 134.804,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "61fbfd84-cb3a-46bc-b030-08fc386ba091",
+      "text": "thavikki",
+      "start_sec": 135.044,
+      "end_sec": 135.679,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "febe218a-79b8-4074-bed0-f0746593ef1d",
+      "text": "nuen.",
+      "start_sec": 135.684,
+      "end_sec": 136.684,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "4163fde8-cbd8-47c0-befb-c26a9b463999",
+      "text": "Oru",
+      "start_sec": 137.004,
+      "end_sec": 138.004,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "e3d6c347-07aa-4bb0-ba87-93b69593dba2",
+      "text": "nodi,",
+      "start_sec": 138.204,
+      "end_sec": 139.099,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "58776be4-2342-4bdf-affd-a0cf49e8e7b0",
+      "text": "sara",
+      "start_sec": 139.104,
+      "end_sec": 139.579,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "941f4c08-74de-4bda-afb4-0a25062425ec",
+      "text": "lana,",
+      "start_sec": 139.584,
+      "end_sec": 140.584,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "6a0a5dcf-8a74-44f3-8b14-ce71508a2515",
+      "text": "maru",
+      "start_sec": 141.164,
+      "end_sec": 142.164,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "6c9ab42b-ed1d-423b-a892-3e8c21d641b2",
+      "text": "nodi,",
+      "start_sec": 142.264,
+      "end_sec": 143.039,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "e160a285-d203-4484-ad1c-eb73ca4f7e43",
+      "text": "kanalana.",
+      "start_sec": 143.044,
+      "end_sec": 144.044,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "f6018ded-6380-4eb0-a729-61bb5484c380",
+      "text": "Enakkuu",
+      "start_sec": 145.644,
+      "end_sec": 146.519,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "6e144c2a-b8b0-40b9-8ce3-77e4c9a17dd9",
+      "text": "Peeditthamunnay,",
+      "start_sec": 146.524,
+      "end_sec": 147.524,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "c4ca18aa-858c-4973-96bb-afb5add5ca76",
+      "text": "engu",
+      "start_sec": 149.804,
+      "end_sec": 150.379,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "8732730f-6ee8-4e42-b046-b5282989fb1e",
+      "text": "nee",
+      "start_sec": 150.384,
+      "end_sec": 150.799,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "fd89fea1-443f-410d-9680-15031a9f9c83",
+      "text": "tholai",
+      "start_sec": 150.804,
+      "end_sec": 151.519,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "60ea0460-b5af-4910-bf8d-e5f6028d0eb5",
+      "text": "thai.",
+      "start_sec": 151.524,
+      "end_sec": 152.524,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "6d7cd045-929d-4f41-8ae7-acc3f8a9fff9",
+      "text": "Oonakku",
+      "start_sec": 153.024,
+      "end_sec": 154.024,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "2a94b10d-bc98-455d-9785-747eeadafe8c",
+      "text": "Peeditthamunnay,",
+      "start_sec": 154.404,
+      "end_sec": 155.404,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "f22905f6-9be1-4a25-bacd-876156756ae7",
+      "text": "engu",
+      "start_sec": 157.924,
+      "end_sec": 158.739,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "92d6db4c-5a82-449b-b027-65b6ae8401dd",
+      "text": "nangu",
+      "start_sec": 158.744,
+      "end_sec": 159.199,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "1175fd50-3c28-4586-9c8c-91a3ec6d0455",
+      "text": "vythai.",
+      "start_sec": 159.204,
+      "end_sec": 160.204,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "1dcf24fb-03cc-4973-adfd-0db1b25e6996",
+      "text": "En",
+      "start_sec": 161.384,
+      "end_sec": 161.699,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "857c88b6-d7eb-44de-8b91-729c91265f01",
+      "text": "mooyirai",
+      "start_sec": 161.704,
+      "end_sec": 162.499,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "191920dd-9b82-4ad7-af7d-d6c14d588fe8",
+      "text": "unnum,",
+      "start_sec": 162.504,
+      "end_sec": 163.504,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "18bd858f-a6f7-465a-8d7b-ffebdc53a996",
+      "text": "en",
+      "start_sec": 164.044,
+      "end_sec": 165.044,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "b087ac6a-8657-471f-a853-2633dd56a353",
+      "text": "mooyirai",
+      "start_sec": 165.684,
+      "end_sec": 166.459,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "11cf7f0f-7cdc-41eb-92ac-75138b7136cc",
+      "text": "unnum,",
+      "start_sec": 166.464,
+      "end_sec": 167.464,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "45541efa-1dc9-4e35-8f2e-eb42d892e1c8",
+      "text": "en",
+      "start_sec": 168.584,
+      "end_sec": 169.584,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "9336eb22-4cee-4e87-8161-30e5555e4ee8",
+      "text": "mooyirai",
+      "start_sec": 169.704,
+      "end_sec": 170.479,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "8e23523e-9f0d-4d37-9da4-15ea54afca0e",
+      "text": "unnum,",
+      "start_sec": 170.484,
+      "end_sec": 171.484,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "b66debd3-71cc-4c1b-b317-c26be9415856",
+      "text": "thén",
+      "start_sec": 171.844,
+      "end_sec": 172.159,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "6016036b-82ca-4e7a-af37-6d35a449b94e",
+      "text": "zoolaray,",
+      "start_sec": 172.164,
+      "end_sec": 173.164,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "52ef9695-9172-48ba-bb46-eb3fe60260d6",
+      "text": "en",
+      "start_sec": 173.204,
+      "end_sec": 173.719,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    },
+    {
+      "id": "4c7cf293-a68c-476f-8723-f37058de53e6",
+      "text": "mooyirai",
+      "start_sec": 173.724,
+      "end_sec": 174.724,
+      "confidence": null,
+      "quality_score": 0.88,
+      "quality_label": "trusted",
+      "source_pass": "primary"
+    }
+  ]
+}

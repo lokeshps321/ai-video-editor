@@ -77,3 +77,7 @@ setup_battery_fix.sh
 .vercelignore
 .env*
 *.AppImage
+
+# Vocal-separator model weights (hundreds of MB, downloaded on demand).
+# Kept out of /tmp so a reboot does not silently disable vocal isolation.
+backend/models/

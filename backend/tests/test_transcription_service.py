@@ -1143,7 +1143,16 @@ def test_generate_transcript_music_profile_uses_lyric_prompt_by_default(
         ts, "_build_from_faster_whisper", lambda *_args, **_kwargs: _payload(3)
     )
 
+    # Language is auto-detect here, so the built-in *English* lyric prompt must
+    # NOT be sent: Whisper treats `prompt` as a decoder prefix, and English
+    # prose biases a Tamil song into romanized Latin output.
     ts.generate_transcript("sample.mp4", 20.0)
+    assert seen_calls[0] == ("whisper-large-v3", None)
+    assert seen_calls[1] == ("whisper-large-v3-turbo", None)
+
+    # With the language known to be English the prompt is safe and still used.
+    seen_calls.clear()
+    ts.generate_transcript("sample.mp4", 20.0, language_hint="en")
     assert seen_calls[0] == ("whisper-large-v3", ts.DEFAULT_MUSIC_RETRY_PROMPT)
     assert seen_calls[1] == ("whisper-large-v3-turbo", ts.DEFAULT_MUSIC_RETRY_PROMPT)
 
@@ -3071,3 +3080,127 @@ def test_redistribute_flat_timings_proportional_within_runs() -> None:
     # Marked low-trust
     assert all(word.quality_label == "weak" for word in result)
     assert all(word.quality_score == 0.4 for word in result)
+
+
+# ---------------------------------------------------------------------------
+# Language-safe prompting (a Tamil song must not be prefixed with English prose)
+# ---------------------------------------------------------------------------
+
+
+def test_english_music_prompt_is_blocked_for_unknown_language():
+    """Auto-detect means we do not know the language, so no English prefix."""
+    assert ts._english_music_prompt_allowed(None) is False
+
+
+def test_english_music_prompt_is_blocked_for_indic_language():
+    for code in ("ta", "hi", "kn", "te", "ml"):
+        assert ts._english_music_prompt_allowed(code) is False, code
+
+
+def test_english_music_prompt_is_allowed_for_english():
+    assert ts._english_music_prompt_allowed("en") is True
+
+
+def test_music_strategy_drops_default_prompt_for_tamil():
+    primary, retry, _ = ts._resolve_groq_prompt_strategy(
+        "music", None, None, False, configured_language="ta"
+    )
+    assert primary is None
+    assert retry is None
+
+
+def test_music_strategy_keeps_default_prompt_for_english():
+    primary, retry, _ = ts._resolve_groq_prompt_strategy(
+        "music", None, None, False, configured_language="en"
+    )
+    assert primary == ts.DEFAULT_MUSIC_RETRY_PROMPT
+    assert retry == ts.DEFAULT_MUSIC_RETRY_PROMPT
+
+
+def test_music_strategy_honours_explicit_operator_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An operator who sets a prompt deliberately keeps it for any language."""
+    monkeypatch.setenv("TRANSCRIBE_GROQ_PROMPT_MUSIC", "custom tamil prompt")
+    primary, _retry, _ = ts._resolve_groq_prompt_strategy(
+        "music", None, None, False, configured_language="ta"
+    )
+    assert primary == "custom tamil prompt"
+
+
+def test_music_prompt_language_allowlist_is_configurable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRANSCRIBE_GROQ_MUSIC_PROMPT_LANGUAGES", "all")
+    assert ts._english_music_prompt_allowed("ta") is True
+
+
+# ---------------------------------------------------------------------------
+# Romanized Indic output must be re-run pinned to the Indic language, not English
+# ---------------------------------------------------------------------------
+
+
+def _romanized_tamil_payload(language: str) -> TranscriptPayload:
+    """Latin-script output long enough to trip _looks_like_latin_music_lyrics."""
+    entries = [
+        (float(i), float(i) + 0.4, token)
+        for i, token in enumerate(
+            ["kattril", "ilayai", "poul", "pidiayai", "tedi", "thavikkinuen"]
+        )
+    ]
+    payload = _payload_with_entries(entries, source="groq")
+    return TranscriptPayload(
+        source=payload.source,
+        language=language,
+        text=payload.text,
+        words=payload.words,
+        is_mock=False,
+    )
+
+
+def _run_latin_music_rerun(
+    monkeypatch: pytest.MonkeyPatch, detected_language: str
+) -> list[str | None]:
+    monkeypatch.setenv("TRANSCRIBE_BACKEND", "groq")
+    monkeypatch.setenv("TRANSCRIBE_PROFILE", "music")
+    monkeypatch.setenv("TRANSCRIBE_LANGUAGE", "")
+    monkeypatch.setenv("TRANSCRIBE_GROQ_ENABLE_RETRY", "false")
+    monkeypatch.setenv("TRANSCRIBE_HALLUCINATION_FILTER", "false")
+    monkeypatch.setenv("TRANSCRIBE_ENABLE_GAP_RESCUE", "false")
+
+    seen_languages: list[str | None] = []
+
+    def fake_groq(
+        _path: str,
+        _duration_sec: float,
+        *,
+        model_name: str = "whisper-large-v3",
+        prompt: str | None = None,
+        language_hint: str | None = None,
+        translate_to_english: bool | None = None,
+    ) -> TranscriptPayload | None:
+        seen_languages.append(language_hint)
+        return _romanized_tamil_payload(detected_language)
+
+    monkeypatch.setattr(ts, "_build_from_groq", fake_groq)
+    ts.generate_transcript("sample.mp4", 20.0)
+    return seen_languages
+
+
+def test_latin_music_rerun_pins_detected_indic_language(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Romanized Tamil must be retried as Tamil, never as English."""
+    seen = _run_latin_music_rerun(monkeypatch, "Tamil")
+
+    assert "ta" in seen, seen
+    assert "en" not in seen, seen
+
+
+def test_latin_music_rerun_still_probes_english_for_latin_language(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A genuinely Latin-script language keeps the original English probe."""
+    seen = _run_latin_music_rerun(monkeypatch, "German")
+
+    assert "en" in seen, seen

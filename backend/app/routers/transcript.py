@@ -81,6 +81,7 @@ from ..transcription_service import (
     TranscriptWordPayload,
     _detect_indic_script_languages,
     _normalize_detected_language,
+    consume_vocal_isolation_warning,
     generate_transcript,
     infer_source_pass,
     sanitize_transcript_words,
@@ -2446,6 +2447,15 @@ def _generate_transcript_response(
         finally:
             _force_gc()
             _transcript_semaphore.release()
+
+        # Vocal isolation degrading to the full mix used to be a log-only event,
+        # and the app writes no log files — so a music-contaminated transcript
+        # was indistinguishable from a clean one. Surface it on the job.
+        isolation_warning = consume_vocal_isolation_warning()
+        if isolation_warning:
+            logger.warning("[transcript] %s", isolation_warning)
+            if progress_callback:
+                progress_callback(76, isolation_warning)
 
         if (
             transcript_payload.words

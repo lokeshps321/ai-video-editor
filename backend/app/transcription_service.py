@@ -1738,11 +1738,37 @@ def _resolve_transcription_profile(path: str, duration_sec: float) -> str:
     return "mixed"
 
 
+def _english_music_prompt_allowed(configured_language: str | None) -> bool:
+    """Is it safe to prefix the decoder with the English music prompt?
+
+    Whisper's ``prompt`` is a decoder prefix, so English prose biases token
+    selection toward English. On a Tamil song that is enough to make the model
+    emit romanized Latin instead of Tamil script. Only apply the built-in
+    English prompt when we actually know the audio is English; for unknown
+    ("auto") or Indic audio, send no prompt at all.
+    """
+    allowed = {
+        token.strip().lower()
+        for token in (
+            os.getenv("TRANSCRIBE_GROQ_MUSIC_PROMPT_LANGUAGES", "en") or "en"
+        ).split(",")
+        if token.strip()
+    }
+    if "all" in allowed:
+        return True
+    normalized = _normalize_language_code(configured_language)
+    if normalized is None:
+        return False
+    return normalized in allowed
+
+
 def _resolve_groq_prompt_strategy(
     profile: str,
     primary_prompt: str | None,
     retry_prompt: str | None,
     retry_try_no_prompt: bool,
+    *,
+    configured_language: str | None = None,
 ) -> tuple[str | None, str | None, bool]:
     if profile == "speech":
         speech_primary_prompt = (
@@ -1756,15 +1782,22 @@ def _resolve_groq_prompt_strategy(
         )
         return speech_primary_prompt, speech_retry_prompt, speech_retry_try_no_prompt
     if profile == "music":
+        # An operator-supplied prompt always wins; only the built-in English
+        # default is language-gated.
+        default_music_prompt = (
+            DEFAULT_MUSIC_RETRY_PROMPT
+            if _english_music_prompt_allowed(configured_language)
+            else None
+        )
         music_primary_prompt = (
             (os.getenv("TRANSCRIBE_GROQ_PROMPT_MUSIC", "") or "").strip()
             or primary_prompt
-            or DEFAULT_MUSIC_RETRY_PROMPT
+            or default_music_prompt
         )
         music_retry_prompt = (
             (os.getenv("TRANSCRIBE_GROQ_RETRY_PROMPT_MUSIC", "") or "").strip()
             or retry_prompt
-            or DEFAULT_MUSIC_RETRY_PROMPT
+            or default_music_prompt
         )
         music_retry_try_no_prompt = _env_bool(
             "TRANSCRIBE_GROQ_RETRY_TRY_NO_PROMPT_MUSIC", False
@@ -2113,6 +2146,7 @@ def _prepare_vocal_stem_with_command(
         "output_path": str(output_path_hint),
         "stem": stem_name,
         "model": model_name,
+        "model_dir": _vocal_isolation_model_dir(),
         "device": device,
     }
     cmd = _render_command_template_tokens(command_template, mapping)
@@ -2126,6 +2160,9 @@ def _prepare_vocal_stem_with_command(
 
     def _run_separator(env_overrides: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
         run_env = os.environ.copy()
+        # Without this the separator caches weights under /tmp, which the OS
+        # clears on reboot; isolation then fails silently on the next run.
+        run_env["AUDIO_SEPARATOR_MODEL_DIR"] = _vocal_isolation_model_dir()
         if env_overrides:
             run_env.update(env_overrides)
         return subprocess.run(
@@ -2542,8 +2579,48 @@ def _prepare_with_vocal_backend(path: str, backend: str) -> tuple[str, Path | No
     return path, None
 
 
+def _vocal_isolation_model_dir() -> str:
+    """Persistent directory for separator model weights.
+
+    ``audio-separator`` defaults to ``/tmp/audio-separator-models/``, which is
+    wiped on reboot — after which isolation silently fails and every song is
+    transcribed with full backing music. Pin it somewhere durable instead.
+    """
+    raw = (
+        os.getenv("TRANSCRIBE_VOCAL_ISOLATION_MODEL_DIR", "")
+        or os.getenv("AUDIO_SEPARATOR_MODEL_DIR", "")
+    ).strip()
+    if raw:
+        return str(Path(raw).expanduser())
+    return str(Path(__file__).resolve().parent.parent / "models" / "audio-separator")
+
+
+def _set_vocal_isolation_status(status: str) -> None:
+    _TRANSCRIPTION_RUNTIME.vocal_isolation_status = status
+
+
+def consume_vocal_isolation_warning() -> str | None:
+    """Return a one-shot warning when isolation was wanted but unavailable.
+
+    Callers (the transcript job runner) surface this to the user. Previously
+    this degradation was only a log line, and the app writes no log files, so a
+    silently music-contaminated transcript looked identical to a clean one.
+    """
+    status = getattr(_TRANSCRIPTION_RUNTIME, "vocal_isolation_status", None)
+    _TRANSCRIPTION_RUNTIME.vocal_isolation_status = None
+    if status != "unavailable":
+        return None
+    return (
+        "Vocal isolation was unavailable, so the transcript was generated from "
+        "the full mix (background music included). Accuracy on songs will be "
+        "reduced. Check that the separator model exists in "
+        f"{_vocal_isolation_model_dir()}."
+    )
+
+
 def _prepare_vocal_isolation_source(path: str) -> tuple[str, Path | None]:
     if not _env_bool("TRANSCRIBE_VOCAL_ISOLATION_ENABLED", True):
+        _set_vocal_isolation_status("disabled")
         return path, None
 
     duet_mode = bool(getattr(_TRANSCRIPTION_RUNTIME, "duet_mode", False))
@@ -2555,6 +2632,7 @@ def _prepare_vocal_isolation_source(path: str) -> tuple[str, Path | None]:
         precomputed_path = source_dir / stem_filename
         if precomputed_path.exists() and precomputed_path.stat().st_size > 0:
             _perf_logger.info("[transcribe] using pre-computed vocal stem: %s", precomputed_path)
+            _set_vocal_isolation_status("ok")
             return str(precomputed_path), None
 
     # Check if high-quality mode is enabled - uses the best available model
@@ -2571,6 +2649,7 @@ def _prepare_vocal_isolation_source(path: str) -> tuple[str, Path | None]:
             os.getenv("TRANSCRIBE_VOCAL_ISOLATION_BACKEND", "auto") or "auto"
         )
     if requested_backend == "none":
+        _set_vocal_isolation_status("disabled")
         return path, None
 
     candidates: list[str] = []
@@ -2585,6 +2664,7 @@ def _prepare_vocal_isolation_source(path: str) -> tuple[str, Path | None]:
     candidates.extend(fallback_candidates)
     if not candidates:
         _perf_logger.warning("[transcribe] no vocal isolation backends available; using original audio")
+        _set_vocal_isolation_status("unavailable")
         return path, None
 
     seen: set[str] = set()
@@ -2600,10 +2680,16 @@ def _prepare_vocal_isolation_source(path: str) -> tuple[str, Path | None]:
             _is_distinct_isolated_source(prepared_source, path)
             and Path(prepared_source).exists()
         ):
+            _set_vocal_isolation_status("ok")
             return prepared_source, cleanup_path
         _cleanup_temp_path(cleanup_path)
 
-    _perf_logger.warning("[transcribe] vocal isolation produced no valid stem; using original audio")
+    _perf_logger.warning(
+        "[transcribe] vocal isolation produced no valid stem; using original audio "
+        "(model dir: %s)",
+        _vocal_isolation_model_dir(),
+    )
+    _set_vocal_isolation_status("unavailable")
     return path, None
 
 
@@ -3496,6 +3582,7 @@ def generate_transcript(
                 groq_primary_prompt,
                 groq_retry_prompt,
                 groq_retry_try_no_prompt,
+                configured_language=configured_language,
             )
         )
         groq_retry_enabled = (
@@ -3859,28 +3946,47 @@ def generate_transcript(
                         and _looks_like_latin_music_lyrics(groq_result)
                         and _normalize_detected_language(groq_result.language) != "en"
                     ):
-                        en_groq_kwargs: dict[str, object] = {
+                        detected_code = _normalize_detected_language(
+                            groq_result.language
+                        )
+                        # Latin-looking output for a language that is not written
+                        # in Latin means Whisper romanized it, not that the song
+                        # is English. Re-run pinned to the detected language so it
+                        # emits native script; only fall back to probing English
+                        # when the detected language really is Latin-script.
+                        retry_language = (
+                            detected_code
+                            if _is_indic_language(detected_code)
+                            else "en"
+                        )
+                        retry_groq_kwargs: dict[str, object] = {
                             "model_name": groq_primary_model,
-                            "prompt": groq_primary_prompt,
-                            "language_hint": "en",
+                            # No prompt on the pinned re-run: an English prefix is
+                            # what produced the romanized output in the first place.
+                            "prompt": (
+                                None
+                                if retry_language != "en"
+                                else groq_primary_prompt
+                            ),
+                            "language_hint": retry_language,
                         }
                         if translate_to_english is not None:
-                            en_groq_kwargs["translate_to_english"] = (
+                            retry_groq_kwargs["translate_to_english"] = (
                                 translate_to_english
                             )
-                        en_result = _call_groq(
+                        retry_result = _call_groq(
                             path,
                             safe_duration,
-                            **en_groq_kwargs,
+                            **retry_groq_kwargs,
                         )
-                        preferred_en = _pick_better_transcript_with_language(
+                        preferred_retry = _pick_better_transcript_with_language(
                             groq_result,
-                            en_result,
+                            retry_result,
                             safe_duration,
-                            "en",
+                            retry_language,
                         )
-                        if preferred_en is not None:
-                            groq_result = preferred_en
+                        if preferred_retry is not None:
+                            groq_result = preferred_retry
                     if (
                         fast_mode_enabled
                         and music_auto_routing
