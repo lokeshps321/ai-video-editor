@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import hashlib
 import logging
 import unicodedata
@@ -60,6 +61,199 @@ try:
 except ImportError:
     INDIC_LIB_AVAILABLE = False
     logger.warning("indic-transliteration library not available, using basic fallback")
+
+
+@lru_cache(maxsize=1)
+def _get_genai_client(api_key: str):
+    """Build the Gemini client once per API key.
+
+    Uses `google-genai`, not the deprecated `google-generativeai` package --
+    the old SDK stopped receiving updates and bug fixes.
+    """
+    from google import genai
+
+    return genai.Client(api_key=api_key)
+
+
+# Free-tier Gemini allows only a handful of requests per minute, and a
+# transcript is transliterated in several chunks back to back. Without this the
+# first 429 silently demotes the whole transcript to rule-based romanization.
+_GEMINI_MAX_RETRIES = int(os.getenv("TRANSLITERATION_GEMINI_MAX_RETRIES", "2"))
+_GEMINI_MAX_RETRY_WAIT_SEC = float(
+    os.getenv("TRANSLITERATION_GEMINI_MAX_RETRY_WAIT_SEC", "15")
+)
+
+
+def _build_generation_config(types_mod, *, temperature: float, output_tokens: int):
+    """Config for a transliteration call.
+
+    Gemini 2.5/3.x are *thinking* models: reasoning tokens are drawn from
+    `max_output_tokens`. Measured on gemini-3.5-flash, a 256-token budget was
+    spent 244-on-thinking / 8-on-answer, so the reply came back truncated
+    mid-word and the caller silently demoted to rule-based romanization.
+    Transliteration is mechanical, so thinking is switched off outright and the
+    whole budget goes to the answer.
+    """
+    kwargs = {
+        "temperature": temperature,
+        "max_output_tokens": output_tokens,
+    }
+    thinking_config_cls = getattr(types_mod, "ThinkingConfig", None)
+    if thinking_config_cls is not None:
+        try:
+            kwargs["thinking_config"] = thinking_config_cls(thinking_budget=0)
+        except Exception:  # noqa: BLE001 - older SDKs / models without thinking
+            pass
+    return types_mod.GenerateContentConfig(**kwargs)
+
+
+def _transliteration_output_tokens(text: str) -> int:
+    """Token budget for a transliteration answer, with headroom."""
+    return max(512, len(text) * 4)
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    text = str(exc)
+    return "429" in text or "RESOURCE_EXHAUSTED" in text
+
+
+def _rate_limit_retry_delay(exc: Exception) -> float:
+    """Seconds to wait, preferring the server's own retryDelay hint."""
+    match = re.search(r"'retryDelay':\s*'(\d+(?:\.\d+)?)s'", str(exc))
+    if match:
+        try:
+            return min(float(match.group(1)) + 1.0, _GEMINI_MAX_RETRY_WAIT_SEC)
+        except ValueError:
+            pass
+    return min(5.0, _GEMINI_MAX_RETRY_WAIT_SEC)
+
+
+def _generate_with_retry(client, **kwargs):
+    """Call Gemini, retrying only on rate-limit errors.
+
+    Any other failure is raised immediately -- retrying a bad request or a bad
+    API key just wastes time before the caller's fallback runs.
+    """
+    attempt = 0
+    while True:
+        try:
+            return client.models.generate_content(**kwargs)
+        except Exception as exc:  # noqa: BLE001 - re-raised below unless 429
+            if attempt >= _GEMINI_MAX_RETRIES or not _is_rate_limit_error(exc):
+                raise
+            delay = _rate_limit_retry_delay(exc)
+            attempt += 1
+            logger.info(
+                "Gemini rate-limited, retrying in %.1fs (attempt %d/%d)",
+                delay,
+                attempt,
+                _GEMINI_MAX_RETRIES,
+            )
+            time.sleep(delay)
+
+
+# ---------------------------------------------------------------------------
+# IndicXlit: offline neural transliteration (AI4Bharat)
+# ---------------------------------------------------------------------------
+#
+# Sits between Gemini and the rule-based library: near-Gemini "natural" output
+# quality (trained on 26M real romanization pairs), but fully local -- no API
+# key, no rate limit, no network dependency. Word-level by design, so it
+# preserves exact word count/order, unlike Gemini (thinking-token truncation,
+# free-tier 429s) or Sarvam's transliterate endpoint (reinterprets whole
+# sentences and does not preserve word boundaries once given >1 word).
+
+USE_INDICXLIT = _env_bool("TRANSLITERATE_USE_INDICXLIT", True)
+
+# Our script names -> IndicXlit's 2/3-letter language codes.
+_INDICXLIT_LANG_CODES: dict[str, str] = {
+    "kannada": "kn",
+    "devanagari": "hi",
+    "tamil": "ta",
+    "telugu": "te",
+    "malayalam": "ml",
+    "bengali": "bn",
+    "gujarati": "gu",
+    "punjabi": "pa",
+    "odia": "or",
+}
+
+
+@lru_cache(maxsize=1)
+def _indicxlit_engine():
+    """Load the IndicXlit indic->English model once per process.
+
+    Returns None (never raises) when the package/model isn't available, so
+    every caller can treat "no engine" as just another fallback trigger.
+    """
+    try:
+        import argparse
+
+        import torch
+
+        # fairseq (IndicXlit's dependency, unmaintained since ~2022) calls
+        # torch.load() without weights_only=False. PyTorch >=2.6 defaults
+        # weights_only=True and rejects argparse.Namespace in the checkpoint.
+        # Allowlisting only this one known-safe stdlib class avoids disabling
+        # pickle safety entirely.
+        torch.serialization.add_safe_globals([argparse.Namespace])
+
+        from ai4bharat.transliteration import XlitEngine
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("IndicXlit unavailable, skipping: %s", exc)
+        return None
+    try:
+        return XlitEngine(beam_width=4, src_script_type="indic")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("IndicXlit failed to load: %s", exc)
+        return None
+
+
+def _transliterate_words_with_indicxlit(
+    words: list[dict], script: str
+) -> list[dict] | None:
+    """Word-level transliteration via IndicXlit. Always preserves word count."""
+    if not USE_INDICXLIT or not words:
+        return None
+    lang_code = _INDICXLIT_LANG_CODES.get(script)
+    if lang_code is None:
+        return None
+    engine = _indicxlit_engine()
+    if engine is None:
+        return None
+
+    results: list[dict] = []
+    for word in words:
+        original_text = str(word.get("text", ""))
+        new_word = dict(word)
+        new_word["original_text"] = original_text
+        token = original_text.strip()
+        if not token:
+            new_word["text"] = original_text
+            results.append(new_word)
+            continue
+        try:
+            candidates = engine.translit_word(token, lang_code=lang_code, topk=1)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("IndicXlit word transliteration failed: %s", exc)
+            return None
+        if not candidates:
+            new_word["text"] = original_text
+        else:
+            new_word["text"] = str(candidates[0]).lower()
+        results.append(new_word)
+    return results
+
+
+def _transliterate_with_indicxlit(text: str, script: str) -> str | None:
+    """Single-string transliteration via IndicXlit, for the non-batch path."""
+    if not text.strip():
+        return None
+    words = [{"id": str(i), "text": token} for i, token in enumerate(text.split())]
+    result = _transliterate_words_with_indicxlit(words, script)
+    if result is None:
+        return None
+    return " ".join(str(w["text"]) for w in result)
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +392,11 @@ CRITICAL RULES:
 4. Keep the EXACT same number of words as the input. Each input word = exactly one output word.
 5. Preserve word boundaries precisely — don't merge or split words.
 6. Lowercase everything unless it's a proper name.
+7. NEVER collapse or deduplicate repeated words. Song lyrics repeat lines on
+   purpose. If a word or phrase appears 3 times in the input, it MUST appear 3
+   times in the output, in the same positions.
+   Example: "தேன் சுடரே தேன் சுடரே" (4 words) → "thaen sudarae thaen sudarae" (4 words),
+   NOT "thaen sudarae" (2 words).
 
 EXAMPLES of good romanized output:
 - Hindi: "दिल" → "dil", "प्यार" → "pyaar", "मोहब्बत" → "mohabbat", "ख्वाहिश" → "khwahish"
@@ -221,9 +420,9 @@ def _transliterate_with_llm(text: str, script: str) -> str | None:
         return None
 
     try:
-        import google.generativeai as genai
+        from google.genai import types
     except ImportError:
-        logger.warning("google-generativeai package missing, falling back to library transliteration")
+        logger.warning("google-genai package missing, falling back to library transliteration")
         return None
 
     # Check cache first
@@ -256,22 +455,26 @@ Text to transliterate:
 Return ONLY the transliterated text, nothing else."""
 
     try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(GEMINI_TRANSLITERATION_MODEL)
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.types.GenerationConfig(
+        client = _get_genai_client(api_key)
+        response = _generate_with_retry(
+            client,
+            model=GEMINI_TRANSLITERATION_MODEL,
+            contents=prompt,
+            config=_build_generation_config(
+                types,
                 temperature=0.1,
-                max_output_tokens=max(256, len(text) * 3),
-            )
+                output_tokens=_transliteration_output_tokens(text),
+            ),
         )
 
-        result = response.text.strip()
+        # Clean up markdown/quotes/preamble BEFORE validating. The model
+        # sometimes answers with a bulleted list that echoes the original
+        # script; validating first rejected those as "not ASCII enough" even
+        # though the cleaned line was a perfectly good romanization.
+        result = _clean_llm_response((response.text or "").strip())
 
         # Basic validation - result should be mostly ASCII
         if result and sum(1 for c in result if ord(c) < 128) / len(result) > 0.9:
-            # Clean up any markdown/quotes the LLM may have added
-            result = _clean_llm_response(result)
             # Cache the result
             _save_to_cache(text, script, result)
             return result
@@ -315,7 +518,7 @@ def _transliterate_words_with_llm(words: list[dict], script: str) -> list[dict] 
         return None
 
     try:
-        import google.generativeai as genai
+        from google.genai import types
     except ImportError:
         return None
 
@@ -325,9 +528,8 @@ def _transliterate_words_with_llm(words: list[dict], script: str) -> list[dict] 
     chunk_size = 50
     all_results: list[dict] = []
 
-    # Configure API and create model once, outside the chunk loop
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(GEMINI_TRANSLITERATION_MODEL)
+    # Build the client once, outside the chunk loop
+    client = _get_genai_client(api_key)
 
     for chunk_start in range(0, len(words), chunk_size):
         chunk = words[chunk_start : chunk_start + chunk_size]
@@ -353,17 +555,57 @@ def _transliterate_words_with_llm(words: list[dict], script: str) -> list[dict] 
         )
 
         try:
-            response = model.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
+            response = _generate_with_retry(
+                client,
+                model=GEMINI_TRANSLITERATION_MODEL,
+                contents=prompt,
+                config=_build_generation_config(
+                    types,
                     temperature=0.05,
-                    max_output_tokens=max(256, len(combined_text) * 3),
-                )
+                    output_tokens=_transliteration_output_tokens(combined_text),
+                ),
             )
 
-            result_text = response.text.strip()
-            result_text = _clean_llm_response(result_text)
+            result_text = _clean_llm_response((response.text or "").strip())
             result_words = result_text.split()
+
+            # One corrective retry before demoting the chunk. The usual cause is
+            # the model deduplicating a repeated lyric line, and naming the
+            # actual counts back to it reliably fixes that.
+            if len(result_words) != len(original_texts):
+                logger.info(
+                    "LLM returned %d words, expected %d; retrying with an "
+                    "explicit count correction.",
+                    len(result_words), len(original_texts),
+                )
+                retry_prompt = (
+                    f"{prompt}\n\n"
+                    f"Your previous answer had {len(result_words)} words but the "
+                    f"input has exactly {len(original_texts)} words. Do NOT merge, "
+                    f"drop, or deduplicate repeated words. Output exactly "
+                    f"{len(original_texts)} space-separated romanized words."
+                )
+                try:
+                    retry_response = _generate_with_retry(
+                        client,
+                        model=GEMINI_TRANSLITERATION_MODEL,
+                        contents=retry_prompt,
+                        config=_build_generation_config(
+                            types,
+                            temperature=0.0,
+                            output_tokens=_transliteration_output_tokens(
+                                combined_text
+                            ),
+                        ),
+                    )
+                    retry_text = _clean_llm_response(
+                        (retry_response.text or "").strip()
+                    )
+                    retry_words = retry_text.split()
+                    if len(retry_words) == len(original_texts):
+                        result_text, result_words = retry_text, retry_words
+                except Exception as exc:  # noqa: BLE001 - fall through below
+                    logger.warning("Transliteration count-retry failed: %s", exc)
 
             # Validate word count matches
             if len(result_words) != len(original_texts):
@@ -579,6 +821,11 @@ def transliterate_text(text: str, script: str | None = None) -> str:
     if script is None:
         return text
 
+    # IndicXlit: offline, near-Gemini quality, no rate limits.
+    xlit_result = _transliterate_with_indicxlit(text, script)
+    if xlit_result is not None:
+        return xlit_result
+
     # Use library if available, with post-processing
     if INDIC_LIB_AVAILABLE and script in SCRIPT_TO_SANSCRIPT:
         raw_result = _transliterate_with_library(text, script)
@@ -623,7 +870,13 @@ def transliterate_words(
         if llm_result is not None:
             return llm_result
 
-    # Strategy 2: Per-word library transliteration with post-processing
+    # Strategy 2: IndicXlit -- offline, near-Gemini quality, no rate limits,
+    # and word-level by design so it always preserves count/order.
+    xlit_result = _transliterate_words_with_indicxlit(words, script)
+    if xlit_result is not None:
+        return xlit_result
+
+    # Strategy 3: Per-word library transliteration with post-processing
     result = []
     for word in words:
         new_word = dict(word)

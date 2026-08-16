@@ -1,6 +1,17 @@
 from __future__ import annotations
 
+import os
+
 import pytest
+
+# IndicXlit (offline neural transliteration) always "looks" available once the
+# package is installed, but loading it the first time downloads/initializes a
+# large local model -- multi-second even when cached, a real download attempt
+# (against no guaranteed network) when it isn't. Any test that reaches
+# transliterate_words()/transliterate_text() without mocking would otherwise
+# pay that cost once per test process and slow/flake the whole suite. Tests
+# that want to exercise this path stub `_indicxlit_engine` directly instead.
+os.environ.setdefault("TRANSLITERATE_USE_INDICXLIT", "false")
 
 from app.database import init_db
 from app.deps import get_current_user

@@ -2,7 +2,7 @@ fastapi==0.116.1
 uvicorn[standard]==0.35.0
 sqlmodel==0.0.24
 python-multipart==0.0.20
-pydantic==2.11.7
+pydantic==2.13.4
 psycopg[binary]==3.2.10
 groq>=0.9.0
 pytest==8.4.1
@@ -16,6 +16,19 @@ opencv-python-headless>=4.10,<5
 rq==1.16.2
 redis==5.2.1
 indic-transliteration>=2.3,<3
+# Gemini SDK for LLM transliteration. Must be `google-genai`, NOT the retired
+# `google-generativeai` package. This was missing entirely, so every Gemini
+# transliteration call raised ModuleNotFoundError into a bare except and
+# silently fell back to rule-based romanization.
+google-genai>=2.18,<3
+# Offline neural transliteration (AI4Bharat IndicXlit), used between Gemini
+# and the rule-based library: no API key, no rate limit, near-Gemini quality.
+# NOTE: pulls in a heavy transitive tree (fairseq, flask, pandas, sphinx docs
+# tooling, gevent) that this app does not otherwise need -- only fairseq/torch
+# are actually used at runtime. Requires the weights_only safe-globals
+# workaround in transliteration_service.py (fairseq predates PyTorch 2.6's
+# stricter torch.load default and is unmaintained upstream).
+ai4bharat-transliteration>=1.1,<2
 PyJWT>=2.8.0
 cryptography>=41.0.0
 yt-dlp==2026.7.4
