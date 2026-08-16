@@ -283,3 +283,33 @@ def test_disabled_isolation_produces_no_warning():
     ts._set_vocal_isolation_status("disabled")
 
     assert ts.consume_vocal_isolation_warning() is None
+
+
+def test_isolation_warning_names_the_real_cause():
+    """A generic 'model missing' hint once sent us hunting the wrong problem.
+
+    The separator was actually rejecting an unsupported CLI flag, so the
+    warning must carry the separator's own error text.
+    """
+    from app import transcription_service as ts
+
+    ts._set_vocal_isolation_status("unavailable")
+    ts._record_vocal_isolation_failure(
+        "audio-separator: error: unrecognized arguments: --max_duration"
+    )
+    warning = ts.consume_vocal_isolation_warning()
+
+    assert warning is not None
+    assert "unrecognized arguments" in warning
+
+
+def test_isolation_failure_detail_is_cleared_between_runs():
+    from app import transcription_service as ts
+
+    ts._set_vocal_isolation_status("unavailable")
+    ts._record_vocal_isolation_failure("boom")
+    assert "boom" in (ts.consume_vocal_isolation_warning() or "")
+
+    ts._set_vocal_isolation_status("unavailable")
+    second = ts.consume_vocal_isolation_warning() or ""
+    assert "boom" not in second

@@ -2264,6 +2264,7 @@ def _prepare_vocal_stem_with_command(
             "[transcribe] command vocal isolation produced no usable stem: %s",
             stderr_tail or f"rc={process.returncode}",
         )
+        _record_vocal_isolation_failure(stderr_tail or f"rc={process.returncode}")
         _cleanup_temp_path(work_dir)
         return path, None
     return str(stem_path), work_dir
@@ -2599,6 +2600,13 @@ def _set_vocal_isolation_status(status: str) -> None:
     _TRANSCRIPTION_RUNTIME.vocal_isolation_status = status
 
 
+def _record_vocal_isolation_failure(detail: str) -> None:
+    """Remember *why* separation failed so the warning can name the cause."""
+    cleaned = " ".join(str(detail or "").split())[-200:]
+    if cleaned:
+        _TRANSCRIPTION_RUNTIME.vocal_isolation_detail = cleaned
+
+
 def consume_vocal_isolation_warning() -> str | None:
     """Return a one-shot warning when isolation was wanted but unavailable.
 
@@ -2607,14 +2615,19 @@ def consume_vocal_isolation_warning() -> str | None:
     silently music-contaminated transcript looked identical to a clean one.
     """
     status = getattr(_TRANSCRIPTION_RUNTIME, "vocal_isolation_status", None)
+    detail = getattr(_TRANSCRIPTION_RUNTIME, "vocal_isolation_detail", None)
     _TRANSCRIPTION_RUNTIME.vocal_isolation_status = None
+    _TRANSCRIPTION_RUNTIME.vocal_isolation_detail = None
     if status != "unavailable":
         return None
+    # Name the real cause. A generic "model missing" hint sent us looking in the
+    # wrong place once already, when the separator was actually rejecting an
+    # unsupported CLI flag from the configured command template.
+    cause = detail or f"no stem produced (model dir: {_vocal_isolation_model_dir()})"
     return (
         "Vocal isolation was unavailable, so the transcript was generated from "
         "the full mix (background music included). Accuracy on songs will be "
-        "reduced. Check that the separator model exists in "
-        f"{_vocal_isolation_model_dir()}."
+        f"reduced. Separator reported: {cause}"
     )
 
 
