@@ -1206,7 +1206,6 @@ function App() {
   const transcriptFollowPlaybackRef = useRef(true);
   const transcriptProgrammaticScrollRef = useRef(false);
   const [isVideoPlaying, setIsVideoPlaying] = useState(false);
-  const activeWordRef = useRef<HTMLButtonElement | null>(null);
   const autoCreateAttemptedRef = useRef(false);
   const pendingCaptionSeekRef = useRef<{
     jobId: string;
@@ -2148,10 +2147,21 @@ function App() {
     });
   }, [brollSlots]);
 
+  // Debounced so typing doesn't rescan every word and rebuild the whole
+  // word list on each keystroke. The input itself stays fully controlled.
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
+  useEffect(() => {
+    const handle = window.setTimeout(
+      () => setDebouncedSearchQuery(searchQuery),
+      150,
+    );
+    return () => window.clearTimeout(handle);
+  }, [searchQuery]);
+
   // Search matches
   const searchMatchIds = useMemo(() => {
-    if (!transcript || !searchQuery.trim()) return [] as string[];
-    const q = searchQuery.toLowerCase().trim();
+    if (!transcript || !debouncedSearchQuery.trim()) return [] as string[];
+    const q = debouncedSearchQuery.toLowerCase().trim();
     return transcript.words
       .filter((word) => {
         const original = word.text.toLowerCase();
@@ -2162,7 +2172,7 @@ function App() {
         return original.includes(q) || romanized.includes(q);
       })
       .map((word) => word.id);
-  }, [transcript, searchQuery]);
+  }, [transcript, debouncedSearchQuery]);
 
   // O(1) lookup set for search matches (avoids .includes() per word in render loop)
   const searchMatchIdSet = useMemo(
@@ -4011,8 +4021,6 @@ function App() {
       }
 
       const isSelected = selectedWordIds.has(word.id);
-      const isActive =
-        activeWordId === word.id && (!isDeleted || previewRenderBusy);
       const isFiller = fillerWordIds.has(word.id) && !isDeleted;
       const isSearchMatch = searchMatchIdSet.has(word.id);
       const isCurrentMatch = searchMatchIds[searchMatchIndex] === word.id;
@@ -4034,14 +4042,12 @@ function App() {
           showRomanized={showRomanizedTranscript}
           isDeleted={isDeleted}
           isSelected={isSelected}
-          isActive={isActive}
           isFiller={isFiller}
           isSearchMatch={isSearchMatch}
           isCurrentMatch={isCurrentMatch}
           hasLowConfidence={hasLowConfidence}
           isWeakRegionWord={isWeakRegionWord}
           speakerSlot={speakerSlot}
-          activeWordRef={activeWordRef}
           isDraggingRef={isDragging}
           dragStartWordIdRef={dragStartWordId}
           selectWord={selectWord}
@@ -4061,8 +4067,6 @@ function App() {
     commitEdit,
     cancelEdit,
     selectedWordIds,
-    activeWordId,
-    previewRenderBusy,
     fillerWordIds,
     searchMatchIdSet,
     searchMatchIds,
@@ -5537,6 +5541,25 @@ function App() {
     updateDeletedWords,
   ]);
 
+  // The active-word highlight is applied straight to the DOM rather than
+  // passed down as a prop. `activeWordId` changes ~10x/sec during playback,
+  // and threading it through the word list would rebuild and reconcile every
+  // word node on each tick. `transcriptWordNodes` is a dependency so the
+  // class is re-applied after any rebuild of the list clears it.
+  const highlightedWordElRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const previous = highlightedWordElRef.current;
+    if (previous) previous.classList.remove("active");
+    highlightedWordElRef.current = null;
+
+    if (!activeWordId) return;
+    if (deletedWordIds.has(activeWordId) && !previewRenderBusy) return;
+    const el = document.getElementById(`word-${activeWordId}`);
+    if (!el) return;
+    el.classList.add("active");
+    highlightedWordElRef.current = el;
+  }, [activeWordId, deletedWordIds, previewRenderBusy, transcriptWordNodes]);
+
   // Auto-scroll to active word during playback (paused after manual scroll)
   useEffect(() => {
     if (!isVideoPlaying) return;
@@ -6151,6 +6174,57 @@ function App() {
   const showMobileTimeline =
     !isMobileEditor || mobileWorkspaceTab === "timeline";
 
+  // Rendered bare on desktop so `.editorPreviewDock` is a direct grid item of
+  // `.editorMainGrid` — that is what gives its `position: sticky` room to
+  // travel alongside the transcript column. On mobile it goes back inside the
+  // `.mobilePane` wrapper that isolates the tabbed panes.
+  const previewDockElement = (
+    <PreviewDock
+      previewSource={previewSource}
+      uploading={uploading}
+      videoRef={videoRef}
+      previewFrameAspectRatio={previewFrameAspectRatio}
+      exportAspectRatio={exportAspectRatio}
+      livePreviewCaption={livePreviewCaption}
+      shouldShowLiveCaptionOverlay={shouldShowLiveCaptionOverlay}
+      showExportFrameGuide={showExportFrameGuide}
+      previewRenderBusy={previewRenderBusy}
+      previewBusyDetail={previewBusyDetail}
+      previewProgress={previewProgress}
+      currentTimeSec={currentTimeSec}
+      previewStatusText={previewStatusText}
+      previewJob={previewJob}
+      previewUpdateQueued={previewUpdateQueued}
+      queueingPreview={queueingPreview}
+      canRenderPreview={!!project}
+      ingestingUrl={ingestingUrl}
+      ingestProgress={ingestProgress}
+      ingestStatusMessage={ingestStatusMessage}
+      onUploadVideo={(file) => void uploadVideo(file)}
+      onIngestUrl={(url) => void ingestVideoFromUrl(url)}
+      onLoadedMetadata={() => setCurrentTimeSec(0)}
+      onPlay={() => {
+        setIsVideoPlaying(true);
+        startPlaybackSync();
+      }}
+      onPause={() => {
+        setIsVideoPlaying(false);
+        stopPlaybackSync();
+        syncVideoTimeOnce();
+      }}
+      onSeeked={syncVideoTimeOnce}
+      onEnded={() => {
+        setIsVideoPlaying(false);
+        stopPlaybackSync();
+        syncVideoTimeOnce();
+      }}
+      onTimeUpdate={syncVideoTimeIfPlaying}
+      onFrameAspectRatioChange={changePreviewFrameAspectRatio}
+      onQueuePreview={() => void queuePreview()}
+      formatPreciseSeconds={formatPreciseSeconds}
+    />
+  );
+
   return (
     <div
       className={`appShell${project ? " appShellEditor" : ""}${isMobileEditor ? " isMobileEditor" : ""}`}
@@ -6356,55 +6430,16 @@ function App() {
             className={`editorWorkspace mobileTab-${mobileWorkspaceTab}${isMobileEditor ? " isMobileEditor" : ""}`}
           >
           <section className="editorMainGrid">
-            <div
-              className={`mobilePane mobilePanePreview${showMobilePreview ? "" : " is-mobile-hidden"}`}
-              aria-hidden={!showMobilePreview}
-            >
-            <PreviewDock
-              previewSource={previewSource}
-              uploading={uploading}
-              videoRef={videoRef}
-              previewFrameAspectRatio={previewFrameAspectRatio}
-              exportAspectRatio={exportAspectRatio}
-              livePreviewCaption={livePreviewCaption}
-              shouldShowLiveCaptionOverlay={shouldShowLiveCaptionOverlay}
-              showExportFrameGuide={showExportFrameGuide}
-              previewRenderBusy={previewRenderBusy}
-              previewBusyDetail={previewBusyDetail}
-              previewProgress={previewProgress}
-              currentTimeSec={currentTimeSec}
-              previewStatusText={previewStatusText}
-              previewJob={previewJob}
-              previewUpdateQueued={previewUpdateQueued}
-              queueingPreview={queueingPreview}
-              canRenderPreview={!!project}
-              ingestingUrl={ingestingUrl}
-              ingestProgress={ingestProgress}
-              ingestStatusMessage={ingestStatusMessage}
-              onUploadVideo={(file) => void uploadVideo(file)}
-              onIngestUrl={(url) => void ingestVideoFromUrl(url)}
-              onLoadedMetadata={() => setCurrentTimeSec(0)}
-              onPlay={() => {
-                setIsVideoPlaying(true);
-                startPlaybackSync();
-              }}
-              onPause={() => {
-                setIsVideoPlaying(false);
-                stopPlaybackSync();
-                syncVideoTimeOnce();
-              }}
-              onSeeked={syncVideoTimeOnce}
-              onEnded={() => {
-                setIsVideoPlaying(false);
-                stopPlaybackSync();
-                syncVideoTimeOnce();
-              }}
-              onTimeUpdate={syncVideoTimeIfPlaying}
-              onFrameAspectRatioChange={changePreviewFrameAspectRatio}
-              onQueuePreview={() => void queuePreview()}
-              formatPreciseSeconds={formatPreciseSeconds}
-            />
-            </div>
+            {isMobileEditor ? (
+              <div
+                className={`mobilePane mobilePanePreview${showMobilePreview ? "" : " is-mobile-hidden"}`}
+                aria-hidden={!showMobilePreview}
+              >
+                {previewDockElement}
+              </div>
+            ) : (
+              previewDockElement
+            )}
             <main
               className={`twoPanel mobilePane mobilePaneTranscript${showMobileTranscript ? "" : " is-mobile-hidden"}`}
               aria-hidden={!showMobileTranscript}

@@ -217,6 +217,15 @@ def _indicxlit_engine():
         return None
 
 
+# Process-wide memo of single-token transliterations, keyed by
+# (lang_code, token). Bounded so a long-running server can't grow unbounded.
+# Values are only valid for the engine that produced them, so the cache is
+# dropped whenever the engine instance changes.
+_TOKEN_CACHE: dict[tuple[str, str], str] = {}
+_TOKEN_CACHE_MAX = 200_000
+_TOKEN_CACHE_ENGINE: object | None = None
+
+
 def _transliterate_words_with_indicxlit(
     words: list[dict], script: str
 ) -> list[dict] | None:
@@ -230,6 +239,11 @@ def _transliterate_words_with_indicxlit(
     if engine is None:
         return None
 
+    global _TOKEN_CACHE_ENGINE
+    if _TOKEN_CACHE_ENGINE is not engine:
+        _TOKEN_CACHE.clear()
+        _TOKEN_CACHE_ENGINE = engine
+
     results: list[dict] = []
     for word in words:
         original_text = str(word.get("text", ""))
@@ -238,6 +252,14 @@ def _transliterate_words_with_indicxlit(
         token = original_text.strip()
         if not token:
             new_word["text"] = original_text
+            results.append(new_word)
+            continue
+        # Natural speech repeats tokens heavily, and each miss costs a full
+        # beam search. Memoize so a word is only ever transliterated once.
+        cache_key = (lang_code, token)
+        cached = _TOKEN_CACHE.get(cache_key)
+        if cached is not None:
+            new_word["text"] = cached
             results.append(new_word)
             continue
         try:
@@ -249,6 +271,9 @@ def _transliterate_words_with_indicxlit(
             new_word["text"] = original_text
         else:
             new_word["text"] = str(candidates[0]).lower()
+        if len(_TOKEN_CACHE) >= _TOKEN_CACHE_MAX:
+            _TOKEN_CACHE.clear()
+        _TOKEN_CACHE[cache_key] = str(new_word["text"])
         results.append(new_word)
     return results
 

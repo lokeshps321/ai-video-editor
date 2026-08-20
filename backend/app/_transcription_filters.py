@@ -85,6 +85,8 @@ def _normalize_words(
                 text=text,
                 start_sec=start_sec,
                 end_sec=end_sec,
+                # Cached romanization survives only if the text didn't change.
+                display_text=item.display_text if text == item.text else None,
                 confidence=confidence,
                 quality_score=item.quality_score,
                 quality_label=item.quality_label,
@@ -124,6 +126,7 @@ def _normalize_words(
                 text=item.text,
                 start_sec=round(start_sec, 3),
                 end_sec=round(min(end_sec, duration_sec), 3),
+                display_text=item.display_text,
                 confidence=item.confidence,
                 quality_score=item.quality_score,
                 quality_label=item.quality_label,

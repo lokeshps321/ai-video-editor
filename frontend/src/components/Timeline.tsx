@@ -634,10 +634,99 @@ function Timeline({
         speakerSlot,
         isDeleted: deletedWordIds.has(word.id),
         isSelected: selectedWordIds.has(word.id),
-        isActive: activeWordId === word.id,
       };
     });
-  }, [words, pxPerSec, deletedWordIds, selectedWordIds, activeWordId]);
+  }, [words, pxPerSec, deletedWordIds, selectedWordIds]);
+
+  // Memoized so a playback tick (which only changes `activeWordId`)
+  // doesn't recreate ~1 element per word on every frame.
+  const wordBlockNodes = useMemo(
+    () =>
+      wordBlocks.map(
+            ({
+              word,
+              x,
+              w,
+              speakerSlot,
+              isDeleted,
+              isSelected,
+            }) => (
+              <div
+                key={word.id}
+                id={`tlword-${word.id}`}
+                className={[
+                  "tlWord",
+                  isDeleted ? "deleted" : "",
+                  isSelected ? "selected" : "",
+                  speakerSlot === 0 ? "speakerA" : "",
+                  speakerSlot === 1 ? "speakerB" : "",
+                  speakerSlot !== null && speakerSlot >= 2
+                    ? "speakerExtra"
+                    : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                style={{ left: x, width: w }}
+                onMouseDown={(event) => {
+                  event.stopPropagation();
+                }}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onSelectLaneClip?.(null);
+                  onSelectBrollClip?.(null);
+                  onSelectCaptionBlock?.(null);
+                  onSelectWord(word.id, event.shiftKey);
+                }}
+                onDoubleClick={(event) => {
+                  event.stopPropagation();
+                  if (!isDeleted && onEditWord) {
+                    onSeek(word.start_sec);
+                    onEditWord(word.id);
+                  }
+                }}
+                title={
+                  isDeleted
+                    ? `${word.text} (deleted — select and use Restore, or right-click Restore Selected Words)`
+                    : `${word.speaker_label ? `${word.speaker_label}: ` : ""}${word.text} · double-click to edit`
+                }
+              >
+                {w > 24 ? word.text : ""}
+                {!isDeleted && w > 24 && (
+                  <Pencil
+                    size={8}
+                    className="tlWordEditHint"
+                    aria-hidden="true"
+                  />
+                )}
+              </div>
+            ),
+          ),
+    [
+      wordBlocks,
+      onSelectLaneClip,
+      onSelectBrollClip,
+      onSelectCaptionBlock,
+      onSelectWord,
+      onEditWord,
+      onSeek,
+    ],
+  );
+
+  // Same reasoning as the transcript panel: `activeWordId` changes ~10x/sec
+  // during playback, so the highlight is toggled directly on the DOM node
+  // instead of invalidating every word block on each tick.
+  const activeWordElRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const previous = activeWordElRef.current;
+    if (previous) previous.classList.remove("active");
+    activeWordElRef.current = null;
+
+    if (!activeWordId || !showTranscriptAssist) return;
+    const el = document.getElementById(`tlword-${activeWordId}`);
+    if (!el) return;
+    el.classList.add("active");
+    activeWordElRef.current = el;
+  }, [activeWordId, showTranscriptAssist, wordBlocks]);
 
   const speakerLegend = useMemo(() => {
     const speakerIdOrder = buildSpeakerIdOrder(words);
@@ -3236,66 +3325,7 @@ function Timeline({
                   }}
                 />
               ))}
-              {wordBlocks.map(
-                ({
-                  word,
-                  x,
-                  w,
-                  speakerSlot,
-                  isDeleted,
-                  isSelected,
-                  isActive,
-                }) => (
-                  <div
-                    key={word.id}
-                    className={[
-                      "tlWord",
-                      isDeleted ? "deleted" : "",
-                      isSelected ? "selected" : "",
-                      isActive ? "active" : "",
-                      speakerSlot === 0 ? "speakerA" : "",
-                      speakerSlot === 1 ? "speakerB" : "",
-                      speakerSlot !== null && speakerSlot >= 2
-                        ? "speakerExtra"
-                        : "",
-                    ]
-                      .filter(Boolean)
-                      .join(" ")}
-                    style={{ left: x, width: w }}
-                    onMouseDown={(event) => {
-                      event.stopPropagation();
-                    }}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onSelectLaneClip?.(null);
-                      onSelectBrollClip?.(null);
-                      onSelectCaptionBlock?.(null);
-                      onSelectWord(word.id, event.shiftKey);
-                    }}
-                    onDoubleClick={(event) => {
-                      event.stopPropagation();
-                      if (!isDeleted && onEditWord) {
-                        onSeek(word.start_sec);
-                        onEditWord(word.id);
-                      }
-                    }}
-                    title={
-                      isDeleted
-                        ? `${word.text} (deleted — select and use Restore, or right-click Restore Selected Words)`
-                        : `${word.speaker_label ? `${word.speaker_label}: ` : ""}${word.text} · double-click to edit`
-                    }
-                  >
-                    {w > 24 ? word.text : ""}
-                    {!isDeleted && w > 24 && (
-                      <Pencil
-                        size={8}
-                        className="tlWordEditHint"
-                        aria-hidden="true"
-                      />
-                    )}
-                  </div>
-                ),
-              )}
+              {wordBlockNodes}
             </div>
           )}
 

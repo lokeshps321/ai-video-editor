@@ -9,6 +9,10 @@ class TranscriptWordPayload:
     text: str
     start_sec: float
     end_sec: float
+    # Cached romanization. Persisted into words_json so the (expensive,
+    # per-word neural) transliteration runs once per word instead of on
+    # every transcript read.
+    display_text: str | None = None
     confidence: float | None = None
     quality_score: float | None = None
     quality_label: str | None = None
@@ -64,11 +68,15 @@ def _copy_word_payload(
     quality_label: str | None | object = ...,
     source_pass: str | None | object = ...,
 ) -> TranscriptWordPayload:
+    new_text = item.text if text is None else text
     return TranscriptWordPayload(
         id=item.id if id is None else id,
-        text=item.text if text is None else text,
+        text=new_text,
         start_sec=float(item.start_sec) if start_sec is None else float(start_sec),
         end_sec=float(item.end_sec) if end_sec is None else float(end_sec),
+        # Cached romanization only stays valid while the source text is
+        # unchanged; an edited word must be re-transliterated.
+        display_text=item.display_text if new_text == item.text else None,
         confidence=item.confidence if confidence is ... else confidence,
         quality_score=item.quality_score if quality_score is ... else quality_score,
         quality_label=item.quality_label if quality_label is ... else quality_label,

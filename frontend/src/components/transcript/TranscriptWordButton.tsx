@@ -18,14 +18,12 @@ export interface TranscriptWordButtonProps {
   showRomanized: boolean;
   isDeleted: boolean;
   isSelected: boolean;
-  isActive: boolean;
   isFiller: boolean;
   isSearchMatch: boolean;
   isCurrentMatch: boolean;
   hasLowConfidence: boolean;
   isWeakRegionWord: boolean;
   speakerSlot: number | null;
-  activeWordRef: React.RefObject<HTMLButtonElement | null>;
   isDraggingRef: React.MutableRefObject<boolean>;
   dragStartWordIdRef: React.MutableRefObject<string | null>;
   selectWord: (id: string, shiftHeld: boolean) => void;
@@ -41,14 +39,12 @@ export const TranscriptWordButton = React.memo(function TranscriptWordButton({
   showRomanized,
   isDeleted,
   isSelected,
-  isActive,
   isFiller,
   isSearchMatch,
   isCurrentMatch,
   hasLowConfidence,
   isWeakRegionWord,
   speakerSlot,
-  activeWordRef,
   isDraggingRef,
   dragStartWordIdRef,
   selectWord,
@@ -61,7 +57,6 @@ export const TranscriptWordButton = React.memo(function TranscriptWordButton({
     "word",
     isDeleted ? "deleted" : "",
     isSelected ? "selected" : "",
-    isActive ? "active" : "",
     isFiller ? "filler" : "",
     isSearchMatch ? "searchMatch" : "",
     isCurrentMatch ? "currentMatch" : "",
@@ -97,7 +92,6 @@ export const TranscriptWordButton = React.memo(function TranscriptWordButton({
       id={`word-${word.id}`}
       type="button"
       className={className}
-      ref={isActive ? activeWordRef : undefined}
       onMouseDown={(event) => {
         if (event.detail >= 2) return;
         isDraggingRef.current = true;

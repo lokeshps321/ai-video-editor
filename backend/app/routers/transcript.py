@@ -126,7 +126,9 @@ from ._transcript_format import (  # noqa: F401
     _with_transliteration_display,
     _word_models_from_payloads,
     _word_payload_from_item,
+    _limit_transcript_words,
     _word_script_annotation,
+    ensure_transliteration_persisted,
 )
 
 
@@ -2810,10 +2812,14 @@ def get_latest(
             ).first()
     if not row:
         raise HTTPException(status_code=404, detail="Transcript not found")
+    effective_limit = _effective_word_limit(word_limit)
+    ensure_transliteration_persisted(
+        session, row, word_offset=word_offset, word_limit=effective_limit
+    )
     return _to_response(
         row,
         word_offset=word_offset,
-        word_limit=_effective_word_limit(word_limit),
+        word_limit=effective_limit,
     )
 
 
@@ -2834,6 +2840,9 @@ def get_words_page(
     ).first()
     if not row:
         raise HTTPException(status_code=404, detail="Transcript not found")
+    ensure_transliteration_persisted(
+        session, row, word_offset=offset, word_limit=limit
+    )
     words = _load_words(row)
     total_words = len(words)
     page_words = _with_transliteration_display(words[offset : offset + limit])
@@ -2959,7 +2968,9 @@ def update_word_text(
         source=_manual_transcript_source(row.source),
     )
     full_transcript = _to_response(row, word_limit=None)
-    transcript_response = _to_response(row, word_limit=_effective_word_limit(None))
+    transcript_response = _limit_transcript_words(
+        full_transcript, _effective_word_limit(None)
+    )
     timeline_state, captions_synced = _sync_existing_subtitles(
         session,
         project_id=project_id,
@@ -3006,7 +3017,9 @@ def update_transcript_range(
         source=_manual_transcript_source(row.source),
     )
     full_transcript = _to_response(row, word_limit=None)
-    transcript_response = _to_response(row, word_limit=_effective_word_limit(None))
+    transcript_response = _limit_transcript_words(
+        full_transcript, _effective_word_limit(None)
+    )
 
     # When deleting words, also update the video track clips so the video
     # timeline reflects the removal — not just subtitles.

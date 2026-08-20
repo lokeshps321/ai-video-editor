@@ -134,6 +134,8 @@ def _serialize_word(item: TranscriptWordPayload) -> dict[str, object]:
         payload["speaker_id"] = item.speaker_id
     if item.speaker_label:
         payload["speaker_label"] = item.speaker_label
+    if item.display_text:
+        payload["display_text"] = item.display_text
     return payload
 
 
@@ -167,9 +169,11 @@ def _word_payload_from_item(item: dict[str, object]) -> TranscriptWordPayload | 
         source_pass = None
     speaker_id = str(item.get("speaker_id") or "").strip() or None
     speaker_label = str(item.get("speaker_label") or "").strip() or None
+    display_text = str(item.get("display_text") or "").strip() or None
     return TranscriptWordPayload(
         id=str(item.get("id") or uuid4()),
         text=text,
+        display_text=display_text,
         start_sec=start_sec,
         end_sec=end_sec,
         confidence=confidence,
@@ -188,7 +192,7 @@ def _word_models_from_payloads(
         TranscriptWord(
             id=item.id,
             text=item.text,
-            display_text=None,
+            display_text=item.display_text,
             start_sec=float(item.start_sec),
             end_sec=float(item.end_sec),
             confidence=item.confidence,
@@ -268,26 +272,47 @@ def _annotate_word_script_metadata(
     return enriched
 
 
-def _with_transliteration_display(words: list[TranscriptWord]) -> list[TranscriptWord]:
+def _transliteration_display(
+    words: list[TranscriptWord],
+) -> tuple[list[TranscriptWord], bool]:
+    """Fill in `display_text` for words that don't have it cached yet.
+
+    Returns the enriched words plus a flag saying whether anything new was
+    computed, so callers can persist the result and skip the (expensive,
+    per-word neural) transliteration on every subsequent read.
+    """
     if not words:
-        return words
+        return words, False
     sample_text = " ".join(word.text for word in words[:40])
     if not contains_indic_script(sample_text):
-        return words
-    transliterated_words = transliterate_words(
-        [word.model_dump(mode="json") for word in words]
-    )
-    if not transliterated_words:
-        return words
+        return words, False
 
-    enriched: list[TranscriptWord] = []
-    for word, transliterated in zip(words, transliterated_words):
+    pending_positions = [
+        position for position, word in enumerate(words) if not word.display_text
+    ]
+    if not pending_positions:
+        return words, False
+
+    transliterated_words = transliterate_words(
+        [words[position].model_dump(mode="json") for position in pending_positions]
+    )
+    if not transliterated_words or len(transliterated_words) != len(pending_positions):
+        return words, False
+
+    enriched = list(words)
+    changed = False
+    for position, transliterated in zip(pending_positions, transliterated_words):
+        word = enriched[position]
         display_text = str(transliterated.get("text") or "").strip()
         if not display_text or display_text == word.text:
-            enriched.append(word)
             continue
-        enriched.append(word.model_copy(update={"display_text": display_text}))
-    return enriched
+        enriched[position] = word.model_copy(update={"display_text": display_text})
+        changed = True
+    return enriched, changed
+
+
+def _with_transliteration_display(words: list[TranscriptWord]) -> list[TranscriptWord]:
+    return _transliteration_display(words)[0]
 
 
 def _local_word_rate(
@@ -350,6 +375,7 @@ def _annotate_word_quality(
                     text=item.text,
                     start_sec=float(item.start_sec),
                     end_sec=float(item.end_sec),
+                    display_text=item.display_text,
                     confidence=item.confidence,
                     quality_score=round(max(0.0, min(float(score), 1.0)), 3),
                     quality_label=item.quality_label,
@@ -413,6 +439,7 @@ def _annotate_word_quality(
                 text=item.text,
                 start_sec=float(item.start_sec),
                 end_sec=float(item.end_sec),
+                display_text=item.display_text,
                 confidence=item.confidence,
                 quality_score=round(score, 3),
                 quality_label=quality_label,
@@ -566,6 +593,76 @@ def _load_words(row: Transcript) -> list[TranscriptWord]:
         _load_raw_items(row), float(row.duration_sec or 0.0)
     )
     return words
+
+
+def _limit_transcript_words(
+    response: TranscriptResponse, word_limit: int | None
+) -> TranscriptResponse:
+    """Narrow an already-built response to a word page.
+
+    Lets callers that need both the full and the paged view build the
+    (expensive) response once instead of running the whole materialize +
+    transliterate pipeline twice.
+    """
+    if word_limit is None:
+        return response
+    limit = max(1, int(word_limit))
+    if len(response.words) <= limit:
+        return response
+    return response.model_copy(
+        update={"words": response.words[:limit], "words_truncated": True}
+    )
+
+
+def ensure_transliteration_persisted(
+    session: object,
+    row: Transcript,
+    *,
+    word_offset: int = 0,
+    word_limit: int | None = None,
+) -> None:
+    """Compute romanization once and cache it in `words_json`.
+
+    Transliteration is by far the most expensive part of a transcript read
+    (IndicXlit runs a beam search per word). Without this, every project
+    open and every word edit pays the full cost again. We fill in only the
+    slice the caller is about to serve, so first-load latency is unchanged
+    and every subsequent read short-circuits.
+    """
+    raw_items = _load_raw_items(row)
+    _stored_items, words, _text, _regions = _materialize_transcript_items(
+        raw_items, float(row.duration_sec or 0.0)
+    )
+    total_words = len(words)
+    safe_offset = max(0, min(int(word_offset), total_words))
+    if word_limit is None:
+        target_words = words[safe_offset:]
+    else:
+        target_words = words[safe_offset : safe_offset + max(1, int(word_limit))]
+
+    enriched, changed = _transliteration_display(target_words)
+    if not changed:
+        return
+
+    display_by_id = {
+        word.id: word.display_text for word in enriched if word.display_text
+    }
+    updated = False
+    for item in raw_items:
+        display_text = display_by_id.get(str(item.get("id") or ""))
+        if display_text and item.get("display_text") != display_text:
+            item["display_text"] = display_text
+            updated = True
+    if not updated:
+        return
+
+    row.words_json = _json_dumps(raw_items)
+    try:
+        session.add(row)  # type: ignore[attr-defined]
+        session.commit()  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        # Caching is best-effort: a failed write must never break the read.
+        session.rollback()  # type: ignore[attr-defined]
 
 
 def _to_response(
