@@ -129,6 +129,7 @@ from ._transcript_format import (  # noqa: F401
     _limit_transcript_words,
     _word_script_annotation,
     ensure_transliteration_persisted,
+    fill_display_text_in_items,
 )
 
 
@@ -1495,6 +1496,10 @@ def _store_transcript_items(
     stored_items, _words, text, _regions = _materialize_transcript_items(
         items, duration_sec
     )
+    # Romanize here rather than on the read path: this runs inside the
+    # background transcription job, so the cost lands where the user is
+    # already waiting instead of on every project open.
+    fill_display_text_in_items(stored_items, duration_sec)
     row = Transcript(
         project_id=project_id,
         asset_id=asset_id,
@@ -1632,6 +1637,9 @@ def _persist_transcript_items(
     stored_items, _words, text, _regions = _materialize_transcript_items(
         items, float(row.duration_sec or 0.0)
     )
+    # Only words whose text actually changed are missing a cached
+    # romanization here, so this is a handful of tokens, not the whole list.
+    fill_display_text_in_items(stored_items, float(row.duration_sec or 0.0))
     row.words_json = _json_dumps(stored_items)
     row.text = text
     if source is not None:

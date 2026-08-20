@@ -614,6 +614,45 @@ def _limit_transcript_words(
     )
 
 
+def fill_display_text_in_items(
+    items: list[dict[str, object]],
+    duration_sec: float,
+    *,
+    word_offset: int = 0,
+    word_limit: int | None = None,
+) -> bool:
+    """Populate `display_text` on stored word items, in place.
+
+    Returns True when something new was computed. Shared by the write paths
+    (so a transcript is romanized once, in the background job that generated
+    it) and the read paths (so older transcripts heal on first access).
+    """
+    _stored_items, words, _text, _regions = _materialize_transcript_items(
+        items, duration_sec
+    )
+    total_words = len(words)
+    safe_offset = max(0, min(int(word_offset), total_words))
+    if word_limit is None:
+        target_words = words[safe_offset:]
+    else:
+        target_words = words[safe_offset : safe_offset + max(1, int(word_limit))]
+
+    enriched, changed = _transliteration_display(target_words)
+    if not changed:
+        return False
+
+    display_by_id = {
+        word.id: word.display_text for word in enriched if word.display_text
+    }
+    updated = False
+    for item in items:
+        display_text = display_by_id.get(str(item.get("id") or ""))
+        if display_text and item.get("display_text") != display_text:
+            item["display_text"] = display_text
+            updated = True
+    return updated
+
+
 def ensure_transliteration_persisted(
     session: object,
     row: Transcript,
@@ -630,30 +669,12 @@ def ensure_transliteration_persisted(
     and every subsequent read short-circuits.
     """
     raw_items = _load_raw_items(row)
-    _stored_items, words, _text, _regions = _materialize_transcript_items(
-        raw_items, float(row.duration_sec or 0.0)
-    )
-    total_words = len(words)
-    safe_offset = max(0, min(int(word_offset), total_words))
-    if word_limit is None:
-        target_words = words[safe_offset:]
-    else:
-        target_words = words[safe_offset : safe_offset + max(1, int(word_limit))]
-
-    enriched, changed = _transliteration_display(target_words)
-    if not changed:
-        return
-
-    display_by_id = {
-        word.id: word.display_text for word in enriched if word.display_text
-    }
-    updated = False
-    for item in raw_items:
-        display_text = display_by_id.get(str(item.get("id") or ""))
-        if display_text and item.get("display_text") != display_text:
-            item["display_text"] = display_text
-            updated = True
-    if not updated:
+    if not fill_display_text_in_items(
+        raw_items,
+        float(row.duration_sec or 0.0),
+        word_offset=word_offset,
+        word_limit=word_limit,
+    ):
         return
 
     row.words_json = _json_dumps(raw_items)
