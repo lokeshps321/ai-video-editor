@@ -1,5 +1,6 @@
 import os
 import threading
+import json
 from pathlib import Path
 
 import pytest
@@ -18,8 +19,10 @@ from sqlmodel import Session
 
 from app.main import app
 from app.database import engine
-from app.models import MediaAsset
+from app.models import MediaAsset, Project, Transcript
 from app.routers import transcript as transcript_routes
+from app.routers import _transcript_format as transcript_format
+from app.schemas import TranscriptWord
 from app.storage import storage
 from app.transcription_service import TranscriptPayload, TranscriptWordPayload
 
@@ -1838,6 +1841,149 @@ def test_get_latest_prefers_real_transcript_over_newer_mock() -> None:
         )
         assert explicit_mock.status_code == 200
         assert explicit_mock.json()["id"] == mock_id
+
+
+def test_get_latest_returns_uncached_indic_text_without_romanizing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queued_transcript_ids: list[str] = []
+
+    def fail_if_read_path_romanizes(*_args, **_kwargs):
+        raise AssertionError("Transcript reads must not run transliteration")
+
+    monkeypatch.setattr(
+        "app.routers._transcript_format.transliterate_words",
+        fail_if_read_path_romanizes,
+    )
+    monkeypatch.setattr(
+        transcript_routes,
+        "_queue_romanization_backfill",
+        lambda _session, row: queued_transcript_ids.append(row.id),
+    )
+
+    with Session(engine) as session:
+        project = Project(name="Uncached Indic Transcript", owner_id="test-user")
+        session.add(project)
+        session.commit()
+        session.refresh(project)
+        row = Transcript(
+            project_id=project.id,
+            asset_id="asset-id",
+            source="test",
+            language="kn",
+            text="ನಮಸ್ಕಾರ hello",
+            words_json=json.dumps(
+                [
+                    {
+                        "id": "kn-1",
+                        "text": "ನಮಸ್ಕಾರ",
+                        "start_sec": 0.0,
+                        "end_sec": 0.5,
+                    },
+                    {
+                        "id": "en-1",
+                        "text": "hello",
+                        "start_sec": 0.5,
+                        "end_sec": 0.8,
+                    },
+                ]
+            ),
+            duration_sec=1.0,
+        )
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        response = transcript_routes.get_latest(
+            project_id=project.id,
+            word_offset=0,
+            word_limit=None,
+            session=session,
+            current_user={"sub": "test-user"},
+        )
+
+    assert response.id == row.id
+    assert response.romanization_status == "pending"
+    assert response.words[0].display_text is None
+    assert queued_transcript_ids == [row.id]
+
+
+def test_cached_indic_text_does_not_retry_for_uncached_latin_words(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_if_transliterated(*_args, **_kwargs):
+        raise AssertionError("Cached Indic text should not be transliterated again")
+
+    monkeypatch.setattr(transcript_format, "transliterate_words", fail_if_transliterated)
+    words = [
+        TranscriptWord(
+            id="kn-1",
+            text="ನಮಸ್ಕಾರ",
+            display_text="namaskara",
+            start_sec=0.0,
+            end_sec=0.5,
+        ),
+        TranscriptWord(id="en-1", text="hello", start_sec=0.5, end_sec=0.8),
+    ]
+
+    enriched, changed = transcript_format._transliteration_display(words)
+
+    assert changed is False
+    assert enriched == words
+
+
+def test_romanization_backfill_job_persists_display_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fill_display_text(items: list[dict[str, object]], _duration_sec: float) -> bool:
+        items[0]["display_text"] = "namaskara"
+        return True
+
+    monkeypatch.setattr(
+        transcript_routes,
+        "fill_display_text_in_items",
+        fill_display_text,
+    )
+
+    with Session(engine) as session:
+        project = Project(name="Romanization Backfill Job", owner_id="test-user")
+        session.add(project)
+        session.commit()
+        session.refresh(project)
+        row = Transcript(
+            project_id=project.id,
+            asset_id="asset-id",
+            source="test",
+            language="kn",
+            text="ನಮಸ್ಕಾರ",
+            words_json=json.dumps(
+                [
+                    {
+                        "id": "kn-1",
+                        "text": "ನಮಸ್ಕಾರ",
+                        "start_sec": 0.0,
+                        "end_sec": 0.5,
+                    }
+                ]
+            ),
+            duration_sec=0.5,
+        )
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        transcript_id = row.id
+        job = transcript_routes.create_job(
+            session,
+            project.id,
+            kind="transcript_romanize",
+        )
+        job_id = job.id
+
+        transcript_routes._process_romanize_transcript_job(job_id, transcript_id)
+
+        with Session(engine) as session:
+            updated = session.get(Transcript, transcript_id)
+            assert updated is not None
+            assert "namaskara" in updated.words_json
 
 
 def test_generate_transcript_payload_chunked_uses_overlap_but_keeps_only_core_words(

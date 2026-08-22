@@ -1212,6 +1212,7 @@ function App() {
     targetSec: number;
   } | null>(null);
   const transcriptJobResultHandledRef = useRef<string | null>(null);
+  const projectOpenRequestRef = useRef(0);
   const lastTranscriptRequestRef = useRef<{ forceRegenerate: boolean }>({
     forceRegenerate: false,
   });
@@ -1504,12 +1505,55 @@ function App() {
   }, [transcriptIssueRegions]);
 
   useEffect(() => {
-    if (!transcriptHasRomanization) {
+    if (
+      !transcriptHasRomanization ||
+      transcript?.romanization_status === "pending"
+    ) {
       setShowRomanizedTranscript(false);
       return;
     }
     setShowRomanizedTranscript(true);
-  }, [transcript?.id, transcriptHasRomanization]);
+  }, [
+    transcript?.id,
+    transcript?.romanization_status,
+    transcriptHasRomanization,
+  ]);
+
+  useEffect(() => {
+    if (
+      !project ||
+      !transcript ||
+      transcript.romanization_status !== "pending"
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    let attempts = 0;
+    const refreshRomanization = async () => {
+      attempts += 1;
+      try {
+        const refreshed = await api.getTranscript(project.id, transcript.id);
+        if (!cancelled && refreshed.project_id === project.id) {
+          setTranscript(refreshed);
+        }
+      } catch {
+        // Keep the original script visible. A later project open can retry.
+      }
+    };
+    const interval = window.setInterval(() => {
+      if (attempts >= 30) {
+        window.clearInterval(interval);
+        return;
+      }
+      void refreshRomanization();
+    }, 2000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [project?.id, transcript?.id, transcript?.romanization_status]);
 
   useEffect(() => {
     setWeakReviewIndex(0);
@@ -2220,6 +2264,7 @@ function App() {
       setQuickEditing(false);
       setQuickEditStage("");
       setBrollSlots([]);
+      setLoadingBrollSlots(false);
       setLastBrollAutoApplySkips([]);
       setBrollSuggestJob(null);
       setBrollSuggestionSource(null);
@@ -2777,9 +2822,11 @@ function App() {
     projectId: string,
     nextProject: Project,
     hasVideoSource: boolean,
+    isCurrent = () => true,
   ) {
     try {
       const savedPreview = await api.getLatestProjectPreview(projectId);
+      if (!isCurrent()) return;
       if (savedPreview?.output_path) {
         setPreviewJob(savedPreview);
         setPreviewUrl(resolveMediaPath(savedPreview.output_path));
@@ -2799,6 +2846,7 @@ function App() {
         fps: exportFps,
         auto_frame: autoFraming,
       });
+      if (!isCurrent()) return;
       setPreviewJob(job);
       if (job.status === "completed" && job.output_path) {
         setPreviewUrl(resolveMediaPath(job.output_path));
@@ -2811,13 +2859,23 @@ function App() {
 
   async function openProject(projectId: string) {
     if (!projectId || openingProjectId) return;
+    const requestId = projectOpenRequestRef.current + 1;
+    projectOpenRequestRef.current = requestId;
+    const isCurrentRequest = () => projectOpenRequestRef.current === requestId;
     setOpeningProjectId(projectId);
     setError(null);
     try {
-      const nextProject = await api.getProject(projectId);
+      // Start all independent reads together. A transcript can be large or
+      // need a legacy Romanization backfill, neither of which should prevent
+      // the editor shell from becoming usable.
+      const transcriptRequest = api.getTranscript(projectId).catch(() => null);
+      const [nextProject, items] = await Promise.all([
+        api.getProject(projectId),
+        api.listMedia(projectId),
+      ]);
+      if (!isCurrentRequest()) return;
       resetEditorStateForProject(nextProject);
 
-      const items = await api.listMedia(projectId);
       setMedia(items);
       const primaryTimelineAssetId = nextProject.timeline.tracks
         .filter((track) => track.kind === "video")
@@ -2833,23 +2891,40 @@ function App() {
         activeVideo ? resolveMediaPath(activeVideo.storage_path) : null,
       );
 
-      try {
-        const latestTranscript = await api.getTranscript(projectId);
+      void (async () => {
+        const latestTranscript = await transcriptRequest;
+        if (!isCurrentRequest()) return;
+        if (!latestTranscript) {
+          setTranscript(null);
+          setBrollSlots([]);
+          setLoadingBrollSlots(false);
+          return;
+        }
         setTranscript(latestTranscript);
-        await refreshBrollSlots(projectId, latestTranscript.id);
-      } catch {
-        setTranscript(null);
-        setBrollSlots([]);
-      }
+        setLoadingBrollSlots(true);
+        try {
+          const slots = await api.listBrollSlots(projectId, latestTranscript.id);
+          if (isCurrentRequest()) setBrollSlots(slots);
+        } catch (err) {
+          if (isCurrentRequest()) setError((err as Error).message);
+        } finally {
+          if (isCurrentRequest()) setLoadingBrollSlots(false);
+        }
+      })();
 
-      await restoreProjectPreview(projectId, nextProject, !!activeVideo);
+      void restoreProjectPreview(
+        projectId,
+        nextProject,
+        !!activeVideo,
+        isCurrentRequest,
+      );
       setProjectsPanelOpen(false);
       setNotice(`Opened ${nextProject.name || "project"}.`);
-      await refreshProjectList();
+      void refreshProjectList();
     } catch (err) {
-      setError((err as Error).message);
+      if (isCurrentRequest()) setError((err as Error).message);
     } finally {
-      setOpeningProjectId(null);
+      if (isCurrentRequest()) setOpeningProjectId(null);
     }
   }
 
@@ -2857,6 +2932,7 @@ function App() {
     name: string = BRAND.defaultProjectName,
     options?: { silent?: boolean; notice?: string | null },
   ) {
+    projectOpenRequestRef.current += 1;
     const silent = !!options?.silent;
     setCreatingProject(true);
     setError(null);
@@ -2913,6 +2989,7 @@ function App() {
       setRecentProjects((prev) => prev.filter((p) => p.id !== projectId));
       const wasCurrentProject = project && project.id === projectId;
       if (wasCurrentProject) {
+        projectOpenRequestRef.current += 1;
         // Clear current project state without auto-creating a new one
         setProject(null);
         setMedia([]);
@@ -6478,6 +6555,11 @@ function App() {
                           </span>
                         ))}
                       </div>
+                    )}
+                    {transcript?.romanization_status === "pending" && (
+                      <p className="muted transcriptRomanizationHint">
+                        Showing original script while Romanized text is prepared.
+                      </p>
                     )}
                   </div>
                   {transcriptHasRomanization && (

@@ -283,12 +283,15 @@ def _transliteration_display(
     """
     if not words:
         return words, False
-    sample_text = " ".join(word.text for word in words[:40])
-    if not contains_indic_script(sample_text):
-        return words, False
 
+    # Latin words intentionally have no display_text: the original text is
+    # already the desired Roman display. Including them here meant a mixed
+    # Indic/English transcript repeatedly invoked IndicXlit on every read,
+    # even after its Indic words had been cached.
     pending_positions = [
-        position for position, word in enumerate(words) if not word.display_text
+        position
+        for position, word in enumerate(words)
+        if not word.display_text and contains_indic_script(word.text)
     ]
     if not pending_positions:
         return words, False
@@ -313,6 +316,15 @@ def _transliteration_display(
 
 def _with_transliteration_display(words: list[TranscriptWord]) -> list[TranscriptWord]:
     return _transliteration_display(words)[0]
+
+
+def _romanization_status(words: list[TranscriptWord]) -> str:
+    indic_words = [word for word in words if contains_indic_script(word.text)]
+    if not indic_words:
+        return "unavailable"
+    if any(not word.display_text for word in indic_words):
+        return "pending"
+    return "ready"
 
 
 def _local_word_rate(
@@ -709,7 +721,10 @@ def _to_response(
         response_words = words[safe_offset:]
     else:
         response_words = words[safe_offset : safe_offset + max(1, int(word_limit))]
-    response_words = _with_transliteration_display(response_words)
+    # Transcript reads must stay cheap. Romanization is persisted when a
+    # transcript is generated or edited, and legacy transcripts are backfilled
+    # by a background job. Running IndicXlit here makes opening a project wait
+    # for neural transliteration before it can render the editor.
     script_tags = sorted(
         {
             str(word.script_tag).strip()
@@ -740,6 +755,7 @@ def _to_response(
         issue_region_count=issue_region_count,
         script_tags=script_tags,
         mixed_script=len(_meaningful_tags) > 1,
+        romanization_status=_romanization_status(words),
         duration_sec=row.duration_sec,
         is_mock=row.is_mock,
         created_at=row.created_at.isoformat(),

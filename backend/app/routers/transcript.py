@@ -36,6 +36,11 @@ _MAX_CONCURRENT_TRANSCRIPTS = max(
     1, int(os.getenv("MAX_CONCURRENT_TRANSCRIPT_JOBS", "1"))
 )
 _transcript_semaphore = threading.BoundedSemaphore(_MAX_CONCURRENT_TRANSCRIPTS)
+_MAX_CONCURRENT_ROMANIZATIONS = max(
+    1, int(os.getenv("MAX_CONCURRENT_TRANSCRIPT_ROMANIZATION_JOBS", "1"))
+)
+_romanization_semaphore = threading.BoundedSemaphore(_MAX_CONCURRENT_ROMANIZATIONS)
+_romanization_enqueue_lock = threading.Lock()
 
 from ..config import get_settings
 from ..database import engine, get_session
@@ -89,7 +94,6 @@ from ..transcription_service import (
     trim_song_mode_to_manual_lyrics_span,
     trim_songlike_tail_hallucination,
 )
-from ..transliteration_service import contains_indic_script, transliterate_words
 
 router = APIRouter(prefix="/api/v1/transcript", tags=["transcript"])
 settings = get_settings()
@@ -123,12 +127,10 @@ from ._transcript_format import (  # noqa: F401
     _summarize_transcript_quality,
     _to_response,
     _utcnow,
-    _with_transliteration_display,
     _word_models_from_payloads,
     _word_payload_from_item,
     _limit_transcript_words,
     _word_script_annotation,
-    ensure_transliteration_persisted,
     fill_display_text_in_items,
 )
 
@@ -200,6 +202,82 @@ def _to_job_response(session: Session, job: Job) -> JobResponse:
         output_path=job.output_path,
         error=job.error,
     )
+
+
+def _process_romanize_transcript_job(job_id: str, transcript_id: str) -> None:
+    """Persist Romanized display text without holding up transcript reads."""
+    _romanization_semaphore.acquire()
+    try:
+        with Session(engine) as session:
+            job = session.exec(select(Job).where(Job.id == job_id)).first()
+            if not job:
+                return
+
+            try:
+                set_job_status(
+                    session,
+                    job,
+                    status="running",
+                    progress=10,
+                    stage="romanizing",
+                    message="Preparing Romanized transcript text",
+                )
+                row = session.exec(
+                    select(Transcript).where(
+                        Transcript.id == transcript_id,
+                        Transcript.project_id == job.project_id,
+                    )
+                ).first()
+                if not row:
+                    raise RuntimeError("Transcript not found")
+
+                items = _load_raw_items(row)
+                if fill_display_text_in_items(items, float(row.duration_sec or 0.0)):
+                    row.words_json = _json_dumps(items)
+                    row.updated_at = _utcnow()
+                    session.add(row)
+                    session.commit()
+
+                set_job_status(
+                    session,
+                    job,
+                    status="completed",
+                    progress=100,
+                    stage="complete",
+                    message="Romanized transcript text is ready",
+                )
+            except Exception as exc:  # noqa: BLE001
+                set_job_status(
+                    session,
+                    job,
+                    status="failed",
+                    progress=100,
+                    stage="failed",
+                    message=str(exc),
+                    error=str(exc),
+                )
+    finally:
+        _romanization_semaphore.release()
+
+
+def _queue_romanization_backfill(session: Session, transcript: Transcript) -> None:
+    """Start one low-priority Romanization job per project at a time."""
+    with _romanization_enqueue_lock:
+        active = find_recent_active_job(
+            session,
+            transcript.project_id,
+            kind="transcript_romanize",
+            within_seconds=0,
+        )
+        if active:
+            return
+        job = create_job(session, transcript.project_id, kind="transcript_romanize")
+    threading.Thread(
+        target=_process_romanize_transcript_job,
+        args=(job.id, transcript.id),
+        name=f"transcript-romanize-{job.id[:8]}",
+        daemon=True,
+    ).start()
 
 
 def _transcript_generate_result_path(job_id: str) -> Path:
@@ -2821,14 +2899,14 @@ def get_latest(
     if not row:
         raise HTTPException(status_code=404, detail="Transcript not found")
     effective_limit = _effective_word_limit(word_limit)
-    ensure_transliteration_persisted(
-        session, row, word_offset=word_offset, word_limit=effective_limit
-    )
-    return _to_response(
+    response = _to_response(
         row,
         word_offset=word_offset,
         word_limit=effective_limit,
     )
+    if response.romanization_status == "pending":
+        _queue_romanization_backfill(session, row)
+    return response
 
 
 @router.get("/{transcript_id}/words", response_model=TranscriptWordPageResponse)
@@ -2848,12 +2926,9 @@ def get_words_page(
     ).first()
     if not row:
         raise HTTPException(status_code=404, detail="Transcript not found")
-    ensure_transliteration_persisted(
-        session, row, word_offset=offset, word_limit=limit
-    )
     words = _load_words(row)
     total_words = len(words)
-    page_words = _with_transliteration_display(words[offset : offset + limit])
+    page_words = words[offset : offset + limit]
     return TranscriptWordPageResponse(
         transcript_id=row.id,
         project_id=row.project_id,

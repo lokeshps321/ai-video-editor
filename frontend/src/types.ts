@@ -242,6 +242,7 @@ export type Transcript = {
   issue_region_count?: number;
   script_tags?: string[];
   mixed_script?: boolean;
+  romanization_status?: "ready" | "pending" | "unavailable";
   duration_sec: number;
   is_mock: boolean;
   created_at: string;

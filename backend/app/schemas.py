@@ -324,6 +324,7 @@ class TranscriptResponse(BaseModel):
     issue_region_count: int = 0
     script_tags: list[str] = Field(default_factory=list)
     mixed_script: bool = False
+    romanization_status: Literal["ready", "pending", "unavailable"] = "unavailable"
     duration_sec: float
     is_mock: bool
     created_at: str
