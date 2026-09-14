@@ -37,6 +37,7 @@
   margin: 0;
   z-index: 30;
   overflow: auto;
+  isolation: isolate;
   transform: translateX(calc(100% + 18px));
   opacity: 0;
   visibility: hidden;
@@ -45,6 +46,14 @@
     transform 0.24s ease,
     opacity 0.24s ease,
     visibility 0s 0.24s;
+}
+
+/* --panel (from .card) is translucent; the drawer floats over the
+   transcript/timeline, so it needs an opaque ground or the content
+   underneath bleeds through. Two classes so it beats .card regardless
+   of stylesheet order. */
+.card.featureDrawer {
+  background: rgb(16, 18, 28);
 }
 
 .featureDrawer.open {
