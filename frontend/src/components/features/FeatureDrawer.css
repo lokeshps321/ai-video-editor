@@ -56,6 +56,13 @@
   background: rgb(16, 18, 28);
 }
 
+/* The drawer sits inside .mobilePaneTranscript, which is an isolated
+   stacking context — so its z-index can't beat the sibling timeline pane.
+   Lift the whole pane while the drawer is open. */
+.mobilePane.hasOpenDrawer {
+  z-index: 30;
+}
+
 .featureDrawer.open {
   transform: translateX(0);
   opacity: 1;

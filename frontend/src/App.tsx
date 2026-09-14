@@ -6518,7 +6518,7 @@ function App() {
               previewDockElement
             )}
             <main
-              className={`twoPanel mobilePane mobilePaneTranscript${showMobileTranscript ? "" : " is-mobile-hidden"}`}
+              className={`twoPanel mobilePane mobilePaneTranscript${showMobileTranscript ? "" : " is-mobile-hidden"}${featureDrawerOpen ? " hasOpenDrawer" : ""}`}
               aria-hidden={!showMobileTranscript}
             >
               <section className="panel card panelTranscript">
